@@ -4,6 +4,9 @@ import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { check as checkForUpdate } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
+import { getVersion } from '@tauri-apps/api/app';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
 /* =========================================================
@@ -529,6 +532,46 @@ function useTasks() {
   const remove = useCallback(id => { setTasks(p => { const n = { ...p }; delete n[id]; return n; }); }, []);
   const saveRules = useCallback(list => setRules(list), []);
   return { tasks, saveMany, remove, rules, saveRules, loaded };
+}
+
+/* Self-updating: new versions are published as GitHub releases.
+   The app checks a few seconds after it starts, and whenever you ask it to. */
+function useUpdater() {
+  const [version, setVersion] = useState('');
+  const [update, setUpdate] = useState(null);
+  const [progress, setProgress] = useState(null); // null = idle, -1 = downloading (size unknown), 0–100, 'installing'
+  const look = useCallback(async manual => {
+    try {
+      const u = await checkForUpdate();
+      if (u) setUpdate(u);
+      else if (manual) toast('You’re up to date', `You have the latest version, ${await getVersion()}.`);
+    } catch (e) {
+      if (manual) toast('Couldn’t check for updates', 'Check your internet connection and try again.');
+    }
+  }, []);
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => {});
+    const t = setTimeout(() => look(false), 4000);
+    return () => clearTimeout(t);
+  }, [look]);
+  const install = async () => {
+    if (!update) return;
+    try {
+      await flushAll();
+      let total = 0, got = 0;
+      setProgress(-1);
+      await update.downloadAndInstall(ev => {
+        if (ev.event === 'Started') total = ev.data.contentLength || 0;
+        else if (ev.event === 'Progress') { got += ev.data.chunkLength; if (total) setProgress(Math.min(99, Math.round(got / total * 100))); }
+        else if (ev.event === 'Finished') setProgress('installing');
+      });
+      await relaunch();
+    } catch (e) {
+      setProgress(null);
+      toast('The update didn’t install', String(e));
+    }
+  };
+  return { version, update, progress, look, install, dismiss: () => setUpdate(null) };
 }
 
 function useProfile() {
@@ -1200,6 +1243,7 @@ function AutomationsDialog({ open, onClose, rules, projects, onSave }) {
 function App({ prof }) {
   const me = prof.data.user;
   const { tasks, saveMany, remove, rules, saveRules, loaded } = useTasks();
+  const up = useUpdater();
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
   const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
   const [view, setView] = useState(savedView.view === 'docs' ? 'docs' : 'tasks');
@@ -1474,9 +1518,32 @@ function App({ prof }) {
               { label: 'Back up data…', icon: <I.download />, onSelect: backup },
               { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
               { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
+              'sep',
+              { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
             ]} />
         </div>
       </div>
+
+      {/* Update available */}
+      {up.update && (
+        <Alert className="mt-6 flex flex-wrap items-center gap-3 border-blue-200 bg-blue-50 text-blue-950">
+          <I.download className="text-blue-700" />
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">Version {up.update.version} is ready to install</div>
+            {up.update.body && <div className="mt-0.5 line-clamp-3 whitespace-pre-line text-blue-900/80">{up.update.body}</div>}
+          </div>
+          {up.progress === null ? (
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" className="hover:bg-blue-100" onClick={up.dismiss}>Later</Button>
+              <Button size="sm" onClick={up.install}>Install and restart</Button>
+            </div>
+          ) : (
+            <span className="tnum text-sm text-blue-900">
+              {up.progress === 'installing' ? 'Installing…' : up.progress === -1 ? 'Downloading…' : `Downloading ${up.progress}%`}
+            </span>
+          )}
+        </Alert>
+      )}
 
       {/* View switch */}
       <nav className="mt-6 flex gap-6 border-b" aria-label="Sections">

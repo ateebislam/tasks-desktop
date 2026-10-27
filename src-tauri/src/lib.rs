@@ -1,8 +1,9 @@
 //! Tasks desktop app: local storage, documents, backups and Google sign-in.
 //!
 //! Everything is stored in the app's data folder on this computer
-//! (on Windows: %APPDATA%\app.tasks.desktop). Nothing is sent anywhere,
-//! except the one-time Google sign-in, which talks only to Google.
+//! (on Windows: %APPDATA%\app.tasks.desktop). Your data is never sent anywhere.
+//! The app only goes online for the one-time Google sign-in and to check
+//! GitHub for new versions of itself.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -410,6 +411,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
             read_store,
             write_store,
