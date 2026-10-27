@@ -1,6 +1,8 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ['./index.html', './src/**/*.{js,jsx}'],
+  // dark: styles apply when the app is set to Dark, or to Match Windows while Windows is dark.
+  darkMode: ['variant', ['@media (prefers-color-scheme: dark) { &:not([data-theme="light"] *) }', '&:is([data-theme="dark"] *)']],
   theme: {
     extend: {
       fontFamily: {

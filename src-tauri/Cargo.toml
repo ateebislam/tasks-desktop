@@ -4,6 +4,9 @@ version = "0.4.0"
 description = "A simple personal task manager"
 edition = "2021"
 
+# Keeps this project self-contained, even if stray files end up in the folder above.
+[workspace]
+
 [lib]
 name = "tasks_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
