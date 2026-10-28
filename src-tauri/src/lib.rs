@@ -48,11 +48,36 @@ fn safe_name(name: &str) -> Res<&str> {
     if ok { Ok(name) } else { Err("Invalid file name".into()) }
 }
 
-fn store_file(app: &AppHandle, name: &str) -> Res<PathBuf> {
-    match name {
-        "data" | "profile" => Ok(data_dir(app)?.join(format!("{name}.json"))),
-        _ => Err("Unknown store".into()),
+/// The app's own data files. Each workspace has its tasks in `data[-<workspace>]` and
+/// its archive and trash in `archive[-<workspace>]`; `profile` and `workspaces` are shared.
+fn is_store_name(name: &str) -> bool {
+    if name == "profile" || name == "workspaces" { return true; }
+    for base in ["data", "archive"] {
+        if name == base { return true; }
+        if let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('-')) {
+            return !rest.is_empty() && rest.len() <= 32 && rest.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+        }
     }
+    false
+}
+
+fn store_file(app: &AppHandle, name: &str) -> Res<PathBuf> {
+    if is_store_name(name) { Ok(data_dir(app)?.join(format!("{name}.json"))) } else { Err("Unknown store".into()) }
+}
+
+/// The store files present in the data folder (for backups).
+fn store_files(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            if let Some(stem) = n.strip_suffix(".json") {
+                if is_store_name(stem) && e.path().is_file() { out.push(n); }
+            }
+        }
+    }
+    out.sort();
+    out
 }
 
 fn random_string(len: usize) -> String {
@@ -174,12 +199,9 @@ fn backup(app: AppHandle, dest: String) -> Res<()> {
     let out = fs::File::create(&dest).map_err(err)?;
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-    for name in ["data.json", "profile.json"] {
-        let p = dir.join(name);
-        if p.exists() {
-            zip.start_file(name, opts).map_err(err)?;
-            zip.write_all(&fs::read(p).map_err(err)?).map_err(err)?;
-        }
+    for name in store_files(&dir) {
+        zip.start_file(name.as_str(), opts).map_err(err)?;
+        zip.write_all(&fs::read(dir.join(&name)).map_err(err)?).map_err(err)?;
     }
     for entry in fs::read_dir(docs_dir(&app)?).map_err(err)? {
         let entry = entry.map_err(err)?;
@@ -202,6 +224,9 @@ fn restore(app: AppHandle, src: String) -> Res<()> {
     }
     let dir = data_dir(&app)?;
     let docs = docs_dir(&app)?;
+    for old in store_files(&dir) {
+        if old != "profile.json" && zip.by_name(&old).is_err() { let _ = fs::remove_file(dir.join(&old)); }
+    }
     // Clear current documents, then unpack the backup.
     for entry in fs::read_dir(&docs).map_err(err)? {
         let p = entry.map_err(err)?.path();
@@ -212,7 +237,8 @@ fn restore(app: AppHandle, src: String) -> Res<()> {
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(err)?;
         let name = f.name().to_string();
-        let target = if name == "data.json" || name == "profile.json" {
+        let is_store = name.strip_suffix(".json").map(is_store_name).unwrap_or(false) && !name.contains('/');
+        let target = if is_store {
             dir.join(&name)
         } else if let Some(doc) = name.strip_prefix("documents/") {
             match safe_name(doc) {

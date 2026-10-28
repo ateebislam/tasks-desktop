@@ -68,6 +68,11 @@ const I = {
   panelRight: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></Icon>,
   panelCenter: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><rect width="10" height="10" x="7" y="7" rx="1"/></Icon>,
   maximize: p => <Icon {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></Icon>,
+  home: p => <Icon {...p}><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></Icon>,
+  tab: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 3v6"/></Icon>,
+  table: p => <Icon {...p}><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></Icon>,
+  rows: p => <Icon {...p}><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></Icon>,
+  kanban: p => <Icon {...p}><path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/></Icon>,
   user: p => <Icon {...p}><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></Icon>,
 };
 
@@ -195,7 +200,7 @@ function useDismiss(open, setOpen, refs) {
     };
   }, [open]);
 }
-function Floating({ anchorRef, open, align = 'start', matchWidth, className, children, panelRef }) {
+function Floating({ anchorRef, open, align = 'start', matchWidth, minMatch, className, children, panelRef }) {
   const [pos, setPos] = useState(null);
   useLayoutEffect(() => {
     if (!open || !anchorRef.current) return;
@@ -206,7 +211,7 @@ function Floating({ anchorRef, open, align = 'start', matchWidth, className, chi
       const top = below < h + 12 && r.top > h + 12 ? r.top - h - 4 : r.bottom + 4;
       let left = align === 'end' ? r.right - w : r.left;
       left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
-      setPos({ top, left, width: matchWidth ? r.width : undefined });
+      setPos({ top, left, width: matchWidth ? r.width : undefined, minWidth: minMatch ? r.width : undefined });
     };
     place();
     const id = requestAnimationFrame(place);
@@ -215,7 +220,7 @@ function Floating({ anchorRef, open, align = 'start', matchWidth, className, chi
   }, [open]);
   if (!open) return null;
   return createPortal(
-    <div ref={panelRef} style={{ position: 'fixed', top: pos ? pos.top : -9999, left: pos ? pos.left : -9999, width: pos && pos.width }}
+    <div ref={panelRef} style={{ position: 'fixed', top: pos ? pos.top : -9999, left: pos ? pos.left : -9999, width: pos && pos.width, minWidth: pos && pos.minWidth, maxWidth: 'calc(100vw - 16px)' }}
       className={cn('z-[80] rounded-md border bg-popover text-popover-foreground shadow-md outline-none anim-pop', className)}>
       {children}
     </div>, document.body);
@@ -244,6 +249,95 @@ function DropdownMenu({ trigger, items, align = 'end' }) {
                 {it.icon}{it.label}
                 {it.shortcut && <span className="ml-auto text-xs tracking-widest opacity-60">{it.shortcut}</span>}
               </button>)}
+        </div>
+      </Floating>
+    </>
+  );
+}
+
+/* Select: the app's own dropdown, used everywhere instead of the system one.
+   options: [{ value, label, node?, icon?, group?, divider? }] */
+function Select({ value, onChange, options, placeholder = 'Choose…', variant = 'field', className, id, label, footer, searchable, renderValue, icon, menuClassName }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  const a = useRef(null), p = useRef(null), inp = useRef(null), lst = useRef(null);
+  useDismiss(open, setOpen, [a, p]);
+  const sel = options.find(o => o.value === value);
+  const canSearch = searchable ?? options.length > 8;
+  const nq = norm(q);
+  const list = options.filter(o => !nq || norm(o.label).includes(nq));
+  useEffect(() => {
+    if (!open) return;
+    setQ('');
+    setHi(Math.max(0, options.findIndex(o => o.value === value)));
+    setTimeout(() => { (inp.current || lst.current) && (inp.current || lst.current).focus(); }, 0);
+  }, [open]);
+  useEffect(() => {
+    if (!open || !lst.current) return;
+    const el = lst.current.querySelector(`[data-i="${hi}"]`);
+    if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+  }, [hi, open]);
+  const pick = o => { onChange(o.value); setOpen(false); setTimeout(() => a.current && a.current.focus(), 0); };
+  const onKey = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, list.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Home') { e.preventDefault(); setHi(0); }
+    else if (e.key === 'End') { e.preventDefault(); setHi(list.length - 1); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[hi]) pick(list[hi]); }
+    else if (e.key === 'Tab') setOpen(false);
+  };
+  const triggerCls = {
+    field: 'flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-left text-base md:text-sm transition-colors hover:border-foreground/20',
+    ghost: 'inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-left text-sm transition-colors hover:bg-muted',
+    chip: 'inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-border bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground',
+  }[variant];
+  let lastGroup = null;
+  return (
+    <>
+      <button ref={a} id={id} type="button" aria-haspopup="listbox" aria-expanded={open} aria-label={label}
+        onClick={() => setOpen(o => !o)}
+        onKeyDown={e => { if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setOpen(true); } }}
+        className={cn(triggerCls, 'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', open && variant !== 'chip' && 'border-input', className)}>
+        {icon}
+        <span className={cn('flex min-w-0 flex-1 items-center truncate', !sel && 'text-muted-foreground')}>
+          {sel ? (renderValue ? renderValue(sel) : (sel.node || <span className="truncate">{sel.label}</span>)) : placeholder}
+        </span>
+        <I.down className={cn('shrink-0 opacity-50 transition-transform', variant === 'chip' ? 'size-3' : 'size-4', open && 'rotate-180')} />
+      </button>
+      <Floating anchorRef={a} panelRef={p} open={open} minMatch className={cn('p-1 min-w-[14rem]', menuClassName)}>
+        <div onKeyDown={onKey}>
+          {canSearch && (
+            <input ref={inp} value={q} onChange={e => { setQ(e.target.value); setHi(0); }} placeholder="Search…" aria-label="Search options"
+              className="mb-1 h-8 w-full border-b bg-transparent px-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none" />
+          )}
+          <div ref={lst} role="listbox" tabIndex={-1} aria-activedescendant={list[hi] ? `opt-${hi}` : undefined}
+            className="max-h-[min(22rem,55vh)] overflow-y-auto focus-visible:outline-none">
+            {list.map((o, i) => {
+              const head = !nq && o.group && o.group !== lastGroup ? o.group : null;
+              if (o.group) lastGroup = o.group;
+              return (
+                <React.Fragment key={String(o.value) + i}>
+                  {(head && i > 0) || (o.divider && !nq && i > 0) ? <div className="mx-1 my-1 h-px bg-border" /> : null}
+                  {head && <div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{head}</div>}
+                  <div id={`opt-${i}`} data-i={i} role="option" aria-selected={o.value === value}
+                    onMouseEnter={() => setHi(i)} onMouseDown={e => e.preventDefault()} onClick={() => pick(o)}
+                    className={cn('flex min-h-8 cursor-default items-center gap-2 rounded-sm px-2 py-1 text-sm', i === hi && 'bg-accent text-accent-foreground')}>
+                    {o.icon}
+                    <span className="flex min-w-0 flex-1 items-center">{o.node || <span className="truncate">{o.label}</span>}</span>
+                    {o.value === value && <I.check className="size-3.5 shrink-0 text-muted-foreground" />}
+                  </div>
+                </React.Fragment>
+              );
+            })}
+            {list.length === 0 && <div className="px-2 py-2 text-sm text-muted-foreground">Nothing found</div>}
+          </div>
+          {footer && (
+            <>
+              <div className="mx-1 my-1 h-px bg-border" />
+              {footer(() => setOpen(false))}
+            </>
+          )}
         </div>
       </Floating>
     </>
@@ -599,52 +693,159 @@ async function flushAll() { while (Object.values(writers).some(w => w.busy)) awa
 /* Several windows can be open (the main one and tasks popped out on their own).
    Whenever one saves, it tells the others, which take over the new data. */
 const WINDOW_LABEL = (() => { try { return getCurrentWindow().label; } catch (e) { return 'main'; } })();
-function useTasks() {
+// Column names can be changed per workspace. Marketing starts with names that suit its work.
+const LABEL_KEYS = ['task', 'status', 'bucket', 'platform', 'assignee', 'deadline', 'priority', 'time'];
+const LABEL_DEFAULTS = { task: 'Task', status: 'Status', bucket: 'Bucket', platform: 'Platform', assignee: 'Assignee', deadline: 'Deadline', priority: 'Priority', time: 'Time' };
+const WS_LABELS = { marketing: { bucket: 'Campaign', platform: 'Channel' } };
+const ARCHIVE_DAYS_DEFAULT = 30;
+const TRASH_DAYS = 15;
+const storeFor = (base, ws) => (ws === 'product' ? base : `${base}-${ws}`);
+const plural = w => (/s$/i.test(w) ? w : /[^aeiou]y$/i.test(w) ? w.slice(0, -1) + 'ies' : w + 's');
+
+function useTasks(ws = 'product') {
+  const isProduct = ws === 'product';
   const [loaded, setLoaded] = useState(false);
   const [tasks, setTasks] = useState({});
-  const [rules, setRules] = useState(DEFAULT_RULES);
-  const [projects, setProjects] = useState(null);
+  const [rules, setRules] = useState(isProduct ? DEFAULT_RULES : []);
+  const [projects, setProjects] = useState(isProduct ? null : []);
   const [stages, setStages] = useState([]);
-  const remote = useRef(null);
+  const [buckets, setBuckets] = useState([]);
+  const [labels, setLabels] = useState({});
+  const [settings, setSettings] = useState({ archiveDays: ARCHIVE_DAYS_DEFAULT });
+  const [looseDocs, setLooseDocs] = useState([]);
+  // Archive and Trash live in their own file, so the everyday list stays small and fast.
+  const [arch, setArch] = useState({ archived: {}, trash: {} });
+  const [archLoaded, setArchLoaded] = useState(false);
+  const remote = useRef(null), remoteArch = useRef(null);
+  const apply = d => {
+    setTasks(d.tasks || {});
+    if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
+    if (Array.isArray(d.projects)) setProjects(d.projects);
+    setStages(Array.isArray(d.stages) ? d.stages : []);
+    setBuckets(Array.isArray(d.buckets) ? d.buckets : []);
+    setLabels(d.labels && typeof d.labels === 'object' ? d.labels : {});
+    setSettings({ archiveDays: ARCHIVE_DAYS_DEFAULT, ...(d.settings || {}) });
+    setLooseDocs(Array.isArray(d.looseDocs) ? d.looseDocs : []);
+  };
   useEffect(() => {
-    let un = null, dead = false;
+    let un = null, un2 = null, dead = false;
     listen('tasks-data', e => {
-      if (!e.payload || e.payload.from === WINDOW_LABEL) return;
-      const d = e.payload.data;
-      remote.current = JSON.stringify(d);
-      setTasks(d.tasks || {}); setRules((d.rules || []).map(normalizeRule)); setProjects(d.projects || []); setStages(d.stages || []);
+      if (!e.payload || e.payload.from === WINDOW_LABEL || (e.payload.ws || 'product') !== ws) return;
+      remote.current = JSON.stringify(e.payload.data);
+      apply(e.payload.data);
     }).then(f => { if (dead) f(); else un = f; }).catch(() => {});
-    return () => { dead = true; un && un(); };
+    listen('tasks-arch', e => {
+      if (!e.payload || e.payload.from === WINDOW_LABEL || e.payload.ws !== ws) return;
+      remoteArch.current = JSON.stringify(e.payload.data);
+      setArch(e.payload.data);
+    }).then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
+    return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
   }, []);
   useEffect(() => {
     (async () => {
       try {
-        const raw = await invoke('read_store', { name: 'data' });
-        if (raw) {
-          const d = JSON.parse(raw);
-          setTasks(d.tasks || {});
-          if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
-          if (Array.isArray(d.projects)) setProjects(d.projects);
-          if (Array.isArray(d.stages)) setStages(d.stages);
-        }
+        const raw = await invoke('read_store', { name: storeFor('data', ws) });
+        if (raw) apply(JSON.parse(raw));
       } catch (e) { toast('Couldn’t read your saved tasks', String(e)); }
       setLoaded(true);
+      try {
+        const raw = await invoke('read_store', { name: storeFor('archive', ws) });
+        if (raw) { const a = JSON.parse(raw); setArch({ archived: a.archived || {}, trash: a.trash || {} }); }
+      } catch (e) {}
+      setArchLoaded(true);
     })();
   }, []);
   useEffect(() => {
     if (!loaded) return;
-    const data = { version: 3, tasks, rules, projects: projects || [], stages };
+    const data = { version: 4, tasks, rules, projects: projects || [], stages, buckets, labels, settings, looseDocs };
     if (JSON.stringify(data) === remote.current) return; // came from another window, already saved there
-    persist('data', data);
-    emit('tasks-data', { from: WINDOW_LABEL, data }).catch(() => {});
-  }, [tasks, rules, projects, stages, loaded]);
+    persist(storeFor('data', ws), data);
+    emit('tasks-data', { from: WINDOW_LABEL, ws, data }).catch(() => {});
+  }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, loaded]);
+  useEffect(() => {
+    if (!archLoaded) return;
+    if (JSON.stringify(arch) === remoteArch.current) return;
+    persist(storeFor('archive', ws), { version: 1, ...arch });
+    emit('tasks-arch', { from: WINDOW_LABEL, ws, data: arch }).catch(() => {});
+  }, [arch, archLoaded]);
+
+  // Every save stamps the time, and records when a task was completed (cleared again if it's reopened).
   const saveMany = useCallback(list => {
-    const stamped = list.map(t => ({ ...t, updatedAt: Date.now() }));
-    setTasks(p => { const n = { ...p }; stamped.forEach(t => { n[t.id] = t; }); return n; });
+    const now = Date.now();
+    setTasks(p => {
+      const n = { ...p };
+      list.forEach(t => {
+        const prev = p[t.id];
+        let doneAt = null;
+        if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
+        n[t.id] = { ...t, updatedAt: now, doneAt };
+      });
+      return n;
+    });
   }, []);
   const remove = useCallback(id => { setTasks(p => { const n = { ...p }; delete n[id]; return n; }); }, []);
   const saveRules = useCallback(list => setRules(list), []);
-  return { tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages, loaded };
+
+  // Files no task (active, archived or in the Trash) uses anymore stay in Documents as "No task".
+  const keepFiles = (files, stillUsed) => {
+    const free = (files || []).filter(f => !stillUsed.some(t => (t.files || []).some(x => x.id === f.id)));
+    if (free.length) setLooseDocs(l => [...l, ...free.filter(f => !l.some(x => x.id === f.id))]);
+  };
+  const tasksRef = useRef(tasks); tasksRef.current = tasks;
+  const archRef = useRef(arch); archRef.current = arch;
+  const trashTasks = useCallback(ids => {
+    const now = Date.now(), cur = tasksRef.current, a = archRef.current;
+    const moving = ids.map(id => cur[id] || a.archived[id]).filter(Boolean);
+    if (!moving.length) return;
+    setTasks(p => { const n = { ...p }; ids.forEach(id => delete n[id]); return n; });
+    setArch(x => {
+      const archived = { ...x.archived }, trash = { ...x.trash };
+      moving.forEach(t => { delete archived[t.id]; trash[t.id] = { ...stopT(t), deletedAt: now }; });
+      return { archived, trash };
+    });
+  }, []);
+  const restoreTask = useCallback(id => {
+    const a = archRef.current, t = a.archived[id] || a.trash[id];
+    if (!t) return;
+    const { archivedAt, deletedAt, ...rest } = t;
+    setArch(x => { const archived = { ...x.archived }, trash = { ...x.trash }; delete archived[id]; delete trash[id]; return { archived, trash }; });
+    setTasks(p => ({ ...p, [id]: { ...rest, doneAt: rest.status === 'done' ? Date.now() : null, updatedAt: Date.now() } }));
+  }, []);
+  const purgeTrash = useCallback(ids => {
+    const a = archRef.current;
+    const gone = ids.map(id => a.trash[id]).filter(Boolean);
+    if (!gone.length) return;
+    const rest = [...Object.values(tasksRef.current), ...Object.values(a.archived), ...Object.values(a.trash).filter(t => !ids.includes(t.id))];
+    keepFiles(gone.flatMap(t => t.files || []), rest);
+    setArch(x => { const trash = { ...x.trash }; ids.forEach(id => delete trash[id]); return { ...x, trash }; });
+  }, []);
+  // Archive finished tasks after the chosen number of days, and empty the Trash after 15 days.
+  useEffect(() => {
+    if (!loaded || !archLoaded || WINDOW_LABEL !== 'main') return;
+    const run = () => {
+      const now = Date.now(), days = Number(settings.archiveDays) || 0;
+      if (days > 0) {
+        const cutoff = now - days * 864e5;
+        const old = Object.values(tasksRef.current).filter(t => t.status === 'done' && !t.timerStartedAt && (t.doneAt || t.updatedAt || t.createdAt || now) < cutoff);
+        if (old.length) {
+          setTasks(p => { const n = { ...p }; old.forEach(t => delete n[t.id]); return n; });
+          setArch(x => { const archived = { ...x.archived }; old.forEach(t => { archived[t.id] = { ...t, archivedAt: now }; }); return { ...x, archived }; });
+        }
+      }
+      const expired = Object.values(archRef.current.trash).filter(t => now - (t.deletedAt || now) > TRASH_DAYS * 864e5).map(t => t.id);
+      if (expired.length) purgeTrash(expired);
+    };
+    run();
+    const i = setInterval(run, 3600e3);
+    return () => clearInterval(i);
+  }, [loaded, archLoaded, settings.archiveDays]);
+
+  return {
+    tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages,
+    buckets, saveBuckets: setBuckets, labels: { ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}), ...labels }, saveLabels: setLabels,
+    settings, saveSettings: setSettings, looseDocs, saveLooseDocs: setLooseDocs,
+    archived: arch.archived, trash: arch.trash, trashTasks, restoreTask, purgeTrash, loaded: loaded && archLoaded,
+  };
 }
 
 /* Desktop notifications (used by the "send me a notification" automation). Falls back to an in-app message. */
@@ -714,11 +915,43 @@ function useTheme() {
   return { mode, dark, choose, toggle: () => choose(dark ? 'light' : 'dark') };
 }
 
+/* The tab strip: Home first, then each task you opened in a tab. */
+function TabStrip({ list, active, tasks, stages, onSelect, onClose, onNew }) {
+  return (
+    <div role="tablist" aria-label="Open tabs" className="flex h-10 shrink-0 items-end gap-0.5 overflow-x-auto overflow-y-hidden px-2 [scrollbar-width:none]" style={{ background: 'hsl(var(--strip))' }}>
+      {['home', ...list].map(id => {
+        const t = id === 'home' ? null : tasks[id];
+        if (id !== 'home' && !t) return null;
+        const on = active === id, name = t ? (t.title || 'Untitled') : 'Home';
+        return (
+          <div key={id} role="tab" tabIndex={0} aria-selected={on} title={name}
+            onClick={() => onSelect(id)}
+            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(id); } }}
+            onAuxClick={e => { if (e.button === 1 && t) { e.preventDefault(); onClose(id); } }}
+            onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
+            className={cn('flex h-[34px] min-w-0 cursor-default items-center gap-2 rounded-t-lg pl-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring',
+              t ? 'min-w-[7rem] flex-[0_1_13rem] pr-1.5' : 'shrink-0 pr-3', on ? 'font-medium text-foreground' : 'text-muted-foreground hover:bg-background/40 hover:text-foreground')}
+            style={on ? { background: 'hsl(var(--page))' } : undefined}>
+            {t ? <span className={cn('size-2 shrink-0 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} /> : <I.home className="size-3.5 shrink-0" />}
+            <span className="min-w-0 flex-1 truncate">{name}</span>
+            {t && (
+              <button type="button" aria-label={`Close ${name}`} title="Close tab (Ctrl+W)" onClick={e => { e.stopPropagation(); onClose(id); }}
+                className="flex size-5 shrink-0 items-center justify-center rounded opacity-60 hover:bg-muted hover:opacity-100"><I.x className="size-3" /></button>
+            )}
+          </div>
+        );
+      })}
+      <button type="button" aria-label="New task in a new tab" title="New task in a new tab" onClick={onNew}
+        className="mb-1 ml-1 flex size-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground hover:bg-background/50 hover:text-foreground"><I.plus className="size-3.5" /></button>
+    </div>
+  );
+}
+
 function ThemeToggle() {
   const th = useTheme();
   return (
     <DropdownMenu
-      trigger={p => <Button {...p} variant="outline" size="icon" className="bg-card shadow-none" aria-label={`Appearance: ${THEMES.find(t => t.id === th.mode).label}`} title="Appearance (Shift+D)">{th.dark ? <I.moon /> : <I.sun />}</Button>}
+      trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label={`Appearance: ${THEMES.find(t => t.id === th.mode).label}`} title="Appearance (Shift+D)">{th.dark ? <I.moon /> : <I.sun />}</Button>}
       items={THEMES.map(t => ({
         label: t.label,
         icon: t.id === 'light' ? <I.sun /> : t.id === 'dark' ? <I.moon /> : <I.monitor />,
@@ -728,12 +961,12 @@ function ThemeToggle() {
   );
 }
 
-async function openTaskWindow(id, title) {
+async function openTaskWindow(id, title, ws = 'product') {
   const label = 'task-' + String(id).replace(/[^a-zA-Z0-9_-]/g, '');
   try {
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) { await existing.setFocus(); return; }
-    const w = new WebviewWindow(label, { url: 'index.html#task=' + encodeURIComponent(id), title: title || 'Task', width: 780, height: 880, minWidth: 480, minHeight: 480 });
+    const w = new WebviewWindow(label, { url: 'index.html#task=' + encodeURIComponent(id) + '&ws=' + encodeURIComponent(ws), title: title || 'Task', width: 780, height: 880, minWidth: 480, minHeight: 480 });
     w.once('tauri://error', e => toast('Couldn’t open a new window', String(e && e.payload)));
   } catch (e) { toast('Couldn’t open a new window', String(e)); }
 }
@@ -876,10 +1109,10 @@ function FileRow({ f, onPreview, onDownload, onRemove }) {
 
 const wrapDoc = body => `<!doctype html><html><head><meta charset="utf-8"><style>body{font:15px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif;color:#18181b;max-width:760px;margin:32px auto;padding:0 24px}img{max-width:100%;height:auto}table{border-collapse:collapse;margin:12px 0}td,th{border:1px solid #e4e4e7;padding:6px 10px;vertical-align:top}h1,h2,h3{line-height:1.25}</style></head><body>${body}</body></html>`;
 
-function PreviewDialog({ file, onClose, onDownload }) {
+function useDocPreview(file) {
   const [st, setSt] = useState(null);
   useEffect(() => {
-    if (!file) return;
+    if (!file) { setSt(null); return; }
     let dead = false, url = null;
     setSt({ loading: true });
     (async () => {
@@ -902,25 +1135,35 @@ function PreviewDialog({ file, onClose, onDownload }) {
     })();
     return () => { dead = true; if (url) URL.revokeObjectURL(url); };
   }, [file && file.id]);
-  if (!file) return null;
+  return st;
+}
+function DocPreview({ file, className }) {
+  const st = useDocPreview(file);
   const msg = t => <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">{t}</div>;
   return (
-    <Dialog open={!!file} onClose={onClose} className="max-w-4xl" title={file ? file.name : ''}
-      description={file ? `${(KINDS[file.kind] || KINDS.other).label}, ${fmtSize(file.size)}` : ''}
-      footer={file && <>
+    <div className={cn('overflow-hidden rounded-md border bg-muted/30', className)}>
+      {!file ? msg('Select a document to preview it.')
+        : !st || st.loading ? msg('Loading preview…')
+        : st.error ? msg('Couldn’t show a preview of this file. Use “Open in its app” instead.')
+        : st.none ? msg('There’s no preview for this file type. Use “Open in its app” to view it.')
+        : st.pdf ? <iframe title={file.name} src={st.pdf} className="h-full w-full bg-white" />
+        : st.img ? <img src={st.img} alt={file.name} className="h-full w-full object-contain" />
+        : st.html ? <iframe title={file.name} sandbox="" srcDoc={st.html} className="h-full w-full bg-white" />
+        : st.text != null ? <pre className="h-full overflow-auto whitespace-pre-wrap p-4 font-mono text-xs">{st.text}</pre>
+        : null}
+    </div>
+  );
+}
+function PreviewDialog({ file, onClose, onDownload }) {
+  if (!file) return null;
+  return (
+    <Dialog open={!!file} onClose={onClose} className="max-w-4xl" title={file.name}
+      description={`${(KINDS[file.kind] || KINDS.other).label}, ${fmtSize(file.size)}`}
+      footer={<>
         <Button variant="outline" onClick={() => onDownload(file)}><I.download />Save a copy</Button>
         <Button onClick={() => openExternal(file)}>Open in its app</Button>
       </>}>
-      <div className="h-[60vh] overflow-hidden rounded-md border bg-muted/30">
-        {!st || st.loading ? msg('Loading preview…')
-          : st.error ? msg('Couldn’t show a preview of this file. Use “Open in its app” instead.')
-          : st.none ? msg('There’s no preview for this file type. Use “Open in its app” to view it.')
-          : st.pdf ? <iframe title={file.name} src={st.pdf} className="h-full w-full bg-white" />
-          : st.img ? <img src={st.img} alt={file.name} className="h-full w-full object-contain" />
-          : st.html ? <iframe title={file.name} sandbox="" srcDoc={st.html} className="h-full w-full bg-white" />
-          : st.text != null ? <pre className="h-full overflow-auto whitespace-pre-wrap p-4 font-mono text-xs">{st.text}</pre>
-          : null}
-      </div>
+      <DocPreview file={file} className="h-[60vh]" />
     </Dialog>
   );
 }
@@ -954,18 +1197,18 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
         )}
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Attach to" htmlFor="ad-target">
-            <NativeSelect id="ad-target" value={target} onChange={e => setTarget(e.target.value)}>
-              <option value="__new">A new task for each file</option>
-              {openTasks.length > 0 && <optgroup label="Open tasks">{openTasks.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</optgroup>}
-              {doneTasks.length > 0 && <optgroup label="Done">{doneTasks.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</optgroup>}
-            </NativeSelect>
+            <Select id="ad-target" value={target} onChange={setTarget} options={[
+              { value: '__new', label: 'A new task for each file', icon: <I.plus className="size-3.5 text-muted-foreground" /> },
+              ...openTasks.map(t => ({ value: t.id, label: t.title || 'Untitled', group: 'Open tasks' })),
+              ...doneTasks.map(t => ({ value: t.id, label: t.title || 'Untitled', group: 'Complete' })),
+            ]} />
           </Field>
           {target === '__new' && (
             <Field label="Project" htmlFor="ad-project">
-              <NativeSelect id="ad-project" value={project} onChange={e => setProject(e.target.value)}>
-                <option value="">No project</option>
-                {projects.map(p => <option key={p} value={p}>{p}</option>)}
-              </NativeSelect>
+              <Select id="ad-project" value={project} onChange={setProject} options={[
+                { value: '', label: 'No project', node: <span className="text-muted-foreground">No project</span> },
+                ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+              ]} />
             </Field>
           )}
         </div>
@@ -975,90 +1218,106 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
 }
 
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
-function DocumentsView({ docs, onAdd, onPreview, onDownload, onRemove, onOpenTask, dragOver }) {
+function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, onAttach, dragOver }) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
-  const over = dragOver;
+  const [selKey, setSelKey] = useState(null);
   const nq = norm(q);
+  const keyOf = d => d.id + ':' + (d.task ? d.task.id : 'none');
   const list = docs
     .filter(d => (kind === 'all' || (kind === 'other' ? !['pdf', 'word', 'html'].includes(d.kind) : d.kind === kind))
-      && (!nq || [d.name, d.task.title, d.task.project].some(v => norm(v).includes(nq))))
+      && (!nq || [d.name, d.task && d.task.title, d.task && d.task.project, d.task && d.task.bucket].some(v => norm(v).includes(nq))))
     .sort((a, b) => b.addedAt - a.addedAt);
+  const sel = list.find(d => keyOf(d) === selKey) || list[0] || null;
+  const total = docs.reduce((n, d) => n + (d.size || 0), 0);
   return (
     <div className="mt-6">
-      <div className="flex items-center gap-2">
-        <div className="relative flex-1">
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <h2 className="text-base font-semibold">Documents</h2>
+        <span className="text-sm text-muted-foreground">{docs.length} {docs.length === 1 ? 'file' : 'files'}{total ? `, ${fmtSize(total)}` : ''}</span>
+        <div className="relative ml-auto w-60">
           <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents, tasks or projects" aria-label="Search documents" className="pl-9"
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-9 bg-card pl-9 shadow-none"
             onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
         </div>
         <Button onClick={() => onAdd([])}><I.upload />Add documents</Button>
       </div>
-      <div className="mt-3 overflow-x-auto">
-        <ToggleGroup label="File type" value={kind} onChange={setKind} items={DOC_FILTERS} />
-      </div>
-      <Card className={cn('mt-4 overflow-hidden transition-shadow', over && 'ring-2 ring-ring')}>
-        {docs.length === 0 ? (
+      <div className="mb-3 overflow-x-auto"><ToggleGroup label="File type" value={kind} onChange={setKind} items={DOC_FILTERS} /></div>
+      {docs.length === 0 ? (
+        <Card className={cn(dragOver && 'ring-2 ring-ring')}>
           <Empty icon={<I.file />} title="No documents yet"
             description="Collect the PDFs, Word files and HTML pages from your WhatsApp group here. Each one is attached to a task, so it’s one search away.">
             <Button variant="outline" size="sm" onClick={() => onAdd([])}><I.upload />Add documents</Button>
           </Empty>
-        ) : list.length === 0 ? (
-          <Empty icon={<I.search />} title="No documents match" description="Try another word or file type.">
-            <Button variant="outline" size="sm" onClick={() => { setQ(''); setKind('all'); }}>Show all documents</Button>
-          </Empty>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="pl-4">Document</TableHead>
-                <TableHead className="hidden sm:table-cell w-[34%]">Task</TableHead>
-                <TableHead className="hidden md:table-cell w-[90px]">Added</TableHead>
-                <TableHead className="w-[100px] pr-4"><span className="sr-only">Actions</span></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {list.map(d => (
-                <TableRow key={d.id + d.task.id}>
-                  <TableCell className="pl-4 max-w-0 w-full">
-                    <div className="flex min-w-0 items-center gap-3">
+        </Card>
+      ) : (
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+          <Card className={cn('overflow-hidden', dragOver && 'ring-2 ring-ring')}>
+            {list.length === 0 ? <Empty icon={<I.search />} title="No documents match" description="Try another word or file type." /> : (
+              <div className="max-h-[min(70vh,720px)] divide-y overflow-y-auto">
+                {list.map(d => {
+                  const on = sel && keyOf(sel) === keyOf(d);
+                  return (
+                    <button key={keyOf(d)} type="button" onClick={() => setSelKey(keyOf(d))} aria-pressed={on}
+                      className={cn('flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:bg-muted/60', on && 'bg-muted/70')}>
                       <FileBadge kind={d.kind} />
-                      <div className="min-w-0">
-                        <button type="button" onClick={() => onPreview(d)} className="block max-w-full truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline">{d.name}</button>
-                        <div className="flex gap-2 text-xs text-muted-foreground">
-                          <span className="tnum">{fmtSize(d.size)}</span>
-                          <button type="button" onClick={() => onOpenTask(d.task.id)} className="truncate hover:underline underline-offset-4 sm:hidden">{d.task.title}</button>
-                        </div>
-                      </div>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">{d.name}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{d.task ? `${d.task.title || 'Untitled'}${d.archived ? ' (archived)' : ''}` : 'No task'}, {fmtSize(d.size)}</span>
+                      </span>
+                      <span className="shrink-0 text-xs text-muted-foreground">{relTime(d.addedAt)}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+          <Card className="flex min-h-[24rem] flex-col gap-3 p-4">
+            {sel ? (
+              <>
+                <div className="flex items-start gap-3">
+                  <FileBadge kind={sel.kind} />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold">{sel.name}</div>
+                    <div className="text-xs text-muted-foreground">
+                      {fmtSize(sel.size)}, added {relTime(sel.addedAt).toLowerCase()}, {sel.task ? <>attached to <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => onOpenTask(sel.task.id, sel.archived)}>{sel.task.title || 'Untitled'}</button>{sel.archived ? ' (archived)' : ''}</> : 'not attached to a task'}
                     </div>
-                  </TableCell>
-                  <TableCell className="hidden sm:table-cell max-w-0">
-                    <button type="button" onClick={() => onOpenTask(d.task.id)} className="block max-w-full truncate text-left hover:underline underline-offset-4">{d.task.title}</button>
-                    {d.task.project && <div className="truncate text-xs text-muted-foreground">{d.task.project}</div>}
-                  </TableCell>
-                  <TableCell className="hidden md:table-cell whitespace-nowrap text-muted-foreground">{fmtDay(d.addedAt)}</TableCell>
-                  <TableCell className="pr-4">
-                    <div className="flex justify-end gap-0.5">
-                      <Button variant="ghost" size="icon-sm" aria-label={`Preview ${d.name}`} onClick={() => onPreview(d)}><I.eye /></Button>
-                      <Button variant="ghost" size="icon-sm" aria-label={`Save a copy of ${d.name}`} onClick={() => onDownload(d)}><I.download /></Button>
-                      <DropdownMenu
-                        trigger={p => <Button {...p} variant="ghost" size="icon-sm" aria-label={`More for ${d.name}`}><I.more /></Button>}
-                        items={[
-                          { label: 'Open in its app', icon: <I.eye />, onSelect: () => openExternal(d) },
-                          { label: 'Open task', icon: <I.pencil />, onSelect: () => onOpenTask(d.task.id) },
-                          'sep',
-                          { label: 'Remove from task', icon: <I.trash />, destructive: true, onSelect: () => onRemove(d, d.task.id) },
-                        ]} />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </Card>
+                  </div>
+                  <DropdownMenu trigger={p => <Button {...p} variant="ghost" size="icon-sm" aria-label={`More for ${sel.name}`}><I.more /></Button>}
+                    items={[
+                      ...(!sel.task ? tasks.slice(0, 1).length ? [{ label: 'Attach to a task…', icon: <I.paperclip />, onSelect: () => onAttach(sel) }] : [] : []),
+                      ...(sel.task && !sel.archived ? [{ label: 'Open task', icon: <I.pencil />, onSelect: () => onOpenTask(sel.task.id) }] : []),
+                      'sep',
+                      { label: sel.task ? 'Remove from task' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onRemove(sel, sel.task ? sel.task.id : null) },
+                    ]} />
+                </div>
+                <div className="flex gap-2">
+                  <Button size="sm" onClick={() => openExternal(sel)}>Open in its app</Button>
+                  <Button size="sm" variant="outline" onClick={() => onDownload(sel)}><I.download />Save a copy</Button>
+                </div>
+                <DocPreview file={sel} className="min-h-[20rem] flex-1" />
+              </>
+            ) : <DocPreview file={null} className="flex-1" />}
+          </Card>
+        </div>
+      )}
       <p className="mt-3 text-xs text-muted-foreground">Tip: drag files from WhatsApp or File Explorer anywhere onto this window.</p>
     </div>
+  );
+}
+
+function AttachDocDialog({ file, tasks, onClose, onAttach }) {
+  const [target, setTarget] = useState('');
+  useEffect(() => { setTarget(''); }, [file && file.id]);
+  if (!file) return null;
+  return (
+    <Dialog open={!!file} onClose={onClose} title="Attach to a task" description={file.name} className="max-w-md"
+      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={!target} onClick={() => onAttach(file, target)}>Attach</Button></>}>
+      <Field label="Task" htmlFor="att-t">
+        <Select id="att-t" value={target} onChange={setTarget} placeholder="Choose a task…"
+          options={tasks.slice().sort((a, b) => b.createdAt - a.createdAt).map(t => ({ value: t.id, label: t.title || 'Untitled', group: t.status === 'done' ? 'Complete' : 'Open' }))} />
+      </Field>
+    </Dialog>
   );
 }
 
@@ -1085,6 +1344,7 @@ const STATUS_COLORS = {
   gray: 'bg-zinc-400', brown: 'bg-amber-700', orange: 'bg-orange-500', yellow: 'bg-yellow-500', green: 'bg-emerald-500',
   blue: 'bg-blue-500', purple: 'bg-violet-500', pink: 'bg-pink-500', red: 'bg-red-500',
 };
+const STATUS_HEX = { gray: '#a1a1aa', brown: '#b45309', orange: '#f97316', yellow: '#eab308', green: '#10b981', blue: '#3b82f6', purple: '#8b5cf6', pink: '#ec4899', red: '#ef4444' };
 const GROUP_HEAD = { todo: 'To-do', doing: 'In progress', blocked: 'Blocked', done: 'Complete' };
 const BUILTIN_COLOR = { todo: 'orange', doing: 'blue', blocked: 'red', done: 'green' };
 const NEW_COLOR = { todo: 'gray', doing: 'blue', blocked: 'red', done: 'green' };
@@ -1157,13 +1417,22 @@ function CellEditor({ edit, task, ctx, onClose }) {
     }));
     creates = STATUSES.map(g => ({ key: 'new-' + g.id, text: name, node: <span className="flex min-w-0 items-center gap-2"><span className="shrink-0 text-muted-foreground">Create</span><DefPill def={{ group: g.id, name, color: NEW_COLOR[g.id] }} /><span className="truncate text-xs text-muted-foreground">in {GROUP_HEAD[g.id]}</span></span>,
       pick: () => { const id = ctx.addStage(name, g.id); set({ status: g.id, stage: id }); } }));
-  } else if (edit.field === 'project') {
-    placeholder = 'Search or create a project…';
+  } else if (edit.field === 'bucket') {
+    const L = ctx.labels.bucket;
+    placeholder = `Search or create a ${L.toLowerCase()}…`;
     items = [
-      { key: '', text: 'No project', node: <span className="text-muted-foreground">No project</span>, on: !task.project, pick: () => set({ project: '' }) },
+      { key: '', text: `No ${L.toLowerCase()}`, node: <span className="text-muted-foreground">No {L.toLowerCase()}</span>, on: !task.bucket, pick: () => set({ bucket: '' }) },
+      ...ctx.buckets.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><I.layers className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.bucket) === norm(n), pick: () => set({ bucket: n }) })),
+    ];
+    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create {L.toLowerCase()}</span><span className="truncate font-medium">{name}</span></span>,
+      pick: () => { ctx.ensureBucket(name); set({ bucket: name }); } }];
+  } else if (edit.field === 'project') {
+    placeholder = `Search or create a ${ctx.labels.platform.toLowerCase()}…`;
+    items = [
+      { key: '', text: `No ${ctx.labels.platform.toLowerCase()}`, node: <span className="text-muted-foreground">No {ctx.labels.platform.toLowerCase()}</span>, on: !task.project, pick: () => set({ project: '' }) },
       ...ctx.projects.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.project) === norm(n), pick: () => set({ project: n }) })),
     ];
-    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create project</span><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate font-medium">{name}</span></span>,
+    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create {ctx.labels.platform.toLowerCase()}</span><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate font-medium">{name}</span></span>,
       pick: () => { ctx.ensureProject(name); set({ project: name }); } }];
   } else if (edit.field === 'assignee') {
     placeholder = 'Search or add a person…';
@@ -1185,9 +1454,11 @@ function CellEditor({ edit, task, ctx, onClose }) {
     else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
     else if (e.key === 'Enter') { e.preventDefault(); if (list[hi]) list[hi].pick(); }
   };
+  // Start with the current value highlighted.
+  useEffect(() => { const i = list.findIndex(x => x.on); if (i > 0) setHi(i); }, []);
   let lastSection = null;
   return (
-    <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-72')}>
+    <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-80')}>
       {edit.field === 'deadline' ? (
         <div>
           <Calendar selected={task.deadline} onSelect={v => set({ deadline: v })} />
@@ -1365,20 +1636,22 @@ const OPEN_MODES = [
   { id: 'side', label: 'Side panel', icon: <I.panelRight className="size-3.5" /> },
   { id: 'center', label: 'Centered', icon: <I.panelCenter className="size-3.5" /> },
   { id: 'full', label: 'Full screen', icon: <I.maximize className="size-3.5" /> },
+  { id: 'tab', label: 'New tab', icon: <I.tab className="size-3.5" /> },
 ];
 function SheetFrame({ mode, open, onClose, children }) {
+  if (mode === 'tab') return <div className="flex min-h-0 flex-1 flex-col bg-background" role="tabpanel" aria-labelledby="sheet-title">{children}</div>;
   if (mode === 'window') return <div className="flex h-screen flex-col bg-background" role="main" aria-labelledby="sheet-title">{children}</div>;
   return <Sheet open={open} onClose={onClose} labelledBy="sheet-title" variant={mode}>{children}</Sheet>;
 }
 
-const FORM_KEYS = ['title', 'project', 'status', 'stage', 'assignee', 'deadline', 'description', 'priority', 'checklist'];
+const FORM_KEYS = ['title', 'project', 'bucket', 'status', 'stage', 'assignee', 'deadline', 'description', 'priority', 'checklist'];
 const formFrom = (task, stages) => ({
-  title: task.title || '', project: task.project || '', status: S[task.status] ? task.status : 'todo', stage: stageOf(task, stages) ? task.stage : '',
+  title: task.title || '', project: task.project || '', bucket: task.bucket || '', status: S[task.status] ? task.status : 'todo', stage: stageOf(task, stages) ? task.stage : '',
   assignee: task.assignee || '', deadline: task.deadline || '', description: task.description || '', priority: task.priority || 'normal', checklist: task.checklist || [],
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -1415,7 +1688,7 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
     clearTimeout(timer.current);
     if (debounce) timer.current = setTimeout(commit, 500); else commit();
   };
-  const TYPED = ['title', 'description'];
+  const TYPED = ['title', 'description', 'bucket', 'project', 'assignee'];
   const set = k => v => change({ [k]: v && v.target ? v.target.value : v }, TYPED.includes(k));
   const isEmpty = () => !form.title.trim() && !form.description.trim() && !form.checklist.length && !(task.files || []).length;
   const close = () => {
@@ -1423,6 +1696,7 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
     commit(); onClose();
   };
   const submit = e => { e && e.preventDefault(); close(); };
+  if (closeRef) closeRef.current = close;
   const on = task && !!task.timerStartedAt;
   // Documents on a saved task are stored right away; on a new task they wait in the form until Save.
   const files = task ? (task.files || []) : (form.files || []);
@@ -1454,24 +1728,35 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
       <form onSubmit={submit} className="flex h-full min-h-0 flex-col" autoComplete="off"
         onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}>
         {/* Header */}
-        <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && 'pr-12')}>
-          {mode !== 'window' && (
+        <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && mode !== 'tab' && 'pr-12', mode === 'tab' && 'px-5')}>
+          {mode === 'tab' && (
+            <>
+              <button type="button" onClick={onHome} className="text-sm text-muted-foreground hover:text-foreground hover:underline underline-offset-4">Home</button>
+              <span className="text-sm text-muted-foreground/60">/</span>
+            </>
+          )}
+          {mode !== 'window' && mode !== 'tab' && (
             <>
               <DropdownMenu align="start"
                 trigger={p => <button {...p} type="button" aria-label="How tasks open" title="How tasks open" className="flex size-7 items-center justify-center rounded-md hover:bg-muted hover:text-foreground">{(OPEN_MODES.find(m => m.id === mode) || OPEN_MODES[0]).icon}</button>}
                 items={[
-                  ...OPEN_MODES.map(m => ({ label: m.label, icon: m.icon, shortcut: mode === m.id ? '✓' : undefined, onSelect: () => onMode(m.id) })),
-                  'sep',
+                  { label: 'Open in new tab', icon: <I.tab />, onSelect: () => { commit(); onNewTab(); } },
                   { label: 'Open in new window', icon: <I.external />, onSelect: () => { commit(); onPopOut(); } },
+                  'sep',
+                  ...OPEN_MODES.map(m => ({ label: m.label, icon: m.icon, shortcut: mode === m.id ? '✓' : undefined, onSelect: () => onMode(m.id) })),
                 ]} />
               <button type="button" onClick={() => { commit(); onPopOut(); }} aria-label="Open in new window" title="Open in new window"
                 className="flex size-7 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"><I.external className="size-3.5" /></button>
               <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
             </>
           )}
-          <span id="sheet-title" className="text-sm font-medium text-foreground">{task.title || form.title ? 'Task' : 'New task'}</span>
-          {task && <span>Created {fmtDay(task.createdAt)}</span>}
-          {generatedFrom && <span className="inline-flex items-center gap-1"><I.zap className="size-3" />Auto</span>}
+          <span id="sheet-title" className={cn('text-sm font-medium text-foreground', mode === 'tab' && 'min-w-0 truncate')}>{mode === 'tab' ? (form.title || 'Untitled') : (task.title || form.title ? 'Task' : 'New task')}</span>
+          {task && <span className="shrink-0">Created {fmtDay(task.createdAt)}</span>}
+          {generatedFrom && <span className="inline-flex shrink-0 items-center gap-1"><I.zap className="size-3" />Auto</span>}
+          {mode === 'tab' && (
+            <button type="button" onClick={() => { commit(); onPopOut(); }} aria-label="Open in new window" title="Open in new window"
+              className="ml-auto flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"><I.external className="size-4" /></button>
+          )}
         </div>
 
         {/* Body */}
@@ -1485,21 +1770,12 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
 
           {/* Properties */}
           <div className="mt-3 grid gap-0.5 px-2">
-            <PropRow label="Status" htmlFor="t-status">
-              <div className="relative">
-                <span className={cn('pointer-events-none absolute left-2.5 top-1/2 size-2 -translate-y-1/2 rounded-full', STATUS_COLORS[statusDef(form, stages).color])} />
-                <select id="t-status" value={form.stage ? `${form.status}|${form.stage}` : form.status}
-                  onChange={e => { const [st, sg] = e.target.value.split('|'); change({ status: st, stage: sg || '' }); }}
-                  className={cn(ghostField, 'cursor-pointer appearance-none pl-7')}>
-                  {STATUSES.map(st => (
-                    <optgroup key={st.id} label={GROUP_HEAD[st.id]}>
-                      {statusList(stages).filter(x => x.group === st.id).map(x => <option key={x.id} value={x.builtin ? st.id : `${st.id}|${x.id}`}>{x.name}</option>)}
-                    </optgroup>
-                  ))}
-                </select>
-              </div>
+            <PropRow label={labels.status} htmlFor="t-status">
+              <Select id="t-status" variant="ghost" value={form.stage ? `${form.status}|${form.stage}` : form.status}
+                onChange={v => { const [st, sg] = v.split('|'); change({ status: st, stage: sg || '' }); }}
+                options={statusList(stages).map(x => ({ value: x.builtin ? x.group : `${x.group}|${x.id}`, label: x.name, group: GROUP_HEAD[x.group], node: <DefPill def={x} /> }))} />
             </PropRow>
-            <PropRow label="Priority">
+            <PropRow label={labels.priority}>
               <div role="radiogroup" aria-label="Priority" className="inline-flex rounded-md bg-muted p-0.5 ml-1">
                 {['low', 'normal', 'high'].map(pid => (
                   <button key={pid} type="button" role="radio" aria-checked={form.priority === pid} onClick={() => set('priority')(pid)}
@@ -1510,20 +1786,24 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
                 ))}
               </div>
             </PropRow>
-            <PropRow label="Assignee" htmlFor="t-assignee">
+            <PropRow label={labels.assignee} htmlFor="t-assignee">
               <Combobox id="t-assignee" value={form.assignee} onChange={set('assignee')} options={people} placeholder="Add assignee" hideIcon inputClassName={ghostField} />
             </PropRow>
-            <PropRow label="Project" htmlFor="t-project">
-              <Combobox id="t-project" value={form.project} onChange={set('project')} options={projects} placeholder="Add project" hideIcon inputClassName={ghostField}
+            <PropRow label={labels.bucket} htmlFor="t-bucket">
+              <Combobox id="t-bucket" value={form.bucket} onChange={set('bucket')} options={buckets} placeholder={`Add ${labels.bucket.toLowerCase()}`} hideIcon inputClassName={ghostField}
+                createLabel={v => `Use “${v}”`} icon={() => <I.layers className="text-muted-foreground" />} />
+            </PropRow>
+            <PropRow label={labels.platform} htmlFor="t-project">
+              <Combobox id="t-project" value={form.project} onChange={set('project')} options={projects} placeholder={`Add ${labels.platform.toLowerCase()}`} hideIcon inputClassName={ghostField}
                 createLabel={v => `Use “${v}”`} icon={() => <I.folder className="text-muted-foreground" />} />
             </PropRow>
-            <PropRow label="Deadline" htmlFor="t-deadline">
+            <PropRow label={labels.deadline} htmlFor="t-deadline">
               <DatePicker id="t-deadline" value={form.deadline} onChange={set('deadline')} variant="ghost" icon={false} placeholder="Add deadline"
                 format={{ weekday: 'short', month: 'short', day: 'numeric' }}
                 className={cn('h-8 px-2 hover:bg-muted', overdue && 'text-red-600 dark:text-red-400 font-medium')} />
             </PropRow>
             {task && (
-              <PropRow label="Time">
+              <PropRow label={labels.time}>
                 <div className="flex items-center gap-1 pl-2">
                   <span className={cn('tnum min-w-[4.5rem] text-sm font-medium', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(task))}</span>
                   <Button size="sm" variant={on ? 'default' : 'outline'} className="h-7 px-2.5" onClick={() => onToggle(task.id)}>
@@ -1590,7 +1870,7 @@ function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projec
           {task && <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={onDelete} aria-label="Delete task"><I.trash /></Button>}
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><I.check className="size-3.5" />Changes save automatically</span>
           <div className="flex-1" />
-          <Button type="submit" variant="outline" size="sm">Close</Button>
+          <Button type="submit" variant="outline" size="sm">{mode === 'tab' ? 'Close tab' : 'Close'}</Button>
         </div>
       </form>
     </SheetFrame>
@@ -1682,7 +1962,7 @@ function TimeSummary({ tasks, onHide }) {
   );
 }
 
-const SHORTCUTS = [['New task', 'N'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
+const SHORTCUTS = [['New task', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
 function ShortcutsDialog({ open, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} title="Keyboard shortcuts">
@@ -1724,26 +2004,15 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
   const add = (rule = {}) => setDraft(d => [...d, { id: 'r-' + newId(), enabled: true, project: '', trigger: 'done', action: 'copy', target: '', ...rule }]);
   const targetField = r => {
     const kind = (ACT[r.action] || ACT.copy).target;
-    if (kind === 'project') return (
-      <NativeSelect value={r.target} onChange={e => upd(r.id, { target: e.target.value })} aria-label="Project">
-        <option value="">Choose a project…</option>
-        {projects.map(p => <option key={p} value={p}>{p}</option>)}
-      </NativeSelect>);
-    if (kind === 'status') return (
-      <NativeSelect value={r.target} onChange={e => upd(r.id, { target: e.target.value })} aria-label="Status">
-        <option value="">Choose a status…</option>
-        {STATUSES.map(x => <option key={x.id} value={x.id}>{x.label}</option>)}
-      </NativeSelect>);
-    if (kind === 'priority') return (
-      <NativeSelect value={r.target} onChange={e => upd(r.id, { target: e.target.value })} aria-label="Priority">
-        <option value="">Choose a priority…</option>
-        {['high', 'normal', 'low'].map(x => <option key={x} value={x}>{P[x].label}</option>)}
-      </NativeSelect>);
-    if (kind === 'days') return (
-      <NativeSelect value={r.target} onChange={e => upd(r.id, { target: e.target.value })} aria-label="Deadline">
-        <option value="">Choose a date…</option>
-        {DEADLINE_OPTIONS.map(([v, l]) => <option key={v} value={v}>{l[0].toUpperCase() + l.slice(1)}</option>)}
-      </NativeSelect>);
+    const setT = v => upd(r.id, { target: v });
+    if (kind === 'project') return <Select label="Project" value={r.target} onChange={setT} placeholder="Choose a project…"
+      options={projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> }))} />;
+    if (kind === 'status') return <Select label="Status" value={r.target} onChange={setT} placeholder="Choose a status…"
+      options={STATUSES.map(x => ({ value: x.id, label: x.label, node: <StatusPill status={x.id} /> }))} />;
+    if (kind === 'priority') return <Select label="Priority" value={r.target} onChange={setT} placeholder="Choose a priority…"
+      options={['high', 'normal', 'low'].map(x => ({ value: x, label: P[x].label, node: <PriorityPill priority={x} /> }))} />;
+    if (kind === 'days') return <Select label="Deadline" value={r.target} onChange={setT} placeholder="Choose a date…"
+      options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l[0].toUpperCase() + l.slice(1) }))} />;
     if (kind === 'text') return <Input value={r.target} onChange={e => upd(r.id, { target: e.target.value })} placeholder={ACT[r.action].placeholder} aria-label="Text" />;
     if (kind === 'none') return <div className="flex h-9 items-center text-xs text-muted-foreground">Nothing else to choose</div>;
     return <Combobox id={`t-${r.id}`} value={r.target} onChange={v => upd(r.id, { target: v })} options={people} placeholder="Person" />;
@@ -1768,22 +2037,18 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label="For tasks in" htmlFor={`p-${r.id}`}>
-                  <NativeSelect id={`p-${r.id}`} value={r.project} onChange={e => upd(r.id, { project: e.target.value })}>
-                    <option value="">Any project</option>
-                    {projects.map(p => <option key={p} value={p}>{p}</option>)}
-                  </NativeSelect>
+                  <Select id={`p-${r.id}`} value={r.project} onChange={v => upd(r.id, { project: v })} options={[
+                    { value: '', label: 'Any project' },
+                    ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+                  ]} />
                 </Field>
                 <Field label="When the task" htmlFor={`w-${r.id}`}>
-                  <NativeSelect id={`w-${r.id}`} value={r.trigger} onChange={e => upd(r.id, { trigger: e.target.value })}>
-                    {['Status', 'Dates', 'Details'].map(g => (
-                      <optgroup key={g} label={g}>{TRIGGERS.filter(t => t.group === g).map(t => <option key={t.id} value={t.id}>{t.label}</option>)}</optgroup>
-                    ))}
-                  </NativeSelect>
+                  <Select id={`w-${r.id}`} value={r.trigger} onChange={v => upd(r.id, { trigger: v })} searchable={false}
+                    options={TRIGGERS.map(t => ({ value: t.id, label: t.label, group: t.group }))} />
                 </Field>
                 <Field label="Then" htmlFor={`a-${r.id}`}>
-                  <NativeSelect id={`a-${r.id}`} value={r.action} onChange={e => upd(r.id, { action: e.target.value, target: '' })}>
-                    {ACTIONS.map(a => <option key={a.id} value={a.id}>{a.label[0].toUpperCase() + a.label.slice(1)}</option>)}
-                  </NativeSelect>
+                  <Select id={`a-${r.id}`} value={r.action} onChange={v => upd(r.id, { action: v, target: '' })} searchable={false}
+                    options={ACTIONS.map(a => ({ value: a.id, label: a.label[0].toUpperCase() + a.label.slice(1) }))} />
                 </Field>
                 <div className="grid gap-2"><Label>&nbsp;</Label>{targetField(r)}</div>
               </div>
@@ -1816,34 +2081,376 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
 }
 
 /* ---------- Projects ---------- */
-function ProjectDialog({ open, project, names, onClose, onSave }) {
+function ProjectDialog({ open, project, names, onClose, onSave, noun = 'project' }) {
   const [name, setName] = useState('');
-  const [color, setColor] = useState('violet');
-  useEffect(() => { if (open) { setName(project ? project.name : ''); setColor(project ? project.color : COLOR_KEYS[names.length % COLOR_KEYS.length]); } }, [open]);
+  useEffect(() => { if (open) setName(project ? project.name : ''); }, [open]);
   const clash = names.some(n => norm(n) === norm(name) && (!project || norm(n) !== norm(project.name)));
   const ok = name.trim() && !clash;
+  const color = (project && project.color) || autoColor(name);
+  const lower = noun.toLowerCase();
   return (
-    <Dialog open={open} onClose={onClose} title={project ? 'Edit project' : 'New project'} className="max-w-md"
+    <Dialog open={open} onClose={onClose} title={project ? `Rename ${lower}` : `New ${lower}`} className="max-w-md"
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button disabled={!ok} onClick={() => onSave({ name: name.trim(), color })}>{project ? 'Save' : 'Create project'}</Button>
+        <Button disabled={!ok} onClick={() => onSave({ name: name.trim(), color })}>{project ? 'Save' : `Create ${lower}`}</Button>
       </>}>
       <form className="grid gap-4" onSubmit={e => { e.preventDefault(); if (ok) onSave({ name: name.trim(), color }); }}>
-        <Field label="Name" htmlFor="pj-name" hint={clash ? 'A project with this name already exists.' : project ? 'Renaming updates every task and automation in this project.' : undefined}>
-          <Input id="pj-name" value={name} onChange={e => setName(e.target.value)} placeholder="For example: Kaufes - Web" autoFocus />
+        <Field label="Name" htmlFor="pj-name" hint={clash ? `A ${lower} with this name already exists.` : project ? `Renaming updates every task${noun === 'bucket' ? '' : ' and automation'} that uses it.` : undefined}>
+          <Input id="pj-name" value={name} onChange={e => setName(e.target.value)} autoFocus />
         </Field>
-        <div className="grid gap-2">
-          <Label>Color</Label>
-          <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Color">
-            {COLOR_KEYS.map(c => (
-              <button key={c} type="button" role="radio" aria-checked={color === c} aria-label={c} onClick={() => setColor(c)}
-                className={cn('flex size-8 items-center justify-center rounded-full ring-offset-2 ring-offset-background transition', PROJECT_COLORS[c].dot, color === c && 'ring-2 ring-ring')}>
-                {color === c && <I.check className="size-4 text-white" />}
-              </button>
+      </form>
+    </Dialog>
+  );
+}
+
+/* A small dialog to rename something: a column, a workspace. */
+function NameDialog({ open, title, value, hint, defaultValue, onClose, onSave }) {
+  const [v, setV] = useState('');
+  useEffect(() => { if (open) setV(value || ''); }, [open]);
+  return (
+    <Dialog open={open} onClose={onClose} title={title} className="max-w-sm"
+      footer={<>
+        {defaultValue && v !== defaultValue && <Button variant="ghost" className="sm:mr-auto" onClick={() => onSave(defaultValue)}>Reset to “{defaultValue}”</Button>}
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={!v.trim()} onClick={() => onSave(v.trim())}>Save</Button>
+      </>}>
+      <form onSubmit={e => { e.preventDefault(); if (v.trim()) onSave(v.trim()); }}>
+        <Field label="Name" htmlFor="nm-v" hint={hint}><Input id="nm-v" value={v} onChange={e => setV(e.target.value)} autoFocus /></Field>
+      </form>
+    </Dialog>
+  );
+}
+
+/* Manage platforms: rarely needed, so it lives in a small window. */
+function PlatformsDialog({ open, onClose, list, tasks, noun, onNew, onEdit, onDelete }) {
+  return (
+    <Dialog open={open} onClose={onClose} title={`Manage ${plural(noun).toLowerCase()}`} className="max-w-md"
+      description={`Rename or delete ${plural(noun).toLowerCase()}. Renaming updates every task and automation that uses it.`}
+      footer={<Button variant="outline" onClick={onClose}>Done</Button>}>
+      <div className="grid gap-1">
+        {list.length === 0 && <p className="text-sm text-muted-foreground">No {plural(noun).toLowerCase()} yet.</p>}
+        {list.map(p => {
+          const n = tasks.filter(t => norm(t.project) === norm(p.name)).length;
+          return (
+            <div key={p.name} className="group flex h-10 items-center gap-3 rounded-md px-2 hover:bg-muted/60">
+              <I.folder className="size-4 text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
+              <span className="text-xs text-muted-foreground tnum">{n} {n === 1 ? 'task' : 'tasks'}</span>
+              <Button variant="ghost" size="icon-sm" aria-label={`Rename ${p.name}`} onClick={() => onEdit(p)}><I.pencil className="size-3.5" /></Button>
+              <Button variant="ghost" size="icon-sm" aria-label={`Delete ${p.name}`} onClick={() => onDelete(p)}><I.trash className="size-3.5" /></Button>
+            </div>
+          );
+        })}
+        <button type="button" onClick={onNew} className="mt-1 flex h-9 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/60 hover:text-foreground"><I.plus className="size-3.5" />Add {noun.toLowerCase()}</button>
+      </div>
+    </Dialog>
+  );
+}
+
+/* Buckets page: one card per bucket with its progress. */
+function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen }) {
+  const stats = name => {
+    const ts = tasks.filter(t => (name === null ? !t.bucket : norm(t.bucket) === norm(name)));
+    const done = ts.filter(t => t.status === 'done').length;
+    const open = ts.filter(t => t.status !== 'done');
+    const next = open.filter(t => t.deadline).sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
+    const people = [...new Set(ts.map(t => t.assignee).filter(Boolean))];
+    return { total: ts.length, done, open: open.length, next, people, time: ts.reduce((x, t) => x + elapsed(t), 0) };
+  };
+  const card = (b, st, editable) => {
+    const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
+    return (
+      <Card key={b.name} className="flex flex-col gap-4 p-5">
+        <div className="flex items-start gap-3">
+          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-sm font-semibold">{(b.label || b.name).trim().charAt(0).toUpperCase() || '?'}</span>
+          <div className="min-w-0 flex-1">
+            <button type="button" onClick={() => onOpen(b.name)} className="block max-w-full truncate text-left font-semibold hover:underline underline-offset-4">{b.label || b.name}</button>
+            <div className="text-xs text-muted-foreground">{st.total} {st.total === 1 ? 'task' : 'tasks'}{st.time ? `, ${fmtShort(st.time)} tracked` : ''}</div>
+          </div>
+          {editable && (
+            <DropdownMenu trigger={pp => <Button {...pp} variant="ghost" size="icon-sm" aria-label={`Options for ${b.name}`}><I.more /></Button>}
+              items={[{ label: 'Rename', icon: <I.pencil />, onSelect: () => onEdit(b) }, 'sep', { label: `Delete ${noun.toLowerCase()}`, icon: <I.trash />, destructive: true, onSelect: () => onDelete(b) }]} />
+          )}
+        </div>
+        <div>
+          <div className="flex items-baseline gap-1.5"><span className="tnum text-2xl font-semibold leading-none">{pct}%</span><span className="text-xs text-muted-foreground">complete</span></div>
+          <div className="mt-2 h-1.5 rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} /></div>
+        </div>
+        <div className="mt-auto flex items-center gap-2 text-xs text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">{st.open} open{st.next ? `, next due ${due(st.next).text}` : ''}</span>
+          <span className="flex -space-x-1.5">{st.people.slice(0, 3).map(n => <Avatar key={n} name={n} className="h-6 w-6 ring-2 ring-card [&_span]:text-[9px]" />)}</span>
+        </div>
+      </Card>
+    );
+  };
+  const none = stats(null);
+  return (
+    <div className="mt-6">
+      <div className="mb-4 flex items-center gap-3">
+        <h2 className="text-base font-semibold">{plural(noun)}</h2>
+        <span className="text-sm text-muted-foreground">{list.length} active</span>
+        <Button size="sm" variant="outline" className="ml-auto" onClick={onNew}><I.plus />New {noun.toLowerCase()}</Button>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {list.map(b => card(b, stats(b.name), true))}
+        {none.total > 0 && card({ name: 'none', label: `No ${noun.toLowerCase()}` }, none, false)}
+        <button type="button" onClick={onNew}
+          className="flex min-h-[11rem] flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-card hover:text-foreground">
+          <span className="flex size-9 items-center justify-center rounded-full bg-muted"><I.plus /></span>
+          <span className="text-sm font-medium">New {noun.toLowerCase()}</span>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* List view: tasks grouped into cards (by platform unless you pick something else). */
+const GROUP_OPTIONS = ['project', 'bucket', 'status', 'assignee', 'priority'];
+function groupTasks(tasks, by, stages, labels) {
+  const key = t => by === 'status' ? statusDef(t, stages).id : by === 'priority' ? (t.priority || 'normal') : (t[by] || '').trim();
+  const groups = new Map();
+  tasks.forEach(t => { const k = key(t); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(t); });
+  let order;
+  if (by === 'status') order = statusList(stages).map(x => x.id).filter(id => groups.has(id));
+  else if (by === 'priority') order = ['high', 'normal', 'low'].filter(k => groups.has(k));
+  else order = [...groups.keys()].filter(Boolean).sort((a, b) => a.localeCompare(b)).concat(groups.has('') ? [''] : []);
+  const name = k => {
+    if (by === 'status') { const d = statusList(stages).find(x => x.id === k); return d ? d.name : k; }
+    if (by === 'priority') return P[k].label;
+    if (!k) return by === 'assignee' ? 'Unassigned' : `No ${(labels[by === 'project' ? 'platform' : by] || by).toLowerCase()}`;
+    return k;
+  };
+  return order.map(k => ({ key: k, name: name(k), tasks: groups.get(k) }));
+}
+
+const TaskTimer = ({ t, onToggle, className }) => {
+  const on = !!t.timerStartedAt;
+  return (
+    <button type="button" onClick={e => { e.stopPropagation(); onToggle(t.id); }} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title || 'Untitled'}`}
+      className={cn('tnum inline-flex h-6 items-center gap-1 rounded px-1 text-xs transition-colors hover:bg-muted', on ? 'font-semibold text-foreground' : 'text-muted-foreground', className)}>
+      {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{fmt(elapsed(t))}
+    </button>
+  );
+};
+const MiniTag = ({ icon, children }) => (
+  <span className="inline-flex h-5 max-w-[10rem] shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] text-foreground/75">{icon}<span className="truncate">{children}</span></span>
+);
+
+function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
+  const groups = groupTasks(tasks, groupBy, stages, labels);
+  const presetFor = g => groupBy === 'status' ? (() => { const d = statusList(stages).find(x => x.id === g.key); return d ? { status: d.group, stage: d.builtin ? '' : d.id } : {}; })()
+    : groupBy === 'priority' ? { priority: g.key } : { [groupBy]: g.key };
+  return (
+    <div className="mt-3 grid gap-3">
+      {groups.map(g => (
+        <Card key={g.key || '_none'} className="overflow-hidden">
+          <div className="flex h-10 items-center gap-2 px-4 text-xs font-semibold">
+            {groupBy === 'status' ? <DefPill def={statusList(stages).find(x => x.id === g.key)} />
+              : <>{groupBy === 'project' ? <I.folder className="size-3.5 text-muted-foreground" /> : groupBy === 'bucket' ? <I.layers className="size-3.5 text-muted-foreground" /> : groupBy === 'assignee' ? <Avatar name={g.key} className="h-5 w-5 [&_span]:text-[9px]" /> : <I.flag className="size-3.5 text-muted-foreground" />}<span className="truncate">{g.name}</span></>}
+            <span className="font-normal text-muted-foreground">{g.tasks.length}</span>
+            <button type="button" onClick={() => onAdd(presetFor(g))} className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 font-normal text-muted-foreground hover:bg-muted hover:text-foreground"><I.plus className="size-3.5" />Add</button>
+          </div>
+          {g.tasks.map(t => {
+            const def = statusDef(t, stages), d = due(t), done = t.status === 'done';
+            return (
+              <div key={t.id} className="group flex h-10 items-center gap-3 border-t border-border/60 px-4 text-[13px] hover:bg-muted/40">
+                <span title={def.name} aria-label={def.name} className={cn('flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px]', done && STATUS_COLORS[def.color])}
+                  style={{ borderColor: STATUS_HEX[def.color] }}>{done && <I.check className="size-2.5 text-white" />}</span>
+                <button type="button" title={t.title} onClick={e => onOpen(t.id, e)} onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onOpen(t.id, { ctrlKey: true }); } }}
+                  className={cn('min-w-0 truncate text-left font-medium hover:underline underline-offset-4', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
+                {groupBy !== 'status' && t.status !== 'todo' && !done && <span className="shrink-0 text-[11px] text-muted-foreground">{def.name}</span>}
+                {groupBy !== 'project' && t.project && <MiniTag icon={<I.folder className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
+                {groupBy !== 'bucket' && t.bucket && <MiniTag icon={<I.layers className="size-3 text-muted-foreground" />}>{t.bucket}</MiniTag>}
+                <span className="ml-auto flex shrink-0 items-center gap-3.5 text-xs text-muted-foreground">
+                  {groupBy !== 'priority' && <span className="inline-flex items-center gap-1.5"><span className={cn('size-1.5 rounded-full', PRI_DOT[t.priority || 'normal'])} />{P[t.priority || 'normal'].label}</span>}
+                  <span className={cn('w-24 text-right', t.deadline && dueCls[d.tone])}>{t.deadline ? d.text : ''}</span>
+                  <TaskTimer t={t} onToggle={onToggle} className="w-16 justify-end" />
+                  {groupBy !== 'assignee' && (t.assignee ? <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /> : <span className="w-5" />)}
+                </span>
+              </div>
+            );
+          })}
+        </Card>
+      ))}
+      {groups.length === 0 && <Card><Empty icon={<I.clipboard />} title="Nothing here" description="Try another filter, or add a task." /></Card>}
+    </div>
+  );
+}
+
+/* Board view: a column per status. Drag a card to change its status. */
+function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
+  const [doneOpen, setDoneOpen] = useState(false);
+  const [drag, setDrag] = useState(null);
+  const justDragged = useRef(false);
+  const cols = statusList(stages);
+  const byCol = id => tasks.filter(t => statusDef(t, stages).id === id);
+  const startDrag = (e, t) => {
+    if (e.button !== 0 || e.target.closest('button[data-nodrag]')) return;
+    const sx = e.clientX, sy = e.clientY; let moved = false;
+    const over = ev => { const el = document.elementFromPoint(ev.clientX, ev.clientY); const c = el && el.closest('[data-col]'); return c ? c.getAttribute('data-col') : null; };
+    const move = ev => {
+      if (!moved && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 6) return;
+      moved = true;
+      setDrag({ id: t.id, title: t.title || 'Untitled', x: ev.clientX, y: ev.clientY, over: over(ev) });
+    };
+    const up = ev => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+      if (moved) { const c = over(ev); if (c) onMove(t.id, c); justDragged.current = true; setTimeout(() => { justDragged.current = false; }, 0); }
+      setDrag(null);
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
+  const card = t => {
+    const d = due(t), on = !!t.timerStartedAt;
+    return (
+      <div key={t.id} role="button" tabIndex={0} onPointerDown={e => startDrag(e, t)}
+        onClick={e => { if (!justDragged.current) onOpen(t.id, e); }}
+        onKeyDown={e => { if (e.key === 'Enter') onOpen(t.id, e); }}
+        className={cn('flex cursor-grab select-none flex-col gap-2.5 rounded-lg border bg-card p-3 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing', drag && drag.id === t.id && 'opacity-40', on && 'ring-1 ring-foreground/20')}>
+        <div className={cn('text-[13px] font-medium leading-snug', t.status === 'done' && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</div>
+        <div className="flex flex-wrap gap-1.5">
+          {t.project && <MiniTag icon={<I.folder className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
+          {t.bucket && <MiniTag icon={<I.layers className="size-3 text-muted-foreground" />}>{t.bucket}</MiniTag>}
+          <PriorityPill priority={t.priority} />
+        </div>
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+          {t.assignee && <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[8px]" />}
+          {t.deadline && <span className={cn('inline-flex items-center gap-1', dueCls[d.tone])}><I.calendar className="size-3" />{d.text}</span>}
+          {(t.checklist || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5"><I.listCheck className="size-3" />{t.checklist.filter(c => c.done).length}/{t.checklist.length}</span>}
+          <span data-nodrag className="ml-auto"><TaskTimer t={t} onToggle={onToggle} /></span>
+        </div>
+      </div>
+    );
+  };
+  const doneCols = cols.filter(c => c.group === 'done');
+  const doneCount = doneCols.reduce((n, c) => n + byCol(c.id).length, 0);
+  return (
+    <div className="mt-3 flex gap-3 overflow-x-auto pb-2">
+      {cols.filter(c => c.group !== 'done' || doneOpen).map(c => {
+        const list = byCol(c.id);
+        return (
+          <div key={c.id} data-col={c.id} className={cn('flex w-72 shrink-0 flex-col gap-2 rounded-xl bg-muted/60 p-2 transition-colors', drag && drag.over === c.id && 'bg-muted ring-1 ring-foreground/20')}>
+            <div className="flex h-7 items-center gap-2 px-1.5 text-[13px] font-medium">
+              <span className={cn('size-2 rounded-full', STATUS_COLORS[c.color])} />{c.name}<span className="font-normal text-muted-foreground">{list.length}</span>
+              {c.group === 'done' && <button type="button" onClick={() => setDoneOpen(false)} className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground">Collapse</button>}
+            </div>
+            {list.map(card)}
+            <button type="button" onClick={() => onAdd({ status: c.group, stage: c.builtin ? '' : c.id })}
+              className="flex h-8 items-center gap-1.5 rounded-md px-2 text-left text-xs text-muted-foreground hover:bg-background/60 hover:text-foreground"><I.plus className="size-3.5" />New</button>
+          </div>
+        );
+      })}
+      {!doneOpen && (
+        <button type="button" data-col={(doneCols[0] || {}).id || 'done'} onClick={() => setDoneOpen(true)} title={`Show ${GROUP_HEAD.done}`}
+          className={cn('flex w-12 shrink-0 flex-col items-center gap-2 rounded-xl bg-muted/60 py-3 text-xs text-muted-foreground transition-colors hover:text-foreground', drag && drag.over === ((doneCols[0] || {}).id || 'done') && 'bg-muted ring-1 ring-foreground/20')}>
+          <span className="size-2 rounded-full bg-emerald-500" />
+          <span className="tnum font-medium">{doneCount}</span>
+          <span className="[writing-mode:vertical-rl]">{GROUP_HEAD.done}</span>
+        </button>
+      )}
+      {drag && (
+        <div className="pointer-events-none fixed z-[90] w-64 rounded-lg border bg-card p-3 text-[13px] font-medium shadow-lg" style={{ left: drag.x + 8, top: drag.y + 8 }}>{drag.title}</div>
+      )}
+    </div>
+  );
+}
+
+/* Archive: finished tasks moved out of the way after a while. Searchable, restorable. */
+const ARCHIVE_DAY_OPTIONS = [['7', 'After 7 days'], ['30', 'After 30 days'], ['90', 'After 90 days'], ['0', 'Never']];
+function ArchiveView({ items, labels, days, onDays, onRestore, onTrash, onCleanUp }) {
+  const [q, setQ] = useState('');
+  const nq = norm(q);
+  const list = Object.values(items).filter(t => !nq || [t.title, t.project, t.bucket].some(v => norm(v).includes(nq)))
+    .sort((a, b) => (b.doneAt || b.archivedAt || 0) - (a.doneAt || a.archivedAt || 0));
+  return (
+    <div className="mt-6">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <h2 className="text-base font-semibold">Archive</h2>
+        <span className="text-sm text-muted-foreground">{Object.keys(items).length} {Object.keys(items).length === 1 ? 'task' : 'tasks'}</span>
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <span className="text-xs text-muted-foreground">Archive finished tasks</span>
+          <Select variant="chip" label="When to archive" value={String(days)} onChange={v => onDays(Number(v))} searchable={false}
+            options={ARCHIVE_DAY_OPTIONS.map(([value, label]) => ({ value, label }))} />
+          <Button size="sm" variant="outline" onClick={onCleanUp} disabled={!Object.keys(items).length}><I.trash />Clean up…</Button>
+        </div>
+      </div>
+      <div className="relative mb-3 max-w-sm">
+        <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search the archive" aria-label="Search the archive" className="h-9 bg-card pl-9 shadow-none" />
+      </div>
+      <Card className="overflow-hidden">
+        {list.length === 0 ? (
+          <Empty icon={<I.clipboard />} title={q ? 'Nothing matches' : 'The archive is empty'}
+            description={days ? `Finished tasks move here ${days} days after they’re completed.` : 'Archiving is turned off.'} />
+        ) : (
+          <div className="divide-y">
+            {list.map(t => (
+              <div key={t.id} className="flex h-11 items-center gap-3 px-4 text-[13px]">
+                <I.check className="size-3.5 shrink-0 text-emerald-600" />
+                <span className="min-w-0 flex-1 truncate font-medium">{t.title || 'Untitled'}</span>
+                {t.project && <span className="hidden max-w-[10rem] truncate text-xs text-muted-foreground md:block">{t.project}</span>}
+                {t.bucket && <span className="hidden max-w-[10rem] truncate text-xs text-muted-foreground lg:block">{t.bucket}</span>}
+                <span className="w-28 shrink-0 text-right text-xs text-muted-foreground">Done {fmtDay(t.doneAt || t.archivedAt)}</span>
+                <Button size="sm" variant="ghost" className="h-7" onClick={() => onRestore(t.id)}><I.reset className="size-3.5" />Restore</Button>
+                <Button size="icon-sm" variant="ghost" aria-label={`Move ${t.title || 'Untitled'} to the Trash`} title="Move to Trash" onClick={() => onTrash(t.id)}><I.trash className="size-3.5" /></Button>
+              </div>
             ))}
           </div>
-        </div>
-      </form>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function TrashView({ items, onRestore, onDeleteNow, onEmpty }) {
+  const now = Date.now();
+  const list = Object.values(items).sort((a, b) => (b.deletedAt || 0) - (a.deletedAt || 0));
+  return (
+    <div className="mt-6">
+      <div className="mb-1 flex flex-wrap items-center gap-3">
+        <h2 className="text-base font-semibold">Trash</h2>
+        <span className="text-sm text-muted-foreground">{list.length} {list.length === 1 ? 'task' : 'tasks'}</span>
+        <Button size="sm" variant="outline" className="ml-auto" disabled={!list.length} onClick={onEmpty}>Empty Trash…</Button>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">Tasks here are deleted for good after {TRASH_DAYS} days. Their documents stay in Documents.</p>
+      <Card className="overflow-hidden">
+        {list.length === 0 ? <Empty icon={<I.trash />} title="The Trash is empty" description="Deleted tasks wait here before they’re gone for good." /> : (
+          <div className="divide-y">
+            {list.map(t => {
+              const left = Math.max(0, TRASH_DAYS - Math.floor((now - (t.deletedAt || now)) / 864e5));
+              return (
+                <div key={t.id} className="flex h-11 items-center gap-3 px-4 text-[13px]">
+                  <I.file className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate font-medium">{t.title || 'Untitled'}</span>
+                  <span className="w-40 shrink-0 text-right text-xs text-muted-foreground">Deleted {fmtDay(t.deletedAt)}, {left} {left === 1 ? 'day' : 'days'} left</span>
+                  <Button size="sm" variant="ghost" className="h-7" onClick={() => onRestore(t.id)}><I.reset className="size-3.5" />Restore</Button>
+                  <Button size="sm" variant="ghost" className="h-7 text-destructive hover:text-destructive" onClick={() => onDeleteNow(t)}>Delete now</Button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function CleanUpDialog({ open, items, onClose, onConfirm }) {
+  const [months, setMonths] = useState('6');
+  const cutoff = Date.now() - Number(months) * 30.4 * 864e5;
+  const matches = Object.values(items).filter(t => (t.doneAt || t.archivedAt || 0) < cutoff);
+  return (
+    <Dialog open={open} onClose={onClose} title="Clean up the archive" className="max-w-md"
+      description={`Archived tasks completed before the date you pick move to the Trash. You can still restore them there for ${TRASH_DAYS} days. Documents are kept.`}
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={!matches.length} onClick={() => onConfirm(matches.map(t => t.id))}>Move {matches.length} {matches.length === 1 ? 'task' : 'tasks'} to Trash</Button>
+      </>}>
+      <Field label="Completed more than" htmlFor="cu-m">
+        <Select id="cu-m" value={months} onChange={setMonths} searchable={false}
+          options={[['1', '1 month ago'], ['3', '3 months ago'], ['6', '6 months ago'], ['12', '12 months ago']].map(([value, label]) => ({ value, label }))} />
+      </Field>
+      <p className="text-sm text-muted-foreground">{matches.length ? `${matches.length} of ${Object.keys(items).length} archived tasks match.` : 'No archived tasks are that old.'}</p>
     </Dialog>
   );
 }
@@ -1919,9 +2526,14 @@ function ProjectsView({ list, tasks, onNew, onEdit, onDelete, onOpen }) {
   );
 }
 
-function App({ prof, standaloneId }) {
+function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null }) {
   const me = prof.data.user;
-  const { tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded } = useTasks();
+  const {
+    tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
+    buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
+    archived, trash, trashTasks, restoreTask, purgeTrash,
+  } = useTasks(ws);
+  const wsName = (workspaces.find(w => w.id === ws) || {}).name || 'Product';
   const [cellEdit, setCellEdit] = useState(null); // { id, field, el }
   const [renaming, setRenaming] = useState(null);
   const [statusesOpen, setStatusesOpen] = useState(false);
@@ -1937,13 +2549,30 @@ function App({ prof, standaloneId }) {
   const [keysOpen, setKeysOpen] = useState(false);
   const searchRef = useRef(null);
   const [, setNow] = useState(0);
-  const [filter, setFilter] = useState('all');
+  const [filter, setFilter] = useState('open'); // the app always starts on Open
   const [sortBy, setSortBy] = useState(savedView.sortBy || 'deadline');
   useEffect(() => { try { localStorage.setItem(LS_VIEW, JSON.stringify({ projectFilter, sortBy, showSummary, view })); } catch (e) {} }, [projectFilter, sortBy, showSummary, view]);
   const [quick, setQuick] = useState('');
   const [sheet, setSheet] = useState(standaloneId ? { open: true, id: standaloneId } : { open: false, id: null });
   const [openMode, setOpenMode] = useState(() => { try { return localStorage.getItem('tasks-open-mode') || 'side'; } catch (e) { return 'side'; } });
   const chooseMode = m => { setOpenMode(m); try { localStorage.setItem('tasks-open-mode', m); } catch (e) {} };
+  // Tabs: Home plus tasks you opened in a tab. Remembered between sessions (main window only).
+  const [tabs, setTabs] = useState(() => {
+    if (standaloneId) return { list: [], active: 'home' };
+    try { const v = JSON.parse(localStorage.getItem((ws === 'product' ? 'tasks-tabs' : 'tasks-tabs-' + ws))); if (v && Array.isArray(v.list)) return { list: v.list, active: v.active || 'home' }; } catch (e) {}
+    return { list: [], active: 'home' };
+  });
+  useEffect(() => { if (!standaloneId) { try { localStorage.setItem((ws === 'product' ? 'tasks-tabs' : 'tasks-tabs-' + ws), JSON.stringify(tabs)); } catch (e) {} } }, [tabs]);
+  const openTab = id => setTabs(t => ({ list: t.list.includes(id) ? t.list : [...t.list, id], active: id }));
+  const closeTab = id => setTabs(t => {
+    const i = t.list.indexOf(id), list = t.list.filter(x => x !== id);
+    return { list, active: t.active === id ? (list[i] || list[i - 1] || 'home') : t.active };
+  });
+  const setActiveTab = id => setTabs(t => ({ ...t, active: id }));
+  const tabsRef = useRef(tabs); tabsRef.current = tabs;
+  const tabClose = useRef(null), tabDrop = useRef(null);
+  // Opens a task the way you chose: side panel, centered, full screen, or a new tab.
+  const openTask = id => { if (!standaloneId && openMode === 'tab') openTab(id); else setSheet({ open: true, id }); };
   const [confirmId, setConfirmId] = useState(null);
   const storageOk = true;
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1965,7 +2594,7 @@ function App({ prof, standaloneId }) {
   const projectList = useMemo(() => {
     const list = storedProjects.map(p => ({ ...p }));
     const have = new Set(list.map(p => norm(p.name)));
-    const extra = [...(storedProjects.length ? [] : DEFAULT_PROJECTS), ...all.map(t => t.project), ...rules.flatMap(r => [r.project, (r.action === 'copy' || r.action === 'move') ? r.target : ''])];
+    const extra = [...(storedProjects.length || ws !== 'product' ? [] : DEFAULT_PROJECTS), ...all.map(t => t.project), ...rules.flatMap(r => [r.project, (r.action === 'copy' || r.action === 'move') ? r.target : ''])];
     extra.map(x => (x || '').trim()).filter(Boolean).forEach(name => {
       if (!have.has(norm(name))) { have.add(norm(name)); list.push({ id: 'auto-' + norm(name), name, color: autoColor(name) }); }
     });
@@ -1986,7 +2615,7 @@ function App({ prof, standaloneId }) {
       if (projectFilter === old.name) setProjectFilter(name);
     }
     setProjectEdit(null);
-    toast(old ? 'Project saved' : 'Project created', name);
+    toast(old ? `${labels.platform} renamed` : `${labels.platform} created`, name);
   };
   const deleteProject = () => {
     const p = projectDelete; setProjectDelete(null);
@@ -1996,12 +2625,12 @@ function App({ prof, standaloneId }) {
     saveRules(rules.filter(r => norm(r.project) !== n && !((r.action === 'copy' || r.action === 'move') && norm(r.target) === n)));
     saveProjects(projectList.filter(x => norm(x.name) !== n));
     if (projectFilter === p.name) setProjectFilter('all');
-    toast('Project deleted', p.name);
+    toast(`${labels.platform} deleted`, p.name);
   };
   const ensureProject = name => {
     if (!name || projectList.some(p => norm(p.name) === norm(name))) return;
     saveProjects([...projectList, { id: 'p-' + newId(), name, color: autoColor(name) }]);
-    toast('Project created', name);
+    toast(`${labels.platform} created`, name);
   };
   const addStage = (name, group) => {
     const found = stages.find(x => norm(x.name) === norm(name) && x.group === group);
@@ -2019,12 +2648,65 @@ function App({ prof, standaloneId }) {
     if (sg) toast('Status deleted', `Tasks with “${sg.name}” now show ${S[sg.group].label}.`);
   };
   const openProject = name => { setProjectFilter(name); setFilter('all'); setView('tasks'); };
+  // Buckets (what the work is for): one per task, managed on the Buckets page.
+  const bucketList = useMemo(() => {
+    const list = storedBuckets.map(b => ({ ...b }));
+    const have = new Set(list.map(b => norm(b.name)));
+    all.forEach(t => { const n = (t.bucket || '').trim(); if (n && !have.has(norm(n))) { have.add(norm(n)); list.push({ id: 'auto-' + norm(n), name: n }); } });
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [storedBuckets, all]);
+  const bucketNames = useMemo(() => bucketList.map(b => b.name), [bucketList]);
+  const [bucketFilter, setBucketFilter] = useState('all');
+  const [cleanUpOpen, setCleanUpOpen] = useState(false);
+  const VM_KEY = 'tasks-view-mode-' + ws, GB_KEY = 'tasks-group-by-' + ws;
+  const [viewMode, setViewMode] = useState(() => { try { return localStorage.getItem(VM_KEY) || 'table'; } catch (e) { return 'table'; } });
+  const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem(GB_KEY) || 'project'; } catch (e) { return 'project'; } });
+  useEffect(() => { try { localStorage.setItem(VM_KEY, viewMode); localStorage.setItem(GB_KEY, groupBy); } catch (e) {} }, [viewMode, groupBy]);
+  const openFromView = (id, e) => { if (e && (e.ctrlKey || e.metaKey)) openTab(id); else openTask(id); };
+  const moveToColumn = (id, colId) => {
+    const d = statusList(stages).find(x => x.id === colId); if (!d) return;
+    const t = tasksRef.current[id]; if (!t || statusDef(t, stages).id === colId) return;
+    updateTask(id, { status: d.group, stage: d.builtin ? '' : d.id });
+  };
+  const [purgeConfirm, setPurgeConfirm] = useState(null);
+  const [bucketEdit, setBucketEdit] = useState(null);
+  const [bucketDelete, setBucketDelete] = useState(null);
+  const [platformsOpen, setPlatformsOpen] = useState(false);
+  const [labelEdit, setLabelEdit] = useState(null); // a column key
+  const [wsRename, setWsRename] = useState(false);
+  const ensureBucket = name => {
+    if (!name || bucketList.some(b => norm(b.name) === norm(name))) return;
+    saveBuckets([...bucketList, { id: 'b-' + newId(), name }]);
+    toast(`${labels.bucket} created`, name);
+  };
+  const saveBucket = ({ name }) => {
+    const old = bucketEdit && bucketEdit.bucket;
+    const list = bucketList.filter(b => !old || norm(b.name) !== norm(old.name));
+    saveBuckets([...list, { id: old ? old.id : 'b-' + newId(), name }]);
+    if (old && old.name !== name) {
+      const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(old.name)).map(t => ({ ...t, bucket: name }));
+      if (moved.length) saveMany(moved);
+      if (bucketFilter === old.name) setBucketFilter(name);
+    }
+    setBucketEdit(null);
+    toast(old ? `${labels.bucket} renamed` : `${labels.bucket} created`, name);
+  };
+  const deleteBucket = () => {
+    const b = bucketDelete; setBucketDelete(null);
+    const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(b.name)).map(t => ({ ...t, bucket: '' }));
+    if (moved.length) saveMany(moved);
+    saveBuckets(bucketList.filter(x => norm(x.name) !== norm(b.name)));
+    if (bucketFilter === b.name) setBucketFilter('all');
+    toast(`${labels.bucket} deleted`, b.name);
+  };
+  const openBucket = name => { setBucketFilter(name); setFilter('all'); setView('tasks'); };
   const scoped = useMemo(() => {
     const q = norm(query);
     return all.filter(t => (projectFilter === 'all' || (projectFilter === 'none' ? !t.project : t.project === projectFilter))
-      && (!q || [t.title, t.description, t.assignee, t.project, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
-  }, [all, projectFilter, query]);
-  const counts = useMemo(() => { const c = { all: scoped.length }; STATUSES.forEach(s => { c[s.id] = scoped.filter(t => t.status === s.id).length; }); return c; }, [scoped]);
+      && (bucketFilter === 'all' || (bucketFilter === 'none' ? !t.bucket : norm(t.bucket) === norm(bucketFilter)))
+      && (!q || [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
+  }, [all, projectFilter, bucketFilter, query]);
+  const counts = useMemo(() => { const c = { all: scoped.length, open: scoped.filter(t => t.status !== 'done').length }; STATUSES.forEach(s => { c[s.id] = scoped.filter(t => t.status === s.id).length; }); return c; }, [scoped]);
   const overview = useMemo(() => {
     const open = scoped.filter(t => t.status !== 'done');
     return {
@@ -2041,13 +2723,18 @@ function App({ prof, standaloneId }) {
       status: (a, b) => { const o = statusList(stages).map(x => x.id); return S[a.status].i - S[b.status].i || o.indexOf(statusDef(a, stages).id) - o.indexOf(statusDef(b, stages).id) || b.createdAt - a.createdAt; },
       assignee: (a, b) => (a.assignee || '~').localeCompare(b.assignee || '~') || b.createdAt - a.createdAt,
       project: (a, b) => (a.project || '~').localeCompare(b.project || '~') || b.createdAt - a.createdAt,
+      bucket: (a, b) => (a.bucket || '~').localeCompare(b.bucket || '~') || b.createdAt - a.createdAt,
       priority: (a, b) => P[a.priority || 'normal'].i - P[b.priority || 'normal'].i || (a.deadline || '9999').localeCompare(b.deadline || '9999'),
     }[sortBy] || ((a, b) => b.createdAt - a.createdAt);
-    return scoped.filter(t => filter === 'all' || t.status === filter).sort((a, b) => {
+    // While searching, look through every task (finished ones too, in any project).
+    const q = norm(query);
+    const base = q ? all.filter(t => [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q)))
+      : scoped.filter(t => filter === 'all' || (filter === 'open' ? t.status !== 'done' : t.status === filter));
+    return base.sort((a, b) => {
       if (sortBy !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
       return by(a, b);
     });
-  }, [scoped, filter, sortBy, stages]);
+  }, [scoped, all, query, filter, sortBy, stages]);
 
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
@@ -2087,7 +2774,7 @@ function App({ prof, standaloneId }) {
         const c = {
           id: newId(), title: t.title, description: t.description || '', assignee: t.assignee || '', deadline: t.deadline || '',
           files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(x => ({ ...x, id: newId(), done: false })),
-          project: r.target, status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, blockedBy: null,
+          bucket: t.bucket || '', project: r.target, status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, blockedBy: null,
           generatedFrom: t.id, generatedBy: r.id,
         };
         created.push(c);
@@ -2211,23 +2898,49 @@ function App({ prof, standaloneId }) {
   // The task panel saves each change as you make it, through the same rules as the table.
   const saveSheet = (id, patch) => updateTask(id, patch);
   // "Create task" and N make a real task straight away and open it, ready for a title.
-  const createTask = () => {
+  const createTask = (opts = {}) => {
     const auto = automate({
       id: newId(), title: '', status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [],
-      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
+      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', bucket: bucketFilter !== 'all' && bucketFilter !== 'none' ? bucketFilter : '',
+      ...(opts && opts.preset ? opts.preset : {}), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     }, null);
     saveMany([auto.task, ...auto.created]);
-    setSheet({ open: true, id: auto.task.id });
+    if (opts && opts.tab === true) openTab(auto.task.id); else openTask(auto.task.id);
   };
   const createRef = useRef(createTask); createRef.current = createTask;
   // A new task you close without typing anything is removed again.
   const discardEmpty = id => remove(id);
   const doDelete = () => {
-    const t = tasks[confirmId]; remove(confirmId); setConfirmId(null); setSheet({ open: false, id: null });
-    if (t) (t.files || []).forEach(f => deleteIfUnused(f, [t.id]));
-    toast('Task deleted', t && t.title);
+    const t = tasks[confirmId]; trashTasks([confirmId]); setConfirmId(null); setSheet({ open: false, id: null });
+    toast('Moved to Trash', `You can restore “${(t && t.title) || 'Untitled'}” from the Trash for ${TRASH_DAYS} days.`);
   };
   const closeSheet = useCallback(() => setSheet({ open: false, id: null }), []);
+  // Close tabs whose task was deleted.
+  useEffect(() => {
+    if (!loaded) return;
+    setTabs(t => {
+      const list = t.list.filter(id => tasks[id]);
+      if (list.length === t.list.length) return t;
+      return { list, active: t.active === 'home' || list.includes(t.active) ? t.active : 'home' };
+    });
+  }, [tasks, loaded]);
+  // Ctrl+W closes the tab, Ctrl+Tab moves to the next one, Ctrl+1 goes Home.
+  useEffect(() => {
+    if (standaloneId) return;
+    const k = e => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const t = tabsRef.current, ids = ['home', ...t.list];
+      if (e.key.toLowerCase() === 'w') {
+        if (t.active !== 'home') { e.preventDefault(); if (tabClose.current) tabClose.current(); else closeTab(t.active); }
+      } else if (e.key === 'Tab') {
+        e.preventDefault();
+        const i = ids.indexOf(t.active);
+        setActiveTab(ids[(i + (e.shiftKey ? -1 : 1) + ids.length) % ids.length]);
+      } else if (e.key === '1') { e.preventDefault(); setActiveTab('home'); }
+    };
+    document.addEventListener('keydown', k, true);
+    return () => document.removeEventListener('keydown', k, true);
+  }, []);
   const patch = (id, p) => {
     const t = tasksRef.current[id]; if (!t) return;
     const auto = automate({ ...t, ...p }, t);
@@ -2236,10 +2949,36 @@ function App({ prof, standaloneId }) {
   };
 
   /* ---- documents ---- */
-  const docs = useMemo(() => all.flatMap(t => (t.files || []).map(f => ({ ...f, task: t }))), [all]);
+  // Documents: from tasks, archived tasks, and files whose task is gone ("No task").
+  const docs = useMemo(() => [
+    ...all.flatMap(t => (t.files || []).map(f => ({ ...f, task: t }))),
+    ...Object.values(archived).flatMap(t => (t.files || []).map(f => ({ ...f, task: t, archived: true }))),
+    ...looseDocs.map(f => ({ ...f, task: null })),
+  ], [all, archived, looseDocs]);
+  const [attachDoc, setAttachDoc] = useState(null);
+  // Search extras: archived tasks, and tasks in your other workspaces.
+  const [incArchived, setIncArchived] = useState(false);
+  const [allWs, setAllWs] = useState(false);
+  const [otherWs, setOtherWs] = useState({});
+  useEffect(() => {
+    if (!allWs) return;
+    workspaces.filter(w => w.id !== ws && !otherWs[w.id]).forEach(w => {
+      invoke('read_store', { name: storeFor('data', w.id) })
+        .then(raw => setOtherWs(o => ({ ...o, [w.id]: raw ? Object.values(JSON.parse(raw).tasks || {}) : [] })))
+        .catch(() => setOtherWs(o => ({ ...o, [w.id]: [] })));
+    });
+  }, [allWs]);
+  const matchQ = t => { const q = norm(query); return q && [t.title, t.description, t.assignee, t.project, t.bucket, ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q)); };
+  const extraResults = query ? [
+    ...(incArchived ? [{ key: 'archive', title: 'In the archive', items: Object.values(archived).filter(matchQ), onPick: () => setView('archive') }] : []),
+    ...(allWs ? workspaces.filter(w => w.id !== ws).map(w => ({ key: w.id, title: `In ${w.name}`, items: (otherWs[w.id] || []).filter(matchQ), onPick: t => onSwitchWorkspace(w.id, t.id) })) : []),
+  ] : [];
+  // Opening a task found in another workspace: switch, then open it.
+  useEffect(() => { if (loaded && openOnLoad && tasksRef.current[openOnLoad]) openTask(openOnLoad); }, [loaded]);
   // A file can be shared by a task and its automatic follow-up, so it's only deleted when no task uses it.
   const deleteIfUnused = (id, excludeIds) => { // id: the document record
-    const used = Object.values(tasksRef.current).some(o => !excludeIds.includes(o.id) && (o.files || []).some(x => x.id === id.id));
+    const used = [...Object.values(tasksRef.current), ...Object.values(archived), ...Object.values(trash)].some(o => !excludeIds.includes(o.id) && (o.files || []).some(x => x.id === id.id))
+      || looseDocs.some(x => x.id === id.id && excludeIds.length);
     if (!used) deleteDoc(id);
   };
   const uploadMany = async files => {
@@ -2283,13 +3022,14 @@ function App({ prof, standaloneId }) {
   };
   const doRemoveFile = () => {
     const { file, taskId } = fileConfirm; setFileConfirm(null);
+    if (!taskId) { saveLooseDocs(l => l.filter(x => x.id !== file.id)); deleteIfUnused(file, []); toast('Document deleted', file.name); return; }
     const t = tasksRef.current[taskId]; if (!t) return;
     saveMany([{ ...t, files: (t.files || []).filter(x => x.id !== file.id) }]);
     deleteIfUnused(file, [taskId]);
     toast('Document removed', file.name);
   };
   // Files dragged onto the window (from WhatsApp, File Explorer…) arrive as file paths.
-  const dropState = useRef({}); dropState.current = { sheetOpen: sheet.open, addOpen: addDocs.open };
+  const dropState = useRef({}); dropState.current = { sheetOpen: sheet.open, addOpen: addDocs.open, tab: tabs.active };
   useEffect(() => {
     let un = null, dead = false;
     getCurrentWebview().onDragDropEvent(async ev => {
@@ -2305,10 +3045,11 @@ function App({ prof, standaloneId }) {
         const s = dropState.current;
         if (s.addOpen) setAddDocs(a => ({ ...a, files: [...a.files, ...infos] }));
         else if (s.sheetOpen && sheetDrop.current) sheetDrop.current(infos);
+        else if (s.tab !== 'home' && tabDrop.current) tabDrop.current(infos);
         else setAddDocs({ open: true, files: infos });
       }
     }).then(f => { if (dead) f(); else un = f; });
-    return () => { dead = true; un && un(); };
+    return () => { dead = true; try { un && un(); } catch (e) {} };
   }, []);
 
   /* ---- account & data ---- */
@@ -2332,11 +3073,11 @@ function App({ prof, standaloneId }) {
     const t = tasks[id]; if (!t) return;
     const c = {
       id: newId(), title: `${t.title} (copy)`, description: t.description || '', assignee: t.assignee || '', deadline: t.deadline || '',
-      project: t.project || '', files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(i => ({ ...i, id: newId(), done: false })),
+      project: t.project || '', bucket: t.bucket || '', files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(i => ({ ...i, id: newId(), done: false })),
       status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     };
     const auto = automate(c, null);
-    saveMany([auto.task, ...auto.created]); setSheet({ open: true, id: c.id }); toast('Task duplicated', 'Edit the copy, then save.');
+    saveMany([auto.task, ...auto.created]); openTask(c.id); toast('Task duplicated', 'Edit the copy, then save.');
   };
   useEffect(() => {
     const k = e => {
@@ -2352,7 +3093,10 @@ function App({ prof, standaloneId }) {
     return () => document.removeEventListener('keydown', k);
   }, []);
   const sheetTask = sheet.id ? all.find(t => t.id === sheet.id) : null;
-  const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled'); };
+  const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled', ws); };
+  const sheetToTab = () => { const id = sheet.id; setSheet({ open: false, id: null }); if (id) openTab(id); };
+  const onSheetMode = m => { chooseMode(m); if (m === 'tab') sheetToTab(); };
+  const tabTask = tabs.active !== 'home' ? all.find(t => t.id === tabs.active) : null;
   // In a task's own window: keep the title bar in step, and close the window when the task is closed or deleted.
   useEffect(() => {
     if (!standaloneId) return;
@@ -2363,143 +3107,218 @@ function App({ prof, standaloneId }) {
 
   if (standaloneId) return (
     <>
-      <TaskSheet mode={standaloneId ? 'window' : openMode} onMode={chooseMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => setSheet({ open: true, id })} onPatch={patch} onClose={closeSheet}
+      <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
-      <AlertDialog open={!!confirmId} title="Delete this task?"
-        description={`“${(tasks[confirmId] || {}).title || ''}” and its tracked time${((tasks[confirmId] || {}).files || []).length ? ' and attached documents' : ''} will be removed. This can’t be undone.`}
-        confirmLabel="Delete task" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
+      <AlertDialog open={!!confirmId} title="Move this task to the Trash?"
+        description={`“${(tasks[confirmId] || {}).title || 'Untitled'}” goes to the Trash, where you can restore it for ${TRASH_DAYS} days. After that it’s deleted for good. Its documents are kept.`}
+        confirmLabel="Move to Trash" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
-        description={fileConfirm ? `“${fileConfirm.file.name}” will be removed from this task.` : ''}
-        confirmLabel="Remove document" onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
+        description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
+        confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
       {cellEdit && null}
     </>
   );
 
   return (
-    <div className="mx-auto w-full max-w-6xl px-4 py-5 md:px-6 md:py-6">
-      {/* Header */}
-      <header className="flex flex-wrap items-center gap-2">
+    <div className="flex h-screen flex-col">
+      <TabStrip list={tabs.list} active={tabs.active} tasks={tasks} stages={stages}
+        onSelect={setActiveTab} onNew={() => createTask({ tab: true })}
+        onClose={id => { if (id === tabs.active && tabClose.current) tabClose.current(); else closeTab(id); }} />
+      {tabs.active !== 'home' && tabTask ? (
+        <TaskSheet key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
+          onHome={() => setActiveTab('home')} onClose={() => closeTab(tabTask.id)}
+          onPopOut={() => { const t = tabTask; closeTab(t.id); openTaskWindow(t.id, t.title || 'Untitled', ws); }}
+          people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
+          onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(tabTask.id)} onToggle={toggleTimer} onReset={resetTimer}
+          storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
+          onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
+      ) : (
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-6xl px-4 pb-10 md:px-6">
+      {/* Top bar */}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 py-4">
+        <div className="flex min-w-0 items-center">
+          <DropdownMenu align="start"
+            trigger={p => (
+              <button {...p} type="button" aria-label="Switch workspace" className="-ml-1.5 flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-primary text-primary-foreground"><I.check className="size-4" /></span>
+                <span className="truncate text-base font-semibold tracking-tight">{wsName}</span>
+                <I.down className="size-4 shrink-0 text-muted-foreground" />
+              </button>
+            )}
+            items={[
+              ...workspaces.map(w => ({ label: w.name, icon: <I.layers />, shortcut: w.id === ws ? '✓' : undefined, onSelect: () => { if (w.id !== ws) onSwitchWorkspace(w.id); } })),
+              'sep',
+              { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
+            ]} />
+        </div>
+        <nav aria-label="Sections" className="flex items-center gap-1.5">
+          {[{ id: 'tasks', label: 'Tasks', count: all.length, icon: <I.listCheck /> }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length, icon: <I.layers /> }, { id: 'docs', label: 'Documents', count: docs.length, icon: <I.file /> }].map(v => (
+            <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
+              className={cn('inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5',
+                view === v.id ? 'border-primary bg-primary text-primary-foreground' : 'bg-card text-foreground/80 hover:text-foreground')}>
+              {v.icon}{v.label}<span className="tnum text-[11px] opacity-60">{v.count}</span>
+            </button>
+          ))}
+        </nav>
+        <div className="flex min-w-0 items-center justify-end gap-2">
+          {running && (
+            <div className="flex min-w-0 items-center gap-2 rounded-full border bg-card py-1 pl-3 pr-1 text-xs" role="status">
+              <span className="relative flex size-2 shrink-0">
+                <span className="anim-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              </span>
+              <button type="button" onClick={() => openTask(running.id)} title={running.title}
+                className="hidden max-w-[12rem] truncate text-muted-foreground hover:text-foreground hover:underline underline-offset-4 min-[1440px]:block">{running.title || 'Untitled'}</button>
+              <span className="tnum font-semibold">{fmt(elapsed(running))}</span>
+              <button type="button" onClick={() => toggleTimer(running.id)} aria-label="Pause timer"
+                className="flex size-6 items-center justify-center rounded-full hover:bg-muted"><I.pause className="size-3" /></button>
+            </div>
+          )}
+          <ThemeToggle />
+          <DropdownMenu
+            trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label="More tools"><I.more /></Button>}
+            items={[
+              { label: 'Automations', icon: <I.zap />, shortcut: `${rules.filter(r => r.enabled).length} on`, onSelect: () => setRulesOpen(true) },
+              { label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, onSelect: () => setPlatformsOpen(true) },
+              { label: 'Archive', icon: <I.clipboard />, shortcut: String(Object.keys(archived).length), onSelect: () => setView('archive') },
+              { label: 'Trash', icon: <I.trash />, shortcut: String(Object.keys(trash).length), onSelect: () => setView('trash') },
+              'sep',
+              { label: 'Edit statuses', icon: <I.sliders />, onSelect: () => setStatusesOpen(true) },
+              { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
+              { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
+            ]} />
+          <DropdownMenu
+            trigger={p => (
+              <button {...p} type="button" aria-label="Your account" className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                <Avatar name={me.name} picture={me.picture} className="h-9 w-9 bg-card ring-1 ring-border" />
+              </button>
+            )}
+            items={[
+              { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
+              'sep',
+              { label: 'Back up data…', icon: <I.download />, onSelect: backup },
+              { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
+              { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
+              'sep',
+              { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
+            ]} />
+        </div>
+      </div>
+
+      {/* Welcome, search and Create task */}
+      <div className="flex flex-wrap items-center gap-3">
         <div className="mr-auto min-w-0">
           <h1 className="truncate text-lg font-semibold tracking-tight">Welcome back, {(me.name || '').split(' ')[0] || 'there'}</h1>
           <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p>
         </div>
-        <div className="relative w-44 lg:w-64">
+        <div className="relative w-52 lg:w-64">
           <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input ref={searchRef} value={query} onChange={e => { setQuery(e.target.value); if (view !== 'tasks') setView('tasks'); }} placeholder="Search tasks" aria-label="Search tasks"
+          <Input ref={searchRef} value={query} onChange={e => { setQuery(e.target.value); if (view !== 'tasks') setView('tasks'); }} placeholder="Search all tasks" aria-label="Search all tasks"
             className="h-9 rounded-lg bg-card pl-9 pr-9 shadow-none"
             onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQuery(''); e.currentTarget.blur(); } }} />
           {query
             ? <button type="button" onClick={() => setQuery('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-sm opacity-60 hover:opacity-100"><I.x /></button>
             : <Kbd className="absolute right-3 top-1/2 -translate-y-1/2">/</Kbd>}
         </div>
-        <ThemeToggle />
-        <DropdownMenu
-          trigger={p => <Button {...p} variant="outline" size="icon" className="bg-card shadow-none" aria-label="More tools"><I.more /></Button>}
-          items={[
-            { label: 'Automations', icon: <I.zap />, shortcut: `${rules.filter(r => r.enabled).length} on`, onSelect: () => setRulesOpen(true) },
-            { label: 'Manage projects', icon: <I.folder />, onSelect: () => setView('projects') },
-            { label: 'Edit statuses', icon: <I.sliders />, onSelect: () => setStatusesOpen(true) },
-            { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
-            { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
-          ]} />
-        <DropdownMenu
-          trigger={p => (
-            <button {...p} type="button" aria-label="Your account" className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <Avatar name={me.name} picture={me.picture} className="h-9 w-9 bg-card ring-1 ring-border" />
-            </button>
-          )}
-          items={[
-            { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
-            'sep',
-            { label: 'Back up data…', icon: <I.download />, onSelect: backup },
-            { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
-            { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
-            'sep',
-            { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
-          ]} />
-        <Button className="shadow-none" onClick={createTask}><I.plus />Create task</Button>
-      </header>
-
-      {/* Sections, with the running timer on the right */}
-      <div className="mt-5 flex items-end gap-3 border-b">
-        <nav className="flex gap-5" aria-label="Sections">
-          {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: 'Projects', count: projectList.length }, { id: 'docs', label: 'Documents', count: docs.length }].map(v => (
-            <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
-              className={cn('-mb-px flex items-center gap-1.5 border-b-2 pb-2 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
-                view === v.id ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
-              {v.label}<span className="tnum text-xs text-muted-foreground">{v.count}</span>
-            </button>
-          ))}
-        </nav>
-        {running && (
-          <div className="mb-1.5 ml-auto flex min-w-0 items-center gap-2 rounded-full border bg-card py-0.5 pl-2.5 pr-0.5 text-xs" role="status">
-            <span className="relative flex size-2 shrink-0">
-              <span className="anim-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75" />
-              <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
-            </span>
-            <button type="button" onClick={() => setSheet({ open: true, id: running.id })} title={running.title}
-              className="max-w-[16rem] truncate text-muted-foreground hover:text-foreground hover:underline underline-offset-4">{running.title}</button>
-            <span className="tnum font-semibold">{fmt(elapsed(running))}</span>
-            <button type="button" onClick={() => toggleTimer(running.id)} aria-label="Pause timer"
-              className="flex size-6 items-center justify-center rounded-full hover:bg-muted"><I.pause className="size-3" /></button>
-          </div>
-        )}
+        <Button className="shadow-none" onClick={() => createTask()}><I.plus />Create task</Button>
       </div>
 
       {view === 'projects' ? (
-        <ProjectsView list={projectList} tasks={all} onNew={() => setProjectEdit({ project: null })} onEdit={p => setProjectEdit({ project: p })}
-          onDelete={p => setProjectDelete(p)} onOpen={openProject} />
+        <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
+          onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} />
+      ) : view === 'archive' ? (
+        <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveSettings(x => ({ ...x, archiveDays: d }))}
+          onRestore={id => { restoreTask(id); toast('Task restored'); }} onTrash={id => { trashTasks([id]); toast('Moved to Trash'); }} onCleanUp={() => setCleanUpOpen(true)} />
+      ) : view === 'trash' ? (
+        <TrashView items={trash} onRestore={id => { restoreTask(id); toast('Task restored'); }} onDeleteNow={t => setPurgeConfirm([t.id])} onEmpty={() => setPurgeConfirm(Object.keys(trash))} />
       ) : view === 'docs' ? (
-        <DocumentsView docs={docs} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onPreview={setPreview} onDownload={downloadFile}
-          onRemove={(file, taskId) => setFileConfirm({ file, taskId })} onOpenTask={id => setSheet({ open: true, id })} />
+        <DocumentsView docs={docs} tasks={all} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
+          onRemove={(file, taskId) => setFileConfirm({ file, taskId })} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
+          onAttach={f => setAttachDoc(f)} />
       ) : (<>
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
-      {/* Filters and a one-line summary */}
+      {/* Status chips and the view switch; below, filters and a one-line summary */}
       <div className="mt-4 flex flex-wrap items-center gap-1.5">
-        {[{ id: 'all', label: 'All', count: counts.all }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot }))].map(c => (
-          <button key={c.id} type="button" onClick={() => setFilter(c.id)} aria-pressed={filter === c.id}
+        {[{ id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }].map(c => (
+          <button key={c.id} type="button" onClick={() => { setFilter(c.id); if (query) setQuery(''); }} aria-pressed={filter === c.id && !query}
             className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-              filter === c.id ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
+              filter === c.id && !query ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
             {c.dot && <span className={cn('size-1.5 rounded-full', c.dot)} />}{c.label}<span className="tnum opacity-70">{c.count}</span>
           </button>
         ))}
-        <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
-        <label className={cn('relative inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-transparent pl-2.5 pr-6 text-xs transition-colors hover:border-foreground/20',
-          projectFilter !== 'all' ? 'font-medium text-foreground' : 'text-muted-foreground hover:text-foreground')}>
-          <I.folder className="size-3.5" />
-          <select value={projectFilter} onChange={e => setProjectFilter(e.target.value)} aria-label="Filter by project"
-            className="cursor-pointer appearance-none bg-transparent focus-visible:outline-none">
-            <option value="all">All projects</option>
-            {projects.map(p => <option key={p} value={p}>{p}</option>)}
-            <option value="none">No project</option>
-          </select>
-          <I.down className="pointer-events-none absolute right-2 size-3 opacity-60" />
-        </label>
-        <label className="relative inline-flex h-7 items-center gap-1.5 rounded-full border border-border bg-transparent pl-2.5 pr-6 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground">
-          <I.updown className="size-3.5" />
-          <select value={sortBy} onChange={e => setSortBy(e.target.value)} aria-label="Sort by" className="cursor-pointer appearance-none bg-transparent focus-visible:outline-none">
-            <option value="deadline">Sort: Deadline</option>
-            <option value="priority">Sort: Priority</option>
-            <option value="created">Sort: Newest</option>
-            <option value="status">Sort: Status</option>
-            <option value="assignee">Sort: Assignee</option>
-            <option value="project">Sort: Project</option>
-          </select>
-          <I.down className="pointer-events-none absolute right-2 size-3 opacity-60" />
-        </label>
+        <div className="ml-auto">
+          <div role="group" aria-label="View" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
+          {[['table', 'Table', <I.table />], ['list', 'List', <I.rows />], ['board', 'Board', <I.kanban />]].map(([id, label, icon]) => (
+            <button key={id} type="button" aria-pressed={viewMode === id} aria-label={`${label} view`} title={label} onClick={() => setViewMode(id)}
+              className={cn('flex h-6 w-8 items-center justify-center rounded-md transition-colors [&_svg]:size-3.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+                viewMode === id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{icon}</button>
+          ))}
+        </div>
+        </div>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        <Select variant="chip" label={`Filter by ${labels.bucket.toLowerCase()}`} value={bucketFilter} onChange={setBucketFilter}
+          className={bucketFilter !== 'all' ? 'border-foreground/25 font-medium text-foreground' : ''}
+          icon={<I.layers className="size-3.5 shrink-0" />}
+          options={[
+            { value: 'all', label: `All ${plural(labels.bucket).toLowerCase()}` },
+            ...bucketNames.map(b => ({ value: b, label: b, icon: <I.layers className="size-3.5 text-muted-foreground" /> })),
+            { value: 'none', label: `No ${labels.bucket.toLowerCase()}`, divider: true, node: <span className="text-muted-foreground">No {labels.bucket.toLowerCase()}</span> },
+          ]}
+          footer={close => (
+            <button type="button" onClick={() => { close(); setView('projects'); }}
+              className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+              <I.sliders className="size-3.5" />Manage {plural(labels.bucket).toLowerCase()}
+            </button>
+          )} />
+        <Select variant="chip" label={`Filter by ${labels.platform.toLowerCase()}`} value={projectFilter} onChange={setProjectFilter}
+          className={projectFilter !== 'all' ? 'border-foreground/25 font-medium text-foreground' : ''}
+          icon={<I.folder className="size-3.5 shrink-0" />}
+          options={[
+            { value: 'all', label: `All ${plural(labels.platform).toLowerCase()}` },
+            ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" />, divider: false })),
+            { value: 'none', label: `No ${labels.platform.toLowerCase()}`, divider: true, node: <span className="text-muted-foreground">No {labels.platform.toLowerCase()}</span> },
+          ]}
+          footer={close => (
+            <button type="button" onClick={() => { close(); setPlatformsOpen(true); }}
+              className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+              <I.sliders className="size-3.5" />Manage {plural(labels.platform).toLowerCase()}
+            </button>
+          )} />
+        <Select variant="chip" label="Sort by" value={sortBy} onChange={setSortBy} searchable={false}
+          icon={<I.updown className="size-3.5 shrink-0" />}
+          renderValue={o => <span className="truncate">Sort: {o.label}</span>}
+          options={[['deadline', labels.deadline], ['priority', labels.priority], ['created', 'Newest'], ['status', labels.status], ['bucket', labels.bucket], ['assignee', labels.assignee], ['project', labels.platform]].map(([value, label]) => ({ value, label }))} />
+        {viewMode === 'list' && (
+          <Select variant="chip" label="Group by" value={groupBy} onChange={setGroupBy} searchable={false}
+            icon={<I.rows className="size-3.5 shrink-0" />}
+            renderValue={o => <span className="truncate">Group: {o.label}</span>}
+            options={GROUP_OPTIONS.map(k => ({ value: k, label: labels[k === 'project' ? 'platform' : k] }))} />
+        )}
         <span className="ml-auto text-xs text-muted-foreground">
-          {overview.open} open, {overview.week} due this week
-          {overview.overdue > 0 && <>, <span className="font-medium text-red-600 dark:text-red-400">{overview.overdue} overdue</span></>}
+          {query ? (
+            <span className="inline-flex flex-wrap items-center gap-3">
+              <span>{shown.length} found</span>
+              <label className="inline-flex items-center gap-1.5"><Checkbox checked={incArchived} onChange={setIncArchived} label="Include archived" />Include archived</label>
+              {workspaces.length > 1 && <label className="inline-flex items-center gap-1.5"><Checkbox checked={allWs} onChange={setAllWs} label="All workspaces" />All workspaces</label>}
+            </span>
+          ) : <>{overview.open} open, {overview.week} due this week</>}
+          {!query && overview.overdue > 0 && <>, <span className="font-medium text-red-600 dark:text-red-400">{overview.overdue} overdue</span></>}
         </span>
       </div>
 
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
-      {/* Table */}
+      {viewMode === 'list' && all.length > 0 ? (
+        <ListView tasks={shown} stages={stages} labels={labels} groupBy={groupBy} onOpen={openFromView} onToggle={toggleTimer} onAdd={preset => createTask({ preset })} />
+      ) : viewMode === 'board' && all.length > 0 ? (
+        <BoardView tasks={!query && filter === 'open' ? scoped : shown} stages={stages} labels={labels} onOpen={openFromView} onToggle={toggleTimer} onMove={moveToColumn} onAdd={preset => createTask({ preset })} />
+      ) : (
       <Card className="mt-3 overflow-hidden">
         {all.length === 0 ? (
           <Empty icon={<I.clipboard />} title="No tasks yet" description="Add one in the last row of the table, or use Create task to add an assignee, deadline and description.">
@@ -2510,20 +3329,23 @@ function App({ prof, standaloneId }) {
             <Button variant="outline" size="sm" onClick={() => setQuery('')}>Clear search</Button>
           </Empty>
         ) : shown.length === 0 ? (
-          <Empty icon={<I.clipboard />} title={filter === 'all' ? 'Nothing here yet' : `Nothing in ${S[filter].label.toLowerCase()}`} description="Try another filter or project to see the rest of your tasks.">
+          <Empty icon={<I.clipboard />} title={filter === 'all' ? 'Nothing here yet' : filter === 'open' ? 'Nothing open' : `Nothing in ${GROUP_HEAD[filter].toLowerCase()}`} description="Try another filter or project to see the rest of your tasks.">
             <Button variant="outline" size="sm" onClick={() => { setFilter('all'); setProjectFilter('all'); }}>Show all tasks</Button>
           </Empty>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[880px] table-fixed border-collapse text-[13px]">
+            <table className="w-full min-w-[960px] table-fixed border-collapse text-[13px]">
               <colgroup>
-                <col /><col className="w-[124px]" /><col className="w-[132px]" /><col className="w-[118px]" /><col className="w-[150px]" /><col className="w-[84px]" /><col className="w-[92px]" /><col className="w-[36px]" />
+                <col /><col className="w-[150px]" /><col className="w-[150px]" /><col className="w-[140px]" /><col className="w-[112px]" /><col className="w-[92px]" /><col className="w-[96px]" /><col className="w-[36px]" />
               </colgroup>
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  {[['Task', <span className="text-[11px] font-semibold">Aa</span>], ['Status', <I.loader />], ['Assignee', <I.user />], ['Deadline', <I.calendar />], ['Project', <I.folder />], ['Priority', <I.flag />], ['Time', <I.timer />]].map(([label, icon]) => (
-                    <th key={label} className="h-8 border-r px-2.5 font-normal last:border-r-0">
-                      <span className="flex items-center gap-1.5 [&_svg]:size-3.5">{icon}{label}</span>
+                  {[['task', <span className="text-[11px] font-semibold">Aa</span>], ['status', <I.loader />], ['bucket', <I.layers />], ['assignee', <I.user />], ['deadline', <I.calendar />], ['priority', <I.flag />], ['time', <I.timer />]].map(([key, icon]) => (
+                    <th key={key} className="h-8 border-r p-0 font-normal last:border-r-0">
+                      <button type="button" onClick={() => setLabelEdit(key)} title="Rename column"
+                        className="flex h-8 w-full items-center gap-1.5 px-2.5 text-left hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:bg-muted/60 [&_svg]:size-3.5">
+                        {icon}<span className="truncate">{labels[key]}</span>
+                      </button>
                     </th>
                   ))}
                   <th className="h-8"><span className="sr-only">Actions</span></th>
@@ -2545,35 +3367,52 @@ function App({ prof, standaloneId }) {
                         ) : (
                           <div className="flex min-w-0 items-center gap-2">
                             <I.file className="size-3.5 shrink-0 text-muted-foreground" />
-                            <button type="button" onClick={() => setSheet({ open: true, id: t.id })} title={t.title}
+                            <button type="button" title={t.title}
+                              onClick={e => { if (e.ctrlKey || e.metaKey) openTab(t.id); else openTask(t.id); }}
+                              onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openTab(t.id); } }}
+                              onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
                               className={cn('min-w-0 truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
+                            {(() => {
+                              const editing = cellEdit && cellEdit.id === t.id && cellEdit.field === 'project';
+                              return t.project ? (
+                                <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Change ${labels.platform.toLowerCase()}`}
+                                  className={cn('inline-flex h-5 max-w-[11rem] shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 text-[11px] text-foreground/75 transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 bg-muted')}>
+                                  <I.folder className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{t.project}</span>
+                                </button>
+                              ) : (
+                                <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Add a ${labels.platform.toLowerCase()}`}
+                                  className={cn('inline-flex h-5 shrink-0 items-center rounded-md border border-dashed px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 [@media(hover:none)]:opacity-100', editing && 'opacity-100')}>
+                                  + {labels.platform}
+                                </button>
+                              );
+                            })()}
                             <span className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
-                              {blocker && <button type="button" title={`Blocked by “${blocker.title}”`} onClick={() => setSheet({ open: true, id: t.blockedBy })} className="text-red-600 dark:text-red-400"><I.ban className="size-3" /></button>}
+                              {blocker && <button type="button" title={`Blocked by “${blocker.title}”`} onClick={() => openTask(t.blockedBy)} className="text-red-600 dark:text-red-400"><I.ban className="size-3" /></button>}
                               {(t.checklist || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Checklist"><I.listCheck className="size-3" />{t.checklist.filter(c => c.done).length}/{t.checklist.length}</span>}
                               {(t.files || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Documents"><I.paperclip className="size-3" />{t.files.length}</span>}
                               {t.generatedFrom && <span title="Created by an automation"><I.zap className="size-3" /></span>}
                             </span>
                             <button type="button" onClick={() => setRenaming(t.id)} aria-label={`Rename ${t.title}`} title="Rename"
-                              className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-md border bg-card px-1.5 text-[11px] font-medium text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100">
-                              <I.pencil className="size-3" />Edit
+                              className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100">
+                              <I.pencil className="size-3" />
                             </button>
                           </div>
                         )}
                       </td>
                       {[
                         ['status', <DefPill def={statusDef(t, stages)} />],
+                        ['bucket', t.bucket
+                          ? <span className="flex min-w-0 items-center gap-1.5"><I.layers className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{t.bucket}</span></span>
+                          : <span className="text-muted-foreground/60">Empty</span>],
                         ['assignee', t.assignee
                           ? <span className="flex min-w-0 items-center gap-1.5"><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{t.assignee}</span></span>
                           : <span className="text-muted-foreground/60">Empty</span>],
                         ['deadline', t.deadline ? <span className={cn('whitespace-nowrap', dueCls[d.tone])}>{d.text}</span> : <span className="text-muted-foreground/60">Empty</span>],
-                        ['project', t.project
-                          ? <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{t.project}</span></span>
-                          : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
                       ].map(([field, content]) => {
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
                         return (
-                          <td key={field} tabIndex={0} role="button" aria-label={`Change ${field} of ${t.title}`}
+                          <td key={field} tabIndex={0} role="button" aria-label={`Change ${(labels[field] || field).toLowerCase()} of ${t.title || 'Untitled'}`}
                             onClick={e => openCell(t.id, field, e.currentTarget)}
                             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCell(t.id, field, e.currentTarget); } }}
                             className={cn(cell, 'cursor-pointer transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring))]', active && 'bg-muted/60 shadow-[inset_0_0_0_1px_hsl(var(--ring))]')}>
@@ -2592,7 +3431,8 @@ function App({ prof, standaloneId }) {
                           <DropdownMenu
                             trigger={p => <Button {...p} variant="ghost" size="icon-sm" className="h-7 w-7" aria-label={`Actions for ${t.title}`}><I.more /></Button>}
                             items={[
-                              { label: 'Edit', icon: <I.pencil />, onSelect: () => setSheet({ open: true, id: t.id }) },
+                              { label: 'Open in new tab', icon: <I.tab />, shortcut: 'Ctrl+click', onSelect: () => openTab(t.id) },
+                              { label: 'Open', icon: <I.pencil />, onSelect: () => openTask(t.id) },
                               { label: on ? 'Pause timer' : 'Start timer', icon: on ? <I.pause /> : <I.play />, onSelect: () => toggleTimer(t.id) },
                               ...(done ? [] : [{ label: 'Mark as done', icon: <I.check />, onSelect: () => markDone(t.id) }]),
                               { label: 'Duplicate', icon: <I.copy />, onSelect: () => duplicate(t.id) },
@@ -2615,28 +3455,67 @@ function App({ prof, standaloneId }) {
           {quick && <Kbd>Enter ↵</Kbd>}
         </form>
       </Card>
+      )}
+      {extraResults.map(r => (
+        <div key={r.key} className="mt-4">
+          <div className="mb-1.5 text-xs font-medium text-muted-foreground">{r.title} ({r.items.length})</div>
+          {r.items.length > 0 && (
+            <Card className="divide-y overflow-hidden">
+              {r.items.slice(0, 30).map(t => (
+                <button key={t.id} type="button" onClick={() => r.onPick(t)} className="flex h-10 w-full items-center gap-3 px-4 text-left text-[13px] hover:bg-muted/50">
+                  <span className={cn('size-2 shrink-0 rounded-full', STATUS_COLORS[statusDef(t, r.key === 'archive' ? stages : []).color])} />
+                  <span className="min-w-0 flex-1 truncate font-medium">{t.title || 'Untitled'}</span>
+                  {t.project && <span className="max-w-[10rem] truncate text-xs text-muted-foreground">{t.project}</span>}
+                  <I.right className="size-3.5 text-muted-foreground" />
+                </button>
+              ))}
+            </Card>
+          )}
+        </div>
+      ))}
       </>)}
 
-      <TaskSheet mode={standaloneId ? 'window' : openMode} onMode={chooseMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => setSheet({ open: true, id })} onPatch={patch} onClose={closeSheet}
+      </div>
+      </div>
+      )}
+
+      <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
-      <AlertDialog open={!!confirmId} title="Delete this task?"
-        description={`“${(tasks[confirmId] || {}).title || ''}” and its tracked time${((tasks[confirmId] || {}).files || []).length ? ' and attached documents' : ''} will be removed. This can’t be undone.`}
-        confirmLabel="Delete task" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
+      <AlertDialog open={!!confirmId} title="Move this task to the Trash?"
+        description={`“${(tasks[confirmId] || {}).title || 'Untitled'}” goes to the Trash, where you can restore it for ${TRASH_DAYS} days. After that it’s deleted for good. Its documents are kept.`}
+        confirmLabel="Move to Trash" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
       {cellEdit && tasks[cellEdit.id] && (
         <CellEditor key={cellEdit.id + cellEdit.field} edit={cellEdit} task={{ ...tasks[cellEdit.id], status: S[tasks[cellEdit.id].status] ? tasks[cellEdit.id].status : 'todo' }}
-          ctx={{ update: updateTask, people, projects, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
+          ctx={{ update: updateTask, people, projects, buckets: bucketNames, ensureBucket, labels, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
       )}
       <StatusesDialog open={statusesOpen} stages={stages} tasks={all} onClose={() => setStatusesOpen(false)}
         onSave={list => { saveStages(list); setStatusesOpen(false); toast('Statuses saved'); }} />
-      <ProjectDialog open={!!projectEdit} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
+      <ProjectDialog open={!!projectEdit} noun={labels.platform} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
+      <ProjectDialog open={!!bucketEdit} noun={labels.bucket} project={bucketEdit && bucketEdit.bucket} names={bucketNames} onClose={() => setBucketEdit(null)} onSave={saveBucket} />
+      <AlertDialog open={!!bucketDelete} title={`Delete “${bucketDelete ? bucketDelete.name : ''}”?`}
+        description={`The tasks stay; they just won’t have a ${labels.bucket.toLowerCase()} anymore.`}
+        confirmLabel={`Delete ${labels.bucket.toLowerCase()}`} onConfirm={deleteBucket} onCancel={() => setBucketDelete(null)} />
+      <PlatformsDialog open={platformsOpen} onClose={() => setPlatformsOpen(false)} list={projectList} tasks={all} noun={labels.platform}
+        onNew={() => setProjectEdit({ project: null })} onEdit={p => setProjectEdit({ project: p })} onDelete={p => setProjectDelete(p)} />
+      <NameDialog open={!!labelEdit} title="Rename column" value={labelEdit ? labels[labelEdit] : ''}
+        defaultValue={labelEdit ? ({ ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}) })[labelEdit] : ''}
+        hint={`Used everywhere in ${wsName}: the table, filters and the task panel.`}
+        onClose={() => setLabelEdit(null)} onSave={v => { saveLabels(l => ({ ...l, [labelEdit]: v })); setLabelEdit(null); }} />
+      <NameDialog open={wsRename} title="Rename workspace" value={wsName} onClose={() => setWsRename(false)}
+        onSave={v => { onRenameWorkspace(ws, v); setWsRename(false); }} />
+      <CleanUpDialog open={cleanUpOpen} items={archived} onClose={() => setCleanUpOpen(false)}
+        onConfirm={ids => { trashTasks(ids); setCleanUpOpen(false); toast(`${ids.length} ${ids.length === 1 ? 'task' : 'tasks'} moved to Trash`, `They’re deleted for good after ${TRASH_DAYS} days.`); }} />
+      <AlertDialog open={!!purgeConfirm} title={purgeConfirm && purgeConfirm.length > 1 ? `Delete ${purgeConfirm.length} tasks for good?` : 'Delete this task for good?'}
+        description="This can’t be undone. Their documents stay in Documents, marked “No task”."
+        confirmLabel="Delete for good" onConfirm={() => { purgeTrash(purgeConfirm); setPurgeConfirm(null); toast('Deleted for good'); }} onCancel={() => setPurgeConfirm(null)} />
       <AlertDialog open={!!projectDelete} title={`Delete “${projectDelete ? projectDelete.name : ''}”?`}
         description={projectDelete ? (() => {
           const n = norm(projectDelete.name);
           const tc = all.filter(t => norm(t.project) === n).length;
           const rc = rules.filter(r => norm(r.project) === n || ((r.action === 'copy' || r.action === 'move') && norm(r.target) === n)).length;
-          return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No project”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this project will be removed.` : ''}`;
+          return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No ${labels.platform.toLowerCase()}”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this project will be removed.` : ''}`;
         })() : ''}
         confirmLabel="Delete project" onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
       <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} rules={rules} projects={projects} people={people} me={me.name}
@@ -2645,9 +3524,11 @@ function App({ prof, standaloneId }) {
       <AddDocsDialog open={addDocs.open} files={addDocs.files} setFiles={fn => setAddDocs(a => ({ ...a, files: typeof fn === 'function' ? fn(a.files) : fn }))} tasks={all} projects={projects} busy={busy}
         onClose={() => setAddDocs({ open: false, files: [] })} onSubmit={submitDocs} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
+      <AttachDocDialog file={attachDoc} tasks={all} onClose={() => setAttachDoc(null)}
+        onAttach={(f, taskId) => { const { task, archived: _a, ...meta } = f; attach(taskId, [meta]); saveLooseDocs(l => l.filter(x => x.id !== f.id)); setAttachDoc(null); }} />
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
-        description={fileConfirm ? `“${fileConfirm.file.name}” will be removed from this task.` : ''}
-        confirmLabel="Remove document" onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
+        description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
+        confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
       {/* Update available: a small snackbar at the bottom left */}
       {up.update && (
         <div role="status" aria-live="polite"
@@ -2679,7 +3560,7 @@ function App({ prof, standaloneId }) {
       {dragOver && (
         <div className="pointer-events-none fixed inset-3 z-[95] flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/70 anim-fade">
           <div className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-lg">
-            {sheet.open ? 'Drop to attach to this task' : addDocs.open ? 'Drop to add to the list' : 'Drop to add documents'}
+            {sheet.open || tabs.active !== 'home' ? 'Drop to attach to this task' : addDocs.open ? 'Drop to add to the list' : 'Drop to add documents'}
           </div>
         </div>
       )}
@@ -2779,15 +3660,39 @@ function ProfileDialog({ open, onClose, prof }) {
   );
 }
 
-const STANDALONE_ID = (() => { const m = (window.location.hash || '').match(/^#task=(.+)$/); return m ? decodeURIComponent(m[1]) : null; })();
+const HASH = new URLSearchParams((window.location.hash || '').replace(/^#/, ''));
+const STANDALONE_ID = HASH.get('task');
+const STANDALONE_WS = HASH.get('ws') || 'product';
+const DEFAULT_WORKSPACES = [{ id: 'product', name: 'Product' }, { id: 'marketing', name: 'Marketing' }];
+
+// Product and Marketing (and any you add later): each has its own tasks, statuses and settings.
+function useWorkspaces() {
+  const [list, setList] = useState(null);
+  const [active, setActive] = useState(() => { try { return STANDALONE_ID ? STANDALONE_WS : (localStorage.getItem('tasks-ws') || 'product'); } catch (e) { return 'product'; } });
+  useEffect(() => {
+    invoke('read_store', { name: 'workspaces' }).then(raw => {
+      const v = raw ? JSON.parse(raw) : null;
+      if (v && Array.isArray(v.list) && v.list.length) setList(v.list);
+      else { setList(DEFAULT_WORKSPACES); persist('workspaces', { version: 1, list: DEFAULT_WORKSPACES }); }
+    }).catch(() => setList(DEFAULT_WORKSPACES));
+  }, []);
+  const switchTo = id => { setActive(id); if (!STANDALONE_ID) { try { localStorage.setItem('tasks-ws', id); } catch (e) {} } };
+  const rename = (id, name) => setList(l => { const n = l.map(w => w.id === id ? { ...w, name } : w); persist('workspaces', { version: 1, list: n }); return n; });
+  return { list: list || DEFAULT_WORKSPACES, ready: !!list, active: (list || DEFAULT_WORKSPACES).some(w => w.id === active) ? active : 'product', switchTo, rename };
+}
 
 export default function Root() {
   const prof = useProfile();
+  const wsp = useWorkspaces();
+  const [openOnLoad, setOpenOnLoad] = useState(null);
   return (
     <MeContext.Provider value={prof.data.user || null}>
       {!prof.loaded ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
         : !prof.data.user ? <SignIn prof={prof} />
-        : <App prof={prof} standaloneId={STANDALONE_ID} />}
+        : !wsp.ready ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
+        : <App key={wsp.active} prof={prof} standaloneId={STANDALONE_ID} ws={wsp.active} workspaces={wsp.list} openOnLoad={openOnLoad}
+            onRenameWorkspace={wsp.rename}
+            onSwitchWorkspace={(id, taskId) => { setOpenOnLoad(taskId || null); wsp.switchTo(id); }} />}
       <Toaster />
     </MeContext.Provider>
   );
