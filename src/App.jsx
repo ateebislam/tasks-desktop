@@ -7,6 +7,9 @@ import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialo
 import { check as checkForUpdate } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
+import { emit, listen } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { applyTheme, readTheme, saveTheme } from './theme.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
@@ -59,6 +62,12 @@ const I = {
   ban: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></Icon>,
   calendarCheck: p => <Icon {...p}><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/></Icon>,
   grid: p => <Icon {...p}><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></Icon>,
+  up: p => <Icon {...p}><path d="m18 15-6-6-6 6"/></Icon>,
+  lock: p => <Icon {...p}><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></Icon>,
+  external: p => <Icon {...p}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></Icon>,
+  panelRight: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></Icon>,
+  panelCenter: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><rect width="10" height="10" x="7" y="7" rx="1"/></Icon>,
+  maximize: p => <Icon {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></Icon>,
   user: p => <Icon {...p}><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></Icon>,
 };
 
@@ -376,7 +385,12 @@ function Combobox({ id, value, onChange, options, placeholder, createLabel = v =
 function useLockScroll(on) {
   useEffect(() => { if (!on) return; const o = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = o; }; }, [on]);
 }
-function Sheet({ open, onClose, children, labelledBy }) {
+const SHEET_VARIANTS = {
+  side: 'fixed inset-y-0 right-0 z-50 flex h-full w-full flex-col border-l bg-background shadow-lg sm:max-w-md anim-sheet',
+  center: 'fixed left-1/2 top-1/2 z-50 flex h-[min(88vh,920px)] w-[min(880px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl anim-zoom',
+  full: 'fixed inset-0 z-50 flex flex-col bg-background anim-fade',
+};
+function Sheet({ open, onClose, children, labelledBy, variant = 'side' }) {
   useLockScroll(open);
   useEffect(() => {
     if (!open) return;
@@ -387,10 +401,10 @@ function Sheet({ open, onClose, children, labelledBy }) {
   if (!open) return null;
   return createPortal(
     <>
-      <div className="fixed inset-0 z-50 bg-black/80 anim-fade" onClick={onClose} />
+      {variant !== 'full' && <div className="fixed inset-0 z-50 bg-black/80 anim-fade" onClick={onClose} />}
       <div role="dialog" aria-modal="true" aria-labelledby={labelledBy}
-        className="fixed inset-y-0 right-0 z-50 flex h-full w-full flex-col border-l bg-background shadow-lg sm:max-w-md anim-sheet"
-        style={{ paddingTop: 'env(safe-area-inset-top,0px)', paddingBottom: 'env(safe-area-inset-bottom,0px)' }}>
+        className={SHEET_VARIANTS[variant] || SHEET_VARIANTS.side}
+        style={{ paddingTop: 'env(safe-area-inset-top,0px)', paddingBottom: 'env(safe-area-inset-bottom,0px)', ...(variant === 'center' ? { transform: 'translate(-50%,-50%)' } : {}) }}>
         {children}
         <button type="button" onClick={onClose} aria-label="Close"
           className="absolute right-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -482,7 +496,7 @@ function Toaster() {
    ========================================================= */
 const STATUSES = [
   { id: 'todo', label: 'To do', dot: 'bg-orange-400', tone: 'bg-orange-100 text-orange-600 dark:bg-orange-950/70 dark:text-orange-300', icon: 'layers' },
-  { id: 'doing', label: 'In progress', dot: 'bg-violet-500', tone: 'bg-violet-100 text-violet-600 dark:bg-violet-950/70 dark:text-violet-300', icon: 'loader' },
+  { id: 'doing', label: 'In progress', dot: 'bg-blue-500', tone: 'bg-blue-100 text-blue-600 dark:bg-blue-950/70 dark:text-blue-300', icon: 'loader' },
   { id: 'blocked', label: 'Blocked', dot: 'bg-red-500', tone: 'bg-red-100 text-red-600 dark:bg-red-950/70 dark:text-red-300', icon: 'ban' },
   { id: 'done', label: 'Done', dot: 'bg-emerald-500', tone: 'bg-emerald-100 text-emerald-600 dark:bg-emerald-950/70 dark:text-emerald-300', icon: 'check' },
 ];
@@ -582,11 +596,26 @@ function persist(name, obj) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function flushAll() { while (Object.values(writers).some(w => w.busy)) await sleep(30); }
 
+/* Several windows can be open (the main one and tasks popped out on their own).
+   Whenever one saves, it tells the others, which take over the new data. */
+const WINDOW_LABEL = (() => { try { return getCurrentWindow().label; } catch (e) { return 'main'; } })();
 function useTasks() {
   const [loaded, setLoaded] = useState(false);
   const [tasks, setTasks] = useState({});
   const [rules, setRules] = useState(DEFAULT_RULES);
   const [projects, setProjects] = useState(null);
+  const [stages, setStages] = useState([]);
+  const remote = useRef(null);
+  useEffect(() => {
+    let un = null, dead = false;
+    listen('tasks-data', e => {
+      if (!e.payload || e.payload.from === WINDOW_LABEL) return;
+      const d = e.payload.data;
+      remote.current = JSON.stringify(d);
+      setTasks(d.tasks || {}); setRules((d.rules || []).map(normalizeRule)); setProjects(d.projects || []); setStages(d.stages || []);
+    }).then(f => { if (dead) f(); else un = f; }).catch(() => {});
+    return () => { dead = true; un && un(); };
+  }, []);
   useEffect(() => {
     (async () => {
       try {
@@ -596,19 +625,26 @@ function useTasks() {
           setTasks(d.tasks || {});
           if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
           if (Array.isArray(d.projects)) setProjects(d.projects);
+          if (Array.isArray(d.stages)) setStages(d.stages);
         }
       } catch (e) { toast('Couldn’t read your saved tasks', String(e)); }
       setLoaded(true);
     })();
   }, []);
-  useEffect(() => { if (loaded) persist('data', { version: 2, tasks, rules, projects: projects || [] }); }, [tasks, rules, projects, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const data = { version: 3, tasks, rules, projects: projects || [], stages };
+    if (JSON.stringify(data) === remote.current) return; // came from another window, already saved there
+    persist('data', data);
+    emit('tasks-data', { from: WINDOW_LABEL, data }).catch(() => {});
+  }, [tasks, rules, projects, stages, loaded]);
   const saveMany = useCallback(list => {
     const stamped = list.map(t => ({ ...t, updatedAt: Date.now() }));
     setTasks(p => { const n = { ...p }; stamped.forEach(t => { n[t.id] = t; }); return n; });
   }, []);
   const remove = useCallback(id => { setTasks(p => { const n = { ...p }; delete n[id]; return n; }); }, []);
   const saveRules = useCallback(list => setRules(list), []);
-  return { tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, loaded };
+  return { tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages, loaded };
 }
 
 /* Desktop notifications (used by the "send me a notification" automation). Falls back to an in-app message. */
@@ -638,7 +674,7 @@ function useUpdater() {
   }, []);
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
-    const t = setTimeout(() => look(false), 4000);
+    const t = WINDOW_LABEL === 'main' ? setTimeout(() => look(false), 4000) : null;
     return () => clearTimeout(t);
   }, [look]);
   const install = async () => {
@@ -690,6 +726,16 @@ function ThemeToggle() {
         onSelect: () => th.choose(t.id),
       }))} />
   );
+}
+
+async function openTaskWindow(id, title) {
+  const label = 'task-' + String(id).replace(/[^a-zA-Z0-9_-]/g, '');
+  try {
+    const existing = await WebviewWindow.getByLabel(label);
+    if (existing) { await existing.setFocus(); return; }
+    const w = new WebviewWindow(label, { url: 'index.html#task=' + encodeURIComponent(id), title: title || 'Task', width: 780, height: 880, minWidth: 480, minHeight: 480 });
+    w.once('tauri://error', e => toast('Couldn’t open a new window', String(e && e.payload)));
+  } catch (e) { toast('Couldn’t open a new window', String(e)); }
 }
 
 function useProfile() {
@@ -1032,10 +1078,36 @@ const PriorityPill = ({ priority }) => (
   </span>
 );
 // Subtle outlined chips, like a database table.
-const StatusPill = ({ status }) => {
-  const st = S[status] || S.todo;
-  return <span className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs text-foreground/80"><span className={cn('size-1.5 rounded-full', st.dot)} />{st.label}</span>;
+// Custom statuses ("Ready for design", "In review"…) belong to one of the four built-in groups,
+// which is what filters, automations and blocking use. The task keeps the group in `status`
+// and the custom one in `stage`.
+const STATUS_COLORS = {
+  gray: 'bg-zinc-400', brown: 'bg-amber-700', orange: 'bg-orange-500', yellow: 'bg-yellow-500', green: 'bg-emerald-500',
+  blue: 'bg-blue-500', purple: 'bg-violet-500', pink: 'bg-pink-500', red: 'bg-red-500',
 };
+const GROUP_HEAD = { todo: 'To-do', doing: 'In progress', blocked: 'Blocked', done: 'Complete' };
+const BUILTIN_COLOR = { todo: 'orange', doing: 'blue', blocked: 'red', done: 'green' };
+const NEW_COLOR = { todo: 'gray', doing: 'blue', blocked: 'red', done: 'green' };
+// Every status, in order, grouped. Each group has a main status (its id is the group's id,
+// it can be renamed and recolored but not deleted) plus any number of your own.
+const statusList = stages => STATUSES.flatMap(g => {
+  const inGroup = stages.filter(x => x.group === g.id);
+  const list = inGroup.some(x => x.id === g.id) ? inGroup : [{ id: g.id, group: g.id }, ...inGroup];
+  return list.map(x => x.id === g.id
+    ? { name: g.label, color: BUILTIN_COLOR[g.id], ...x, builtin: true }
+    : { color: NEW_COLOR[g.id], ...x });
+});
+const statusDef = (t, stages) => {
+  const all = statusList(stages), group = S[t.status] ? t.status : 'todo';
+  return (t.stage && all.find(x => x.id === t.stage && x.group === group && !x.builtin)) || all.find(x => x.id === group);
+};
+const StatusPill = ({ status, label, color }) => {
+  const st = S[status] || S.todo;
+  return <span className="inline-flex h-5 max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs text-foreground/80"><span className={cn('size-1.5 shrink-0 rounded-full', color ? STATUS_COLORS[color] : st.dot)} /><span className="truncate">{label || st.label}</span></span>;
+};
+const DefPill = ({ def }) => <StatusPill status={def.group} label={def.name || '…'} color={def.color} />;
+const stageOf = (t, stages) => { const d = statusDef(t, stages); return d && !d.builtin ? d : null; };
+const statusLabel = (t, stages) => statusDef(t, stages).name;
 const Tag = ({ color, children }) => (
   <span className={cn('inline-flex h-5 max-w-full items-center rounded px-1.5 text-xs font-medium', (PROJECT_COLORS[color] || PROJECT_COLORS.slate).soft)}><span className="truncate">{children}</span></span>
 );
@@ -1061,8 +1133,197 @@ function TimerButton({ task, onToggle }) {
   );
 }
 
+/* ---------- Inline cell editing ---------- */
+// Opens under a table cell. Lists show values exactly as they appear in the row,
+// and typing a name that doesn't exist yet offers to create it.
+function CellEditor({ edit, task, ctx, onClose }) {
+  const a = useRef(edit.el), p = useRef(null), inp = useRef(null);
+  a.current = edit.el;
+  useDismiss(true, v => { if (!v) onClose(); }, [a, p]);
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  useEffect(() => { setTimeout(() => inp.current && inp.current.focus(), 0); }, []);
+  const set = patch => { ctx.update(task.id, patch); onClose(); };
+  const nq = norm(q), name = q.trim();
+  let items = [], creates = [], placeholder = '';
+  const check = on => on ? <I.check className="ml-auto size-3.5 shrink-0 text-muted-foreground" /> : null;
+
+  if (edit.field === 'status') {
+    placeholder = 'Search or create…';
+    const cur = statusDef(task, ctx.stages);
+    items = statusList(ctx.stages).map(x => ({
+      key: x.id, text: x.name, section: GROUP_HEAD[x.group], node: <DefPill def={x} />, on: cur.id === x.id,
+      pick: () => set({ status: x.group, stage: x.builtin ? '' : x.id }),
+    }));
+    creates = STATUSES.map(g => ({ key: 'new-' + g.id, text: name, node: <span className="flex min-w-0 items-center gap-2"><span className="shrink-0 text-muted-foreground">Create</span><DefPill def={{ group: g.id, name, color: NEW_COLOR[g.id] }} /><span className="truncate text-xs text-muted-foreground">in {GROUP_HEAD[g.id]}</span></span>,
+      pick: () => { const id = ctx.addStage(name, g.id); set({ status: g.id, stage: id }); } }));
+  } else if (edit.field === 'project') {
+    placeholder = 'Search or create a project…';
+    items = [
+      { key: '', text: 'No project', node: <span className="text-muted-foreground">No project</span>, on: !task.project, pick: () => set({ project: '' }) },
+      ...ctx.projects.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.project) === norm(n), pick: () => set({ project: n }) })),
+    ];
+    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create project</span><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate font-medium">{name}</span></span>,
+      pick: () => { ctx.ensureProject(name); set({ project: name }); } }];
+  } else if (edit.field === 'assignee') {
+    placeholder = 'Search or add a person…';
+    items = [
+      { key: '', text: 'Unassigned', node: <span className="text-muted-foreground">Unassigned</span>, on: !task.assignee, pick: () => set({ assignee: '' }) },
+      ...ctx.people.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><Avatar name={n} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{n}</span></span>, on: norm(task.assignee) === norm(n), pick: () => set({ assignee: n }) })),
+    ];
+    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Assign to</span><Avatar name={name} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate font-medium">{name}</span></span>,
+      pick: () => set({ assignee: name }) }];
+  } else if (edit.field === 'priority') {
+    items = ['high', 'normal', 'low'].map(x => ({ key: x, text: P[x].label, node: <PriorityPill priority={x} />, on: (task.priority || 'normal') === x, pick: () => set({ priority: x }) }));
+  }
+
+  const searchable = edit.field !== 'priority' && edit.field !== 'deadline';
+  const shown = items.filter(i => !nq || norm(i.text).includes(nq));
+  const list = [...shown, ...(name && !items.some(i => norm(i.text) === nq) ? creates : [])];
+  const onKey = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, list.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (list[hi]) list[hi].pick(); }
+  };
+  let lastSection = null;
+  return (
+    <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-72')}>
+      {edit.field === 'deadline' ? (
+        <div>
+          <Calendar selected={task.deadline} onSelect={v => set({ deadline: v })} />
+          <div className="flex gap-1 border-t p-1">
+            <Button size="sm" variant="ghost" className="flex-1" onClick={() => set({ deadline: toISO(new Date()) })}>Today</Button>
+            <Button size="sm" variant="ghost" className="flex-1" onClick={() => { const d = new Date(); d.setDate(d.getDate() + 1); set({ deadline: toISO(d) }); }}>Tomorrow</Button>
+            <Button size="sm" variant="ghost" className="flex-1" disabled={!task.deadline} onClick={() => set({ deadline: '' })}>Clear</Button>
+          </div>
+        </div>
+      ) : (
+        <div onKeyDown={onKey}>
+          {edit.field === 'status' ? (
+            // Like a tag field: the current status sits in front of the cursor.
+            <div className="mb-1 flex min-h-9 flex-wrap items-center gap-1.5 border-b px-2 py-1">
+              <DefPill def={statusDef(task, ctx.stages)} />
+              <input ref={inp} value={q} onChange={e => { setQ(e.target.value); setHi(0); }} aria-label={placeholder} placeholder={q ? '' : 'Search or create…'}
+                className="h-6 min-w-[6rem] flex-1 bg-transparent text-sm placeholder:text-muted-foreground/70 focus-visible:outline-none" />
+            </div>
+          ) : searchable
+            ? <input ref={inp} value={q} onChange={e => { setQ(e.target.value); setHi(0); }} placeholder={placeholder} aria-label={placeholder}
+                className="mb-1 h-8 w-full rounded-md border-b bg-transparent px-2 text-sm placeholder:text-muted-foreground focus-visible:outline-none" />
+            : <input ref={inp} readOnly aria-label="Choose" className="sr-only" />}
+          <div role="listbox" className="max-h-[min(26rem,60vh)] overflow-y-auto">
+            {list.map((it, i) => {
+              const head = !nq && it.section && it.section !== lastSection ? it.section : null;
+              if (it.section) lastSection = it.section;
+              return (
+                <React.Fragment key={it.key + i}>
+                  {head && i > 0 && <div className="mx-1 my-1 h-px bg-border" />}
+                  {head && edit.field === 'status' && <div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{head}</div>}
+                  <div role="option" aria-selected={!!it.on} onMouseEnter={() => setHi(i)} onMouseDown={e => e.preventDefault()} onClick={it.pick}
+                    className={cn('group/opt flex h-8 cursor-default items-center gap-2 rounded-sm px-2 text-sm', i === hi && 'bg-accent')}>
+                    <span className="flex min-w-0 flex-1 items-center">{it.node}</span>
+                    {check(it.on)}
+                    {it.remove && (
+                      <button type="button" aria-label={`Delete status ${it.text}`} title="Delete this status"
+                        onClick={e => { e.stopPropagation(); it.remove(); }}
+                        className="hidden size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground group-hover/opt:flex"><I.trash className="size-3.5" /></button>
+                    )}
+                  </div>
+                </React.Fragment>
+              );
+            })}
+            {list.length === 0 && <div className="px-2 py-2 text-sm text-muted-foreground">Nothing found</div>}
+          </div>
+          {edit.field === 'status' && (
+            <>
+              <div className="mx-1 my-1 h-px bg-border" />
+              <button type="button" onClick={() => { onClose(); ctx.editStatuses(); }}
+                className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
+                <I.sliders className="size-3.5" />Edit property
+              </button>
+            </>
+          )}
+        </div>
+      )}
+    </Floating>
+  );
+}
+
+/* ---------- Edit the Status property ---------- */
+function StatusesDialog({ open, stages, tasks, onClose, onSave }) {
+  const [draft, setDraft] = useState([]);
+  useEffect(() => { if (open) setDraft(statusList(stages)); }, [open]);
+  const upd = (id, patch) => setDraft(d => d.map(x => x.id === id ? { ...x, ...patch } : x));
+  const move = (id, dir) => setDraft(d => {
+    const i = d.findIndex(x => x.id === id), j = i + dir;
+    if (j < 0 || j >= d.length || d[j].group !== d[i].group) return d;
+    const n = [...d]; [n[i], n[j]] = [n[j], n[i]]; return n;
+  });
+  const used = x => tasks.filter(t => (S[t.status] ? t.status : 'todo') === x.group && (x.builtin ? !t.stage || !draft.some(y => y.id === t.stage) : t.stage === x.id)).length;
+  const dupes = new Set(draft.map(x => norm(x.name)).filter((n, i, a) => n && a.indexOf(n) !== i));
+  const valid = draft.every(x => x.name.trim() && !dupes.has(norm(x.name)));
+  return (
+    <Dialog open={open} onClose={onClose} title="Edit the Status property" className="max-w-xl"
+      description="Rename, recolor and reorder statuses, or add your own. Each one belongs to a group, and the group decides how it behaves: Complete counts as done, In progress blocks the previous task, and so on."
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={!valid} onClick={() => onSave(draft.map(({ builtin, ...x }) => ({ ...x, name: x.name.trim() })))}>Save</Button>
+      </>}>
+      <div className="grid gap-5">
+        {STATUSES.map(g => {
+          const rows = draft.filter(x => x.group === g.id);
+          return (
+            <div key={g.id}>
+              <div className="mb-1.5 text-xs font-medium text-muted-foreground">{GROUP_HEAD[g.id]}</div>
+              <div className="grid gap-1">
+                {rows.map((x, i) => {
+                  const n = used(x), clash = dupes.has(norm(x.name));
+                  return (
+                    <div key={x.id} className="group/row flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-muted/50">
+                      <Popover className="p-2"
+                        trigger={p => <button {...p} type="button" aria-label={`Color of ${x.name || 'status'}`} className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"><span className={cn('size-2.5 rounded-full', STATUS_COLORS[x.color])} /></button>}>
+                        <div className="grid grid-cols-3 gap-1">
+                          {Object.keys(STATUS_COLORS).map(c => (
+                            <button key={c} type="button" onClick={() => upd(x.id, { color: c })}
+                              className={cn('flex h-7 items-center gap-2 rounded px-2 text-xs capitalize hover:bg-accent', x.color === c && 'bg-accent font-medium')}>
+                              <span className={cn('size-2.5 rounded-full', STATUS_COLORS[c])} />{c}
+                            </button>
+                          ))}
+                        </div>
+                      </Popover>
+                      <Input value={x.name} onChange={e => upd(x.id, { name: e.target.value })} placeholder="Status name" aria-label="Status name"
+                        className={cn('h-8 flex-1 border-transparent bg-transparent shadow-none hover:border-input focus-visible:border-input', clash && 'border-destructive')} />
+                      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground tnum">{n ? `${n} ${n === 1 ? 'task' : 'tasks'}` : ''}</span>
+                      <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(x.id, -1)}
+                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.up className="size-3.5" /></button>
+                      <button type="button" aria-label="Move down" disabled={i === rows.length - 1} onClick={() => move(x.id, 1)}
+                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.down className="size-3.5" /></button>
+                      {x.builtin
+                        ? <span title="Every group keeps its main status. You can rename and recolor it." className="flex size-7 items-center justify-center text-muted-foreground/50"><I.lock className="size-3.5" /></span>
+                        : <button type="button" aria-label={`Delete ${x.name || 'status'}`} title={n ? `Its ${n} ${n === 1 ? 'task moves' : 'tasks move'} to ${(draft.find(y => y.id === g.id) || {}).name}` : 'Delete'}
+                            onClick={() => setDraft(d => d.filter(y => y.id !== x.id))}
+                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive"><I.trash className="size-3.5" /></button>}
+                    </div>
+                  );
+                })}
+                <button type="button" onClick={() => setDraft(d => {
+                    const at = d.map(y => y.group).lastIndexOf(g.id) + 1;
+                    return [...d.slice(0, at), { id: 'st-' + newId(), name: '', group: g.id, color: NEW_COLOR[g.id] }, ...d.slice(at)];
+                  })}
+                  className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground">
+                  <I.plus className="size-3.5" />Add a status
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {dupes.size > 0 && <p className="text-[0.8rem] text-destructive">Two statuses can’t have the same name.</p>}
+      </div>
+    </Dialog>
+  );
+}
+
 /* ---------- Compact task sheet ---------- */
-const ghostField = 'h-8 w-full rounded-md border border-transparent bg-transparent px-2 text-sm shadow-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-0 focus-visible:border-input focus-visible:bg-background placeholder:text-muted-foreground';
+const ghostField = 'h-8 w-full rounded-md border border-transparent bg-transparent px-2 text-sm !shadow-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-0 focus-visible:border-input focus-visible:bg-background placeholder:text-muted-foreground';
 const hoverAct = 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 [@media(hover:none)]:opacity-100';
 const PropRow = ({ label, htmlFor, children }) => (
   <div className="grid min-h-8 grid-cols-[88px_minmax(0,1fr)] items-center gap-2">
@@ -1099,24 +1360,69 @@ const CompactFile = ({ f, onPreview, onDownload, onRemove }) => (
   </div>
 );
 
-function TaskSheet({ open, task, people, projects, rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+/* Where a task opens: a side panel, a centered window, full screen, or its own window. */
+const OPEN_MODES = [
+  { id: 'side', label: 'Side panel', icon: <I.panelRight className="size-3.5" /> },
+  { id: 'center', label: 'Centered', icon: <I.panelCenter className="size-3.5" /> },
+  { id: 'full', label: 'Full screen', icon: <I.maximize className="size-3.5" /> },
+];
+function SheetFrame({ mode, open, onClose, children }) {
+  if (mode === 'window') return <div className="flex h-screen flex-col bg-background" role="main" aria-labelledby="sheet-title">{children}</div>;
+  return <Sheet open={open} onClose={onClose} labelledBy="sheet-title" variant={mode}>{children}</Sheet>;
+}
+
+const FORM_KEYS = ['title', 'project', 'status', 'stage', 'assignee', 'deadline', 'description', 'priority', 'checklist'];
+const formFrom = (task, stages) => ({
+  title: task.title || '', project: task.project || '', status: S[task.status] ? task.status : 'todo', stage: stageOf(task, stages) ? task.stage : '',
+  assignee: task.assignee || '', deadline: task.deadline || '', description: task.description || '', priority: task.priority || 'normal', checklist: task.checklist || [],
+});
+
+// Every change is saved automatically: choices right away, typing after a short pause.
+function TaskSheet({ mode = 'side', onMode, onPopOut, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
+  const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
+  saveRef.current = onSave;
+  const commit = () => {
+    clearTimeout(timer.current);
+    const patch = pending.current; pending.current = {};
+    if (Object.keys(patch).length && pendingId.current) saveRef.current(pendingId.current, patch);
+  };
   useEffect(() => {
-    if (open) {
-      const init = { title: task?.title || '', project: task ? (task.project || '') : (defaultProject || ''), status: task?.status || 'todo', assignee: task ? (task.assignee || '') : (defaultAssignee || ''), deadline: task?.deadline || '', description: task?.description || '', priority: task?.priority || 'normal', checklist: task?.checklist || [] };
-      if (!task) init.files = [];
-      setForm(init);
-      if (!task) setTimeout(() => titleRef.current && titleRef.current.focus(), 50);
+    commit(); // save anything still waiting for the task you were on
+    if (open && task) {
+      setForm(formFrom(task, stages));
+      if (!task.title) setTimeout(() => titleRef.current && titleRef.current.focus(), 50);
     }
   }, [open, task?.id]);
-  if (!open || !form) return null;
-  const set = k => v => setForm(f => ({ ...f, [k]: v && v.target ? v.target.value : v }));
-  const submit = e => {
-    e && e.preventDefault();
-    if (!form.title.trim()) { titleRef.current.focus(); toast('Add a title to save this task'); return; }
-    onSave({ ...form, title: form.title.trim(), assignee: form.assignee.trim(), project: form.project.trim() });
+  // Keep fields you're not editing in step with changes made elsewhere (automations, the table, the timer).
+  useEffect(() => {
+    if (!open || !task) return;
+    const fresh = formFrom(task, stages);
+    setForm(f => {
+      if (!f) return f;
+      const n = { ...f };
+      FORM_KEYS.forEach(k => { if (!(k in pending.current)) n[k] = fresh[k]; });
+      return n;
+    });
+  }, [task, stages]);
+  useEffect(() => () => commit(), []);
+  if (!open || !form || !task) return null;
+  const change = (patch, debounce) => {
+    setForm(f => ({ ...f, ...patch }));
+    pendingId.current = task.id;
+    Object.assign(pending.current, patch);
+    clearTimeout(timer.current);
+    if (debounce) timer.current = setTimeout(commit, 500); else commit();
   };
+  const TYPED = ['title', 'description'];
+  const set = k => v => change({ [k]: v && v.target ? v.target.value : v }, TYPED.includes(k));
+  const isEmpty = () => !form.title.trim() && !form.description.trim() && !form.checklist.length && !(task.files || []).length;
+  const close = () => {
+    if (isEmpty()) { clearTimeout(timer.current); pending.current = {}; onDiscardEmpty(task.id); onClose(); return; }
+    commit(); onClose();
+  };
+  const submit = e => { e && e.preventDefault(); close(); };
   const on = task && !!task.timerStartedAt;
   // Documents on a saved task are stored right away; on a new task they wait in the form until Save.
   const files = task ? (task.files || []) : (form.files || []);
@@ -1129,7 +1435,7 @@ function TaskSheet({ open, task, people, projects, rules, defaultProject, defaul
     if (task) onRemoveFile(f, task.id);
     else { setForm(x => ({ ...x, files: x.files.filter(y => y.id !== f.id) })); onDiscard([f]); }
   };
-  const cancel = () => { if (!task && (form.files || []).length) onDiscard(form.files); onClose(); };
+  const cancel = close;
   // Files dropped onto the window while this sheet is open get attached here.
   if (dropRef) dropRef.current = addFiles;
   const chooseFiles = () => pickFiles().then(fs => { if (fs.length) addFiles(fs); });
@@ -1144,18 +1450,33 @@ function TaskSheet({ open, task, people, projects, rules, defaultProject, defaul
   const canUpload = storageOk !== false;
 
   return (
-    <Sheet open={open} onClose={cancel} labelledBy="sheet-title">
-      <form onSubmit={submit} className="flex h-full flex-col" autoComplete="off"
+    <SheetFrame mode={mode} open={open} onClose={cancel}>
+      <form onSubmit={submit} className="flex h-full min-h-0 flex-col" autoComplete="off"
         onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}>
         {/* Header */}
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4 pr-12 text-xs text-muted-foreground">
-          <span id="sheet-title" className="text-sm font-medium text-foreground">{task ? 'Task' : 'New task'}</span>
+        <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && 'pr-12')}>
+          {mode !== 'window' && (
+            <>
+              <DropdownMenu align="start"
+                trigger={p => <button {...p} type="button" aria-label="How tasks open" title="How tasks open" className="flex size-7 items-center justify-center rounded-md hover:bg-muted hover:text-foreground">{(OPEN_MODES.find(m => m.id === mode) || OPEN_MODES[0]).icon}</button>}
+                items={[
+                  ...OPEN_MODES.map(m => ({ label: m.label, icon: m.icon, shortcut: mode === m.id ? '✓' : undefined, onSelect: () => onMode(m.id) })),
+                  'sep',
+                  { label: 'Open in new window', icon: <I.external />, onSelect: () => { commit(); onPopOut(); } },
+                ]} />
+              <button type="button" onClick={() => { commit(); onPopOut(); }} aria-label="Open in new window" title="Open in new window"
+                className="flex size-7 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"><I.external className="size-3.5" /></button>
+              <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
+            </>
+          )}
+          <span id="sheet-title" className="text-sm font-medium text-foreground">{task.title || form.title ? 'Task' : 'New task'}</span>
           {task && <span>Created {fmtDay(task.createdAt)}</span>}
           {generatedFrom && <span className="inline-flex items-center gap-1"><I.zap className="size-3" />Auto</span>}
         </div>
 
         {/* Body */}
-        <div className="relative flex-1 overflow-y-auto px-3 py-4">
+        <div className={cn('relative flex-1 overflow-y-auto py-4', mode === 'side' ? 'px-3' : 'px-6')}>
+          <div className={cn(mode !== 'side' && 'mx-auto w-full max-w-3xl')}>
 
           <textarea ref={titleRef} rows={1} value={form.title} onChange={set('title')} placeholder="Task title" aria-label="Task title"
             onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) e.preventDefault(); }}
@@ -1166,9 +1487,15 @@ function TaskSheet({ open, task, people, projects, rules, defaultProject, defaul
           <div className="mt-3 grid gap-0.5 px-2">
             <PropRow label="Status" htmlFor="t-status">
               <div className="relative">
-                <span className={cn('pointer-events-none absolute left-2.5 top-1/2 size-2 -translate-y-1/2 rounded-full', S[form.status].dot)} />
-                <select id="t-status" value={form.status} onChange={set('status')} className={cn(ghostField, 'cursor-pointer appearance-none pl-7')}>
-                  {STATUSES.map(st => <option key={st.id} value={st.id}>{st.label}</option>)}
+                <span className={cn('pointer-events-none absolute left-2.5 top-1/2 size-2 -translate-y-1/2 rounded-full', STATUS_COLORS[statusDef(form, stages).color])} />
+                <select id="t-status" value={form.stage ? `${form.status}|${form.stage}` : form.status}
+                  onChange={e => { const [st, sg] = e.target.value.split('|'); change({ status: st, stage: sg || '' }); }}
+                  className={cn(ghostField, 'cursor-pointer appearance-none pl-7')}>
+                  {STATUSES.map(st => (
+                    <optgroup key={st.id} label={GROUP_HEAD[st.id]}>
+                      {statusList(stages).filter(x => x.group === st.id).map(x => <option key={x.id} value={x.builtin ? st.id : `${st.id}|${x.id}`}>{x.name}</option>)}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
             </PropRow>
@@ -1217,9 +1544,9 @@ function TaskSheet({ open, task, people, projects, rules, defaultProject, defaul
             <div className="mt-3 grid gap-1.5 px-2">
               {form.status === 'doing' && task?.status !== 'doing' && inProgress.length > 0 && (
                 <Note tone="amber"><I.flag className="mt-0.5 size-3 shrink-0" />
-                  <span>Saving blocks {inProgress.length === 1 ? `“${inProgress[0].title}”` : `${inProgress.length} in-progress tasks`}.</span></Note>
+                  <span>This blocks {inProgress.length === 1 ? `“${inProgress[0].title}”` : `${inProgress.length} in-progress tasks`}.</span></Note>
               )}
-              {blocker && form.status !== 'blocked' && <Note><I.x className="mt-0.5 size-3 shrink-0" /><span>Saving removes the blocker.</span></Note>}
+              {blocker && form.status !== 'blocked' && <Note><I.x className="mt-0.5 size-3 shrink-0" /><span>This removes the blocker.</span></Note>}
               {autoRules.length > 0 && form.status !== 'done' && (
                 <Note><I.zap className="mt-0.5 size-3 shrink-0" /><span>{autoRules.slice(0, 2).map(r => `${TRIG[r.trigger].short}: ${ACT[r.action].label} ${targetText(r)}.`).join(' ')}{autoRules.length > 2 ? ` And ${autoRules.length - 2} more.` : ''}</span></Note>
               )}
@@ -1255,30 +1582,54 @@ function TaskSheet({ open, task, people, projects, rules, defaultProject, defaul
                 </button>
               : <p className="px-2 text-xs text-muted-foreground">File storage isn’t available in this view.</p>)}
           </div>
+          </div>
         </div>
 
         {/* Footer */}
         <div className="flex shrink-0 items-center gap-2 border-t px-4 py-2.5">
           {task && <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={onDelete} aria-label="Delete task"><I.trash /></Button>}
-          <span className="hidden text-xs text-muted-foreground sm:inline">Ctrl + Enter to save</span>
+          <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><I.check className="size-3.5" />Changes save automatically</span>
           <div className="flex-1" />
-          <Button variant="ghost" size="sm" onClick={cancel}>Cancel</Button>
-          <Button type="submit" size="sm">{task ? 'Save' : 'Create task'}</Button>
+          <Button type="submit" variant="outline" size="sm">Close</Button>
         </div>
       </form>
-    </Sheet>
+    </SheetFrame>
   );
 }
 
 function Checklist({ items, onChange }) {
   const [text, setText] = useState('');
+  const [editing, setEditing] = useState(null); // { id, value }
   const add = () => { const v = text.trim(); if (!v) return; onChange([...items, { id: newId(), text: v, done: false }]); setText(''); };
+  // Click an item's text to edit it. Enter or clicking away saves, Esc cancels, and clearing it removes the item.
+  const saveEdit = () => {
+    if (!editing) return;
+    const v = editing.value.trim(), cur = items.find(x => x.id === editing.id);
+    setEditing(null);
+    if (!cur || v === cur.text) return;
+    onChange(v ? items.map(x => x.id === editing.id ? { ...x, text: v } : x) : items.filter(x => x.id !== editing.id));
+  };
   return (
     <div className="grid">
       {items.map(it => (
         <div key={it.id} className="group flex min-h-8 items-center gap-2.5 rounded-md px-2 hover:bg-muted/60">
           <Checkbox checked={it.done} label={it.text} onChange={v => onChange(items.map(x => x.id === it.id ? { ...x, done: v } : x))} />
-          <span className={cn('flex-1 py-1 text-sm', it.done && 'text-muted-foreground line-through')}>{it.text}</span>
+          {editing && editing.id === it.id ? (
+            <input autoFocus value={editing.value} aria-label="Edit checklist item"
+              onChange={e => setEditing({ id: it.id, value: e.target.value })}
+              onFocus={e => { const n = e.target.value.length; e.target.setSelectionRange(n, n); }}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); saveEdit(); }
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(null); }
+              }}
+              onBlur={saveEdit}
+              className="-mx-1 h-7 min-w-0 flex-1 rounded border bg-background px-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          ) : (
+            <span role="button" tabIndex={0} title="Click to edit"
+              onClick={() => setEditing({ id: it.id, value: it.text })}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); setEditing({ id: it.id, value: it.text }); } }}
+              className={cn('-mx-1 flex-1 cursor-text rounded px-1 py-1 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', it.done && 'text-muted-foreground line-through')}>{it.text}</span>
+          )}
           <button type="button" className={cn(hoverAct, 'h-6 w-6')} aria-label={`Remove ${it.text}`}
             onClick={() => onChange(items.filter(x => x.id !== it.id))}><I.x className="size-3.5" /></button>
         </div>
@@ -1568,9 +1919,12 @@ function ProjectsView({ list, tasks, onNew, onEdit, onDelete, onOpen }) {
   );
 }
 
-function App({ prof }) {
+function App({ prof, standaloneId }) {
   const me = prof.data.user;
-  const { tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, loaded } = useTasks();
+  const { tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded } = useTasks();
+  const [cellEdit, setCellEdit] = useState(null); // { id, field, el }
+  const [renaming, setRenaming] = useState(null);
+  const [statusesOpen, setStatusesOpen] = useState(false);
   const up = useUpdater();
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
   const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
@@ -1587,7 +1941,9 @@ function App({ prof }) {
   const [sortBy, setSortBy] = useState(savedView.sortBy || 'deadline');
   useEffect(() => { try { localStorage.setItem(LS_VIEW, JSON.stringify({ projectFilter, sortBy, showSummary, view })); } catch (e) {} }, [projectFilter, sortBy, showSummary, view]);
   const [quick, setQuick] = useState('');
-  const [sheet, setSheet] = useState({ open: false, id: null });
+  const [sheet, setSheet] = useState(standaloneId ? { open: true, id: standaloneId } : { open: false, id: null });
+  const [openMode, setOpenMode] = useState(() => { try { return localStorage.getItem('tasks-open-mode') || 'side'; } catch (e) { return 'side'; } });
+  const chooseMode = m => { setOpenMode(m); try { localStorage.setItem('tasks-open-mode', m); } catch (e) {} };
   const [confirmId, setConfirmId] = useState(null);
   const storageOk = true;
   const [profileOpen, setProfileOpen] = useState(false);
@@ -1642,11 +1998,31 @@ function App({ prof }) {
     if (projectFilter === p.name) setProjectFilter('all');
     toast('Project deleted', p.name);
   };
+  const ensureProject = name => {
+    if (!name || projectList.some(p => norm(p.name) === norm(name))) return;
+    saveProjects([...projectList, { id: 'p-' + newId(), name, color: autoColor(name) }]);
+    toast('Project created', name);
+  };
+  const addStage = (name, group) => {
+    const found = stages.find(x => norm(x.name) === norm(name) && x.group === group);
+    if (found) return found.id;
+    const id = 'st-' + newId();
+    const all = statusList(stages).map(({ builtin, ...x }) => x);
+    const at = all.map(x => x.group).lastIndexOf(group) + 1;
+    saveStages([...all.slice(0, at), { id, name, group, color: NEW_COLOR[group] }, ...all.slice(at)]);
+    toast('Status created', `${name} (${GROUP_HEAD[group]})`);
+    return id;
+  };
+  const deleteStage = id => {
+    const sg = stages.find(x => x.id === id);
+    saveStages(stages.filter(x => x.id !== id));
+    if (sg) toast('Status deleted', `Tasks with “${sg.name}” now show ${S[sg.group].label}.`);
+  };
   const openProject = name => { setProjectFilter(name); setFilter('all'); setView('tasks'); };
   const scoped = useMemo(() => {
     const q = norm(query);
     return all.filter(t => (projectFilter === 'all' || (projectFilter === 'none' ? !t.project : t.project === projectFilter))
-      && (!q || [t.title, t.description, t.assignee, t.project, ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
+      && (!q || [t.title, t.description, t.assignee, t.project, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
   }, [all, projectFilter, query]);
   const counts = useMemo(() => { const c = { all: scoped.length }; STATUSES.forEach(s => { c[s.id] = scoped.filter(t => t.status === s.id).length; }); return c; }, [scoped]);
   const overview = useMemo(() => {
@@ -1662,7 +2038,7 @@ function App({ prof }) {
     const by = {
       deadline: (a, b) => (a.deadline || '9999').localeCompare(b.deadline || '9999') || b.createdAt - a.createdAt,
       created: (a, b) => b.createdAt - a.createdAt,
-      status: (a, b) => S[a.status].i - S[b.status].i || b.createdAt - a.createdAt,
+      status: (a, b) => { const o = statusList(stages).map(x => x.id); return S[a.status].i - S[b.status].i || o.indexOf(statusDef(a, stages).id) - o.indexOf(statusDef(b, stages).id) || b.createdAt - a.createdAt; },
       assignee: (a, b) => (a.assignee || '~').localeCompare(b.assignee || '~') || b.createdAt - a.createdAt,
       project: (a, b) => (a.project || '~').localeCompare(b.project || '~') || b.createdAt - a.createdAt,
       priority: (a, b) => P[a.priority || 'normal'].i - P[b.priority || 'normal'].i || (a.deadline || '9999').localeCompare(b.deadline || '9999'),
@@ -1671,7 +2047,7 @@ function App({ prof }) {
       if (sortBy !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
       return by(a, b);
     });
-  }, [scoped, filter, sortBy]);
+  }, [scoped, filter, sortBy, stages]);
 
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
@@ -1766,7 +2142,7 @@ function App({ prof }) {
   // Date-based automations ("is due tomorrow", "becomes overdue") are checked when the app opens
   // and every minute after. Each fires once per task, again only if you change its deadline.
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || standaloneId) return; // only the main window runs date-based automations
     const scan = () => {
       const list = rules.filter(r => r.enabled && TIME_TRIGGERS.includes(r.trigger));
       if (!list.length) return;
@@ -1791,6 +2167,21 @@ function App({ prof }) {
     const i = setInterval(scan, 60000);
     return () => clearInterval(i);
   }, [loaded, rules]);
+  // Changes made directly in the table go through the same rules as the task panel.
+  const updateTask = (id, p) => {
+    const t = tasksRef.current[id]; if (!t) return;
+    let next = { ...t, ...p };
+    if ('status' in p && p.status !== t.status) {
+      if (next.status !== 'blocked') next.blockedBy = null;
+      if ((next.status === 'done' || next.status === 'blocked') && next.timerStartedAt) next = stopT(next);
+    }
+    if ('deadline' in p && p.deadline !== t.deadline) next.autoFired = {};
+    const blocked = blockOthers(next, t);
+    const auto = automate(next, t);
+    saveMany(merge([...blocked, auto.task, ...auto.created]));
+    if (!notifyAuto(auto) && blocked.length) notifyBlocked(blocked, auto.task);
+  };
+  const openCell = (id, field, el) => setCellEdit(c => (c && c.id === id && c.field === field ? null : { id, field, el }));
   const toggleTimer = id => {
     const t = tasks[id]; if (!t) return;
     if (t.timerStartedAt) { saveMany([stopT(t)]); return; }
@@ -1811,28 +2202,26 @@ function App({ prof }) {
   const addQuick = e => {
     e.preventDefault();
     const v = quick.trim();
-    if (!v) { setSheet({ open: true, id: null }); return; }
+    if (!v) { createTask(); return; }
     const auto = automate({ id: newId(), title: v, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal',
       project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
     saveMany([auto.task, ...auto.created]);
     setQuick('');
   };
-  const saveSheet = form => {
-    const existing = sheet.id && tasks[sheet.id];
-    const base = existing || { id: newId(), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null };
-    let next = { ...base, ...form };
-    if (next.status !== 'blocked') next.blockedBy = null;
-    if ((form.status === 'done' || form.status === 'blocked') && next.timerStartedAt) next = stopT(next);
-    if (existing && existing.deadline !== next.deadline) next.autoFired = {};
-    const blocked = blockOthers(next, existing);
-    const auto = automate(next, existing);
-    next = auto.task;
-    saveMany([...blocked, next, ...auto.created]);
-    setSheet({ open: false, id: null });
-    if (notifyAuto(auto)) {}
-    else if (blocked.length) notifyBlocked(blocked, next);
-    else toast(existing ? 'Task saved' : 'Task added', next.title);
+  // The task panel saves each change as you make it, through the same rules as the table.
+  const saveSheet = (id, patch) => updateTask(id, patch);
+  // "Create task" and N make a real task straight away and open it, ready for a title.
+  const createTask = () => {
+    const auto = automate({
+      id: newId(), title: '', status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [],
+      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
+    }, null);
+    saveMany([auto.task, ...auto.created]);
+    setSheet({ open: true, id: auto.task.id });
   };
+  const createRef = useRef(createTask); createRef.current = createTask;
+  // A new task you close without typing anything is removed again.
+  const discardEmpty = id => remove(id);
   const doDelete = () => {
     const t = tasks[confirmId]; remove(confirmId); setConfirmId(null); setSheet({ open: false, id: null });
     if (t) (t.files || []).forEach(f => deleteIfUnused(f, [t.id]));
@@ -1954,8 +2343,8 @@ function App({ prof }) {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       const el = document.activeElement;
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
-      if (document.querySelector('[role=dialog],[role=alertdialog]')) return;
-      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); setSheet({ open: true, id: null }); }
+      if (document.querySelector('[role=dialog],[role=alertdialog]') || standaloneId) return;
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); createRef.current(); }
       else if (e.key === '/' && searchRef.current) { e.preventDefault(); searchRef.current.focus(); }
       else if (e.key === '?') { e.preventDefault(); setKeysOpen(true); }
     };
@@ -1963,7 +2352,31 @@ function App({ prof }) {
     return () => document.removeEventListener('keydown', k);
   }, []);
   const sheetTask = sheet.id ? all.find(t => t.id === sheet.id) : null;
+  const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled'); };
+  // In a task's own window: keep the title bar in step, and close the window when the task is closed or deleted.
+  useEffect(() => {
+    if (!standaloneId) return;
+    if (loaded && (!sheet.open || !sheetTask)) { flushAll().then(() => getCurrentWindow().close()).catch(() => {}); return; }
+    if (sheetTask) getCurrentWindow().setTitle(sheetTask.title || 'Untitled').catch(() => {});
+  }, [standaloneId, loaded, sheet.open, sheetTask && sheetTask.title, !!sheetTask]);
   if (!loaded) return <div className="p-8 text-sm text-muted-foreground">Loading your tasks…</div>;
+
+  if (standaloneId) return (
+    <>
+      <TaskSheet mode={standaloneId ? 'window' : openMode} onMode={chooseMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => setSheet({ open: true, id })} onPatch={patch} onClose={closeSheet}
+        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
+        storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
+        onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
+      <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
+      <AlertDialog open={!!confirmId} title="Delete this task?"
+        description={`“${(tasks[confirmId] || {}).title || ''}” and its tracked time${((tasks[confirmId] || {}).files || []).length ? ' and attached documents' : ''} will be removed. This can’t be undone.`}
+        confirmLabel="Delete task" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
+      <AlertDialog open={!!fileConfirm} title="Remove this document?"
+        description={fileConfirm ? `“${fileConfirm.file.name}” will be removed from this task.` : ''}
+        confirmLabel="Remove document" onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
+      {cellEdit && null}
+    </>
+  );
 
   return (
     <div className="mx-auto w-full max-w-6xl px-4 py-5 md:px-6 md:py-6">
@@ -1988,6 +2401,7 @@ function App({ prof }) {
           items={[
             { label: 'Automations', icon: <I.zap />, shortcut: `${rules.filter(r => r.enabled).length} on`, onSelect: () => setRulesOpen(true) },
             { label: 'Manage projects', icon: <I.folder />, onSelect: () => setView('projects') },
+            { label: 'Edit statuses', icon: <I.sliders />, onSelect: () => setStatusesOpen(true) },
             { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
             { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
           ]} />
@@ -2006,29 +2420,8 @@ function App({ prof }) {
             'sep',
             { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
           ]} />
-        <Button className="shadow-none" onClick={() => setSheet({ open: true, id: null })}><I.plus />Create task</Button>
+        <Button className="shadow-none" onClick={createTask}><I.plus />Create task</Button>
       </header>
-
-      {/* Update available */}
-      {up.update && (
-        <Alert className="mt-6 flex flex-wrap items-center gap-3 border-blue-200 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/40 text-blue-950 dark:text-blue-100">
-          <I.download className="text-blue-700 dark:text-blue-300" />
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">Version {up.update.version} is ready to install</div>
-            {up.update.body && <div className="mt-0.5 line-clamp-3 whitespace-pre-line text-blue-900/80 dark:text-blue-200/80">{up.update.body}</div>}
-          </div>
-          {up.progress === null ? (
-            <div className="flex gap-2">
-              <Button variant="ghost" size="sm" className="hover:bg-blue-100 dark:hover:bg-blue-900/50" onClick={up.dismiss}>Later</Button>
-              <Button size="sm" onClick={up.install}>Install and restart</Button>
-            </div>
-          ) : (
-            <span className="tnum text-sm text-blue-900 dark:text-blue-200">
-              {up.progress === 'installing' ? 'Installing…' : up.progress === -1 ? 'Downloading…' : `Downloading ${up.progress}%`}
-            </span>
-          )}
-        </Alert>
-      )}
 
       {/* Sections, with the running timer on the right */}
       <div className="mt-5 flex items-end gap-3 border-b">
@@ -2067,7 +2460,7 @@ function App({ prof }) {
 
       {/* Filters and a one-line summary */}
       <div className="mt-4 flex flex-wrap items-center gap-1.5">
-        {[{ id: 'all', label: 'All', count: counts.all }, ...STATUSES.map(st => ({ id: st.id, label: st.label, count: counts[st.id], dot: st.dot }))].map(c => (
+        {[{ id: 'all', label: 'All', count: counts.all }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot }))].map(c => (
           <button key={c.id} type="button" onClick={() => setFilter(c.id)} aria-pressed={filter === c.id}
             className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
               filter === c.id ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
@@ -2110,7 +2503,7 @@ function App({ prof }) {
       <Card className="mt-3 overflow-hidden">
         {all.length === 0 ? (
           <Empty icon={<I.clipboard />} title="No tasks yet" description="Add one in the last row of the table, or use Create task to add an assignee, deadline and description.">
-            <Button variant="outline" size="sm" onClick={() => setSheet({ open: true, id: null })}><I.plus />Create task</Button>
+            <Button variant="outline" size="sm" onClick={createTask}><I.plus />Create task</Button>
           </Empty>
         ) : shown.length === 0 && query ? (
           <Empty icon={<I.search />} title={`No tasks match “${query}”`} description="Try a different word, or clear the search to see everything.">
@@ -2142,30 +2535,54 @@ function App({ prof }) {
                   const blocker = t.status === 'blocked' && tasks[t.blockedBy];
                   const cell = 'h-[34px] border-r px-2.5 align-middle';
                   return (
-                    <tr key={t.id} className={cn('group cursor-pointer border-b transition-colors hover:bg-muted/50', on && 'bg-accent/60')} onClick={() => setSheet({ open: true, id: t.id })}>
-                      <td className={cell}>
-                        <div className="flex min-w-0 items-center gap-2">
-                          <I.file className="size-3.5 shrink-0 text-muted-foreground" />
-                          <button type="button" className={cn('min-w-0 truncate text-left font-medium focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through')} title={t.title}>{t.title}</button>
-                          <span className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
-                            {blocker && <button type="button" title={`Blocked by “${blocker.title}”`} onClick={e => { e.stopPropagation(); setSheet({ open: true, id: t.blockedBy }); }} className="text-red-600 dark:text-red-400"><I.ban className="size-3" /></button>}
-                            {(t.checklist || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Checklist"><I.listCheck className="size-3" />{t.checklist.filter(c => c.done).length}/{t.checklist.length}</span>}
-                            {(t.files || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Documents"><I.paperclip className="size-3" />{t.files.length}</span>}
-                            {t.generatedFrom && <span title="Created by an automation"><I.zap className="size-3" /></span>}
-                          </span>
-                        </div>
+                    <tr key={t.id} className={cn('group border-b transition-colors hover:bg-muted/40', on && 'bg-accent/60')}>
+                      <td className={cn(cell, 'group/title')}>
+                        {renaming === t.id ? (
+                          <input autoFocus defaultValue={t.title} aria-label="Task title"
+                            className="h-7 w-full rounded-md border bg-background px-1.5 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null); } }}
+                            onBlur={e => { const v = e.target.value.trim(); if (v && v !== t.title) updateTask(t.id, { title: v }); setRenaming(null); }} />
+                        ) : (
+                          <div className="flex min-w-0 items-center gap-2">
+                            <I.file className="size-3.5 shrink-0 text-muted-foreground" />
+                            <button type="button" onClick={() => setSheet({ open: true, id: t.id })} title={t.title}
+                              className={cn('min-w-0 truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
+                            <span className="flex shrink-0 items-center gap-2 text-[11px] text-muted-foreground">
+                              {blocker && <button type="button" title={`Blocked by “${blocker.title}”`} onClick={() => setSheet({ open: true, id: t.blockedBy })} className="text-red-600 dark:text-red-400"><I.ban className="size-3" /></button>}
+                              {(t.checklist || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Checklist"><I.listCheck className="size-3" />{t.checklist.filter(c => c.done).length}/{t.checklist.length}</span>}
+                              {(t.files || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Documents"><I.paperclip className="size-3" />{t.files.length}</span>}
+                              {t.generatedFrom && <span title="Created by an automation"><I.zap className="size-3" /></span>}
+                            </span>
+                            <button type="button" onClick={() => setRenaming(t.id)} aria-label={`Rename ${t.title}`} title="Rename"
+                              className="ml-auto inline-flex h-6 shrink-0 items-center gap-1 rounded-md border bg-card px-1.5 text-[11px] font-medium text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100">
+                              <I.pencil className="size-3" />Edit
+                            </button>
+                          </div>
+                        )}
                       </td>
-                      <td className={cell}><StatusPill status={t.status} /></td>
-                      <td className={cell}>
-                        {t.assignee
+                      {[
+                        ['status', <DefPill def={statusDef(t, stages)} />],
+                        ['assignee', t.assignee
                           ? <span className="flex min-w-0 items-center gap-1.5"><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{t.assignee}</span></span>
-                          : <span className="text-muted-foreground/60">Empty</span>}
-                      </td>
-                      <td className={cn(cell, 'whitespace-nowrap', dueCls[d.tone], !t.deadline && 'text-muted-foreground/60')}>{t.deadline ? d.text : 'Empty'}</td>
-                      <td className={cell}>{t.project ? <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{t.project}</span></span> : <span className="text-muted-foreground/60">Empty</span>}</td>
-                      <td className={cn(cell, done && 'opacity-50')}><PriorityPill priority={t.priority} /></td>
+                          : <span className="text-muted-foreground/60">Empty</span>],
+                        ['deadline', t.deadline ? <span className={cn('whitespace-nowrap', dueCls[d.tone])}>{d.text}</span> : <span className="text-muted-foreground/60">Empty</span>],
+                        ['project', t.project
+                          ? <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{t.project}</span></span>
+                          : <span className="text-muted-foreground/60">Empty</span>],
+                        ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
+                      ].map(([field, content]) => {
+                        const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
+                        return (
+                          <td key={field} tabIndex={0} role="button" aria-label={`Change ${field} of ${t.title}`}
+                            onClick={e => openCell(t.id, field, e.currentTarget)}
+                            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCell(t.id, field, e.currentTarget); } }}
+                            className={cn(cell, 'cursor-pointer transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring))]', active && 'bg-muted/60 shadow-[inset_0_0_0_1px_hsl(var(--ring))]')}>
+                            <div className="flex min-w-0 items-center">{content}</div>
+                          </td>
+                        );
+                      })}
                       <td className={cn(cell, 'px-1')}>
-                        <button type="button" onClick={e => { e.stopPropagation(); toggleTimer(t.id); }} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title}`}
+                        <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title}`}
                           className={cn('tnum inline-flex h-6 w-full items-center gap-1.5 rounded px-1.5 text-xs transition-colors hover:bg-muted', on ? 'font-semibold text-primary' : 'text-muted-foreground')}>
                           {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{fmt(elapsed(t))}
                         </button>
@@ -2200,13 +2617,19 @@ function App({ prof }) {
       </Card>
       </>)}
 
-      <TaskSheet open={sheet.open} task={sheetTask} people={people} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => setSheet({ open: true, id })} onPatch={patch} onClose={closeSheet}
-        onSave={saveSheet} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
+      <TaskSheet mode={standaloneId ? 'window' : openMode} onMode={chooseMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => setSheet({ open: true, id })} onPatch={patch} onClose={closeSheet}
+        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <AlertDialog open={!!confirmId} title="Delete this task?"
         description={`“${(tasks[confirmId] || {}).title || ''}” and its tracked time${((tasks[confirmId] || {}).files || []).length ? ' and attached documents' : ''} will be removed. This can’t be undone.`}
         confirmLabel="Delete task" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
+      {cellEdit && tasks[cellEdit.id] && (
+        <CellEditor key={cellEdit.id + cellEdit.field} edit={cellEdit} task={{ ...tasks[cellEdit.id], status: S[tasks[cellEdit.id].status] ? tasks[cellEdit.id].status : 'todo' }}
+          ctx={{ update: updateTask, people, projects, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
+      )}
+      <StatusesDialog open={statusesOpen} stages={stages} tasks={all} onClose={() => setStatusesOpen(false)}
+        onSave={list => { saveStages(list); setStatusesOpen(false); toast('Statuses saved'); }} />
       <ProjectDialog open={!!projectEdit} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
       <AlertDialog open={!!projectDelete} title={`Delete “${projectDelete ? projectDelete.name : ''}”?`}
         description={projectDelete ? (() => {
@@ -2225,6 +2648,30 @@ function App({ prof }) {
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
         description={fileConfirm ? `“${fileConfirm.file.name}” will be removed from this task.` : ''}
         confirmLabel="Remove document" onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
+      {/* Update available: a small snackbar at the bottom left */}
+      {up.update && (
+        <div role="status" aria-live="polite"
+          className="fixed left-4 z-[95] flex w-[calc(100%-2rem)] max-w-sm items-start gap-3 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg anim-toast"
+          style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom,0px))' }}>
+          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><I.download className="size-3.5" /></span>
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">Version {up.update.version} is ready</div>
+            {up.update.body && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground" title={up.update.body}>{up.update.body}</div>}
+            {up.progress === null ? (
+              <div className="mt-2 flex gap-2">
+                <Button size="sm" className="h-7 px-2.5" onClick={up.install}>Install and restart</Button>
+                <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={up.dismiss}>Later</Button>
+              </div>
+            ) : (
+              <div className="mt-2">
+                <div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${up.progress === 'installing' ? 100 : up.progress === -1 ? 30 : up.progress}%` }} /></div>
+                <div className="tnum mt-1 text-xs text-muted-foreground">{up.progress === 'installing' ? 'Installing…' : up.progress === -1 ? 'Downloading…' : `Downloading ${up.progress}%`}</div>
+              </div>
+            )}
+          </div>
+          {up.progress === null && <button type="button" onClick={up.dismiss} aria-label="Dismiss" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground"><I.x className="size-3.5" /></button>}
+        </div>
+      )}
       <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} prof={prof} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
         description="Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first."
@@ -2332,13 +2779,15 @@ function ProfileDialog({ open, onClose, prof }) {
   );
 }
 
+const STANDALONE_ID = (() => { const m = (window.location.hash || '').match(/^#task=(.+)$/); return m ? decodeURIComponent(m[1]) : null; })();
+
 export default function Root() {
   const prof = useProfile();
   return (
     <MeContext.Provider value={prof.data.user || null}>
       {!prof.loaded ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
         : !prof.data.user ? <SignIn prof={prof} />
-        : <App prof={prof} />}
+        : <App prof={prof} standaloneId={STANDALONE_ID} />}
       <Toaster />
     </MeContext.Provider>
   );
