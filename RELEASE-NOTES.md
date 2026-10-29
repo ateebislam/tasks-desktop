@@ -1,6 +1,7 @@
-A cleaner Tasks page, a document library, Undo and a command palette.
-- New top bar with underlined tabs. The main button follows the page: Create task, Create bucket or Add documents (N does the same).
-- Resize table columns by dragging, and hide or show them from a column's menu or the Columns button.
-- Documents are now a library: link one document to many tasks, and choose existing documents from a task.
-- Undo and redo with Ctrl+Z and Ctrl+Shift+Z.
-- Ctrl+K opens the command palette to jump to anything or run an action.
+Quick capture, watch folders, versions, a timesheet and idle detection.
+- Press Ctrl+Shift+Space anywhere in Windows (or ` inside the app) to add a task. Tasks keeps running in the tray when you close it.
+- Watch folders: new files saved to a folder you choose appear in the Documents Inbox.
+- A more compact Documents page that fills the window, with document versions.
+- New Timesheet tab: time per day or week, grouped your way, with CSV and PDF export.
+- If you're away with a timer running, Tasks asks what to do with that time.
+- Settings are in the ⋯ menu.

@@ -14,7 +14,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
 
 type Res<T> = Result<T, String>;
@@ -430,6 +430,75 @@ async fn google_sign_in(app: AppHandle, client_id: String, client_secret: String
     })
 }
 
+/* ---------------------------------------------------------------
+   Watch folders: list the files in a folder (not its subfolders).
+   --------------------------------------------------------------- */
+
+#[derive(Serialize)]
+struct FolderFile {
+    path: String,
+    name: String,
+    size: u64,
+    modified: u64,
+}
+
+#[tauri::command]
+fn list_folder(path: String) -> Res<Vec<FolderFile>> {
+    let mut out = Vec::new();
+    for entry in fs::read_dir(&path).map_err(err)? {
+        let entry = match entry { Ok(e) => e, Err(_) => continue };
+        let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+        if !meta.is_file() { continue; }
+        let modified = meta.modified().ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64).unwrap_or(0);
+        out.push(FolderFile {
+            path: entry.path().to_string_lossy().to_string(),
+            name: entry.file_name().to_string_lossy().to_string(),
+            size: meta.len(),
+            modified,
+        });
+    }
+    Ok(out)
+}
+
+/* ---------------------------------------------------------------
+   Idle detection: seconds since the last keyboard or mouse input anywhere in Windows.
+   --------------------------------------------------------------- */
+
+#[cfg(windows)]
+fn idle_secs() -> u64 {
+    use windows_sys::Win32::System::SystemInformation::GetTickCount;
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetLastInputInfo, LASTINPUTINFO};
+    let mut info = LASTINPUTINFO { cbSize: std::mem::size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    let ok = unsafe { GetLastInputInfo(&mut info) };
+    if ok == 0 { return 0; }
+    let now = unsafe { GetTickCount() };
+    (now.wrapping_sub(info.dwTime) / 1000) as u64
+}
+
+#[cfg(not(windows))]
+fn idle_secs() -> u64 { 0 }
+
+#[tauri::command]
+fn idle_seconds() -> u64 {
+    idle_secs()
+}
+
+/// Saves text (for example a timesheet as CSV) to a file you chose.
+#[tauri::command]
+fn write_text_file(dest: String, content: String) -> Res<()> {
+    fs::write(dest, content).map_err(err)
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
 /* --------------------------------------------------------------- */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -440,7 +509,38 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        // The app keeps running in the system tray when its window is closed (you can turn that off).
+        .setup(|app| {
+            use tauri::menu::{Menu, MenuItem};
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+            let open = MenuItem::with_id(app, "open", "Open Tasks", true, None::<&str>)?;
+            let capture = MenuItem::with_id(app, "capture", "Quick capture", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Tasks", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&open, &capture, &quit])?;
+            let mut tray = TrayIconBuilder::with_id("main")
+                .tooltip("Tasks")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "open" => show_main(app),
+                    "capture" => { let _ = app.emit("tray-capture", ()); }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
+                        show_main(tray.app_handle());
+                    }
+                });
+            if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
+            tray.build(app)?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
+            list_folder,
+            idle_seconds,
+            write_text_file,
             read_store,
             write_store,
             file_info,

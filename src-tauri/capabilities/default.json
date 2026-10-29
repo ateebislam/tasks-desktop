@@ -4,7 +4,8 @@
   "description": "Permissions for the main window and tasks opened in their own window",
   "windows": [
     "main",
-    "task-*"
+    "task-*",
+    "capture"
   ],
   "permissions": [
     "core:default",
@@ -17,6 +18,12 @@
     "core:webview:allow-create-webview-window",
     "core:window:allow-set-focus",
     "core:window:allow-set-title",
-    "core:window:allow-close"
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-unminimize",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "global-shortcut:allow-is-registered"
   ]
 }

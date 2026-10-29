@@ -10,6 +10,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { applyTheme, readTheme, saveTheme } from './theme.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
@@ -897,7 +898,14 @@ function useTasks(ws = 'product') {
     setSettings(st => ({ ...st, purgeFiles: [] }));
   }, [loaded, archLoaded]);
 
+  const updateDocEverywhere = useCallback((id, fn) => {
+    const up = t => (t.files || []).some(x => x.id === id) ? { ...t, files: t.files.map(x => x.id === id ? fn(x) : x) } : t;
+    setTasks(p => Object.fromEntries(Object.entries(p).map(([k, t]) => [k, up(t)])));
+    setArch(x => ({ archived: Object.fromEntries(Object.entries(x.archived).map(([k, t]) => [k, up(t)])), trash: Object.fromEntries(Object.entries(x.trash).map(([k, t]) => [k, up(t)])) }));
+    setLooseDocs(l => l.map(x => x.id === id ? fn(x) : x));
+  }, []);
   return {
+    updateDocEverywhere,
     undo, redo, canUndo: hist.current.past.length > 0 || !!hist.current.pending, canRedo: hist.current.future.length > 0,
     deleteDocEverywhere,
     tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages,
@@ -1020,6 +1028,102 @@ function ThemeToggle() {
   );
 }
 
+/* Preferences for this computer. */
+const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20 };
+const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
+const CAPTURE_KEYS = ['Ctrl+Shift+Space', 'Ctrl+Alt+Space', 'Ctrl+Alt+T', 'Alt+Shift+N', 'Off'];
+const accel = k => k.replace('Ctrl', 'CommandOrControl');
+
+// Quick capture: a small window that floats over whatever you're doing.
+async function openCaptureWindow() {
+  try {
+    const existing = await WebviewWindow.getByLabel('capture');
+    if (existing) { await existing.show(); await existing.setFocus(); return; }
+    new WebviewWindow('capture', { url: 'index.html#capture=1', title: 'Quick capture', width: 560, height: 132, center: true, resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, focus: true });
+  } catch (e) { toast('Couldn’t open quick capture', String(e)); }
+}
+
+function QuickCaptureWindow() {
+  const [v, setV] = useState('');
+  const ref = useRef(null);
+  const close = () => getCurrentWindow().close().catch(() => {});
+  useEffect(() => {
+    setTimeout(() => ref.current && ref.current.focus(), 50);
+    let un = null;
+    getCurrentWindow().onFocusChanged(({ payload }) => { if (!payload) close(); }).then(f => { un = f; }).catch(() => {});
+    return () => { try { un && un(); } catch (e) {} };
+  }, []);
+  const save = async () => {
+    const title = v.trim(); if (!title) return close();
+    let ws = 'product'; try { ws = localStorage.getItem('tasks-ws') || 'product'; } catch (e) {}
+    await emit('capture-task', { title, ws }).catch(() => {});
+    close();
+  };
+  return (
+    <div className="flex h-screen items-center bg-background p-3">
+      <div className="flex w-full items-center gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
+        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><I.plus className="size-4" /></span>
+        <input ref={ref} value={v} onChange={e => setV(e.target.value)} placeholder="New task… press Enter to save, Esc to cancel" aria-label="New task"
+          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') close(); }}
+          className="h-9 flex-1 bg-transparent text-base placeholder:text-muted-foreground focus-visible:outline-none" />
+        <Kbd>Enter ↵</Kbd>
+      </div>
+    </div>
+  );
+}
+
+/* Settings for this computer, plus the current workspace's watch folders. */
+function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onWatch, wsName }) {
+  if (!open) return null;
+  const addFolder = async () => {
+    const dir = await openDialog({ directory: true, multiple: false });
+    if (dir) onWatch([...watch.filter(w => w.path !== dir), { path: Array.isArray(dir) ? dir[0] : dir, since: Date.now(), seen: {} }]);
+  };
+  return (
+    <Dialog open onClose={onClose} title="Settings" className="max-w-lg" footer={<Button onClick={onClose}>Done</Button>}>
+      <div className="grid gap-5">
+        <div className="flex items-start gap-3">
+          <Switch checked={prefs.keepInTray} onChange={v => onPrefs({ keepInTray: v })} label="Keep running in the system tray" />
+          <div><div className="text-sm font-medium">Keep running in the system tray</div><div className="text-xs text-muted-foreground">Closing the window hides Tasks instead of quitting, so quick capture and watch folders keep working. Quit from the tray icon.</div></div>
+        </div>
+        <Field label="Quick capture shortcut (anywhere in Windows)" htmlFor="st-key" hint="Inside the app, press ` (the key left of 1) for quick capture.">
+          <Select id="st-key" value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} searchable={false} options={CAPTURE_KEYS.map(k => ({ value: k, label: k === 'Off' ? 'Off' : k.replace(/\+/g, ' + ') }))} />
+        </Field>
+        <Field label="Ask about idle time after" htmlFor="st-idle" hint="When a timer is running and there’s no keyboard or mouse activity for this long, Tasks asks what to do with that time.">
+          <Select id="st-idle" value={String(prefs.idleMinutes)} onChange={v => onPrefs({ idleMinutes: Number(v) })} searchable={false}
+            options={[['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['20', '20 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['0', 'Never']].map(([value, label]) => ({ value, label }))} />
+        </Field>
+        <div className="grid gap-2">
+          <Label>Watch folders for {wsName}</Label>
+          <p className="text-xs text-muted-foreground">New files saved in these folders (for example from WhatsApp) appear in the Documents Inbox. Your original files stay where they are.</p>
+          {watch.map(w => (
+            <div key={w.path} className="flex h-9 items-center gap-2 rounded-md border px-3 text-sm">
+              <I.folder className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
+              <Button variant="ghost" size="icon-sm" aria-label={`Stop watching ${w.path}`} onClick={() => onWatch(watch.filter(x => x.path !== w.path))}><I.x className="size-3.5" /></Button>
+            </div>
+          ))}
+          <Button variant="outline" className="justify-start" onClick={addFolder}><I.plus />Add a folder…</Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+/* Idle time: asks what to do with time spent away while a timer was running. */
+function IdleDialog({ idle, onKeep, onRemove, onRemoveStop }) {
+  if (!idle) return null;
+  const mins = Math.max(1, Math.round((idle.end - idle.start) / 60000));
+  return (
+    <Dialog open onClose={onKeep} title={`You were away for ${mins >= 60 ? `${Math.floor(mins / 60)} h ${mins % 60} min` : `${mins} min`}`} className="max-w-md"
+      description={`The timer for “${idle.title || 'Untitled'}” kept running while there was no activity, from ${new Date(idle.start).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}.`}
+      footer={<>
+        <Button variant="ghost" className="sm:mr-auto" onClick={onRemoveStop}>Remove and stop timer</Button>
+        <Button variant="outline" onClick={onKeep}>Keep the time</Button>
+        <Button onClick={onRemove}>Remove idle time</Button>
+      </>} />
+  );
+}
+
 async function openTaskWindow(id, title, ws = 'product') {
   const label = 'task-' + String(id).replace(/[^a-zA-Z0-9_-]/g, '');
   try {
@@ -1134,7 +1238,8 @@ async function pickFiles() {
 
 const FileBadge = ({ kind, className }) => {
   const k = KINDS[kind] || KINDS.other;
-  return <span className={cn('flex h-9 w-8 shrink-0 items-center justify-center rounded-md border text-[9px] font-bold tracking-wide', k.cls, className)} aria-hidden="true">{k.short}</span>;
+  const sized = /(^|\s)h-/.test(className || '');
+  return <span className={cn('flex shrink-0 items-center justify-center border font-bold tracking-wide', sized ? '' : 'h-9 w-8 rounded-md text-[9px]', k.cls, className)} aria-hidden="true">{k.short}</span>;
 };
 
 function DropZone({ onFiles, compact, busy }) {
@@ -1227,8 +1332,9 @@ function PreviewDialog({ file, onClose, onDownload }) {
   );
 }
 
-function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, onSubmit }) {
+function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, onSubmit, library = [] }) {
   const [target, setTarget] = useState('__new');
+  const [asVersion, setAsVersion] = useState({});
   const [project, setProject] = useState('');
   const openTasks = tasks.filter(t => t.status !== 'done').sort((a, b) => b.createdAt - a.createdAt);
   const doneTasks = tasks.filter(t => t.status === 'done').sort((a, b) => b.createdAt - a.createdAt);
@@ -1238,16 +1344,20 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
       description="Attach files to a task so they’re easy to find later. You can drag files straight from WhatsApp or File Explorer onto this window."
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button disabled={!n || busy} onClick={() => onSubmit(files, { target, project })}>{busy ? 'Uploading…' : n ? `Add ${n} ${n === 1 ? 'file' : 'files'}` : 'Add files'}</Button>
+        <Button disabled={!n || busy} onClick={() => onSubmit(files, { target, project, versions: Object.fromEntries(files.map((f, i) => { const m = findVersionTarget(f.name, library); return [i, m && asVersion[i] !== false ? m.id : null]; })) })}>{busy ? 'Uploading…' : n ? `Add ${n} ${n === 1 ? 'file' : 'files'}` : 'Add files'}</Button>
       </>}>
       <div className="grid gap-4">
         <DropZone compact onFiles={fs => setFiles(p => [...p, ...fs])} />
         {n > 0 && (
           <div className="grid gap-1.5">
             {files.map((f, i) => (
-              <div key={i} className="flex items-center gap-3 rounded-md border px-3 py-1.5">
+              <div key={i} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-1.5">
                 <FileBadge kind={kindOf(f.name)} className="h-8 w-7" />
                 <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
+                {(() => { const m = findVersionTarget(f.name, library); return m ? (
+                  <label className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <Checkbox checked={asVersion[i] !== false} onChange={v => setAsVersion(x => ({ ...x, [i]: v }))} label={`New version of ${m.name}`} />New version of “{m.name}”
+                  </label>) : null; })()}
                 <span className="text-xs text-muted-foreground tnum">{fmtSize(f.size)}</span>
                 <Button variant="ghost" size="icon-sm" className="h-7 w-7" aria-label={`Remove ${f.name}`} onClick={() => setFiles(p => p.filter((_, j) => j !== i))}><I.x /></Button>
               </div>
@@ -1276,102 +1386,171 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
   );
 }
 
+// "Spec v3.pdf", "Spec (1).pdf" and "Spec final.pdf" all count as versions of "Spec.pdf".
+const docBase = name => { const ext = extOf(name); return ext + ':' + norm((name || '').replace(/\.[^.]+$/, '').replace(/([\s_-]*(v\d+|version\s*\d+|\(\d+\)|final|copy))+$/i, '')); };
+const findVersionTarget = (name, docs, skipId) => docs.find(d => d.id !== skipId && !d.inbox && docBase(d.name) === docBase(name));
+const versionCount = d => (d.versions || []).length + 1;
+
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
-function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, dragOver, focusId }) {
+function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onNewTask, onAddVersion, onUploadVersion, onMakeCurrent, dragOver, focusId }) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
+  const [sort, setSort] = useState('new');
   const [selKey, setSelKey] = useState(null);
+  const [viewVer, setViewVer] = useState(null); // an older version being previewed
+  const wrap = useRef(null), listRef = useRef(null);
+  const [height, setHeight] = useState(600);
+  // The page fits the window: the preview stretches to the bottom edge.
+  useLayoutEffect(() => {
+    const fit = () => { if (wrap.current) setHeight(Math.max(420, window.innerHeight - wrap.current.getBoundingClientRect().top - 20)); };
+    fit(); window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit);
+  }, []);
   useEffect(() => { if (focusId) setSelKey(focusId); }, [focusId]);
   const nq = norm(q);
-  const keyOf = d => d.id;
-  const list = docs
-    .filter(d => (kind === 'all' || (kind === 'other' ? !['pdf', 'word', 'html'].includes(d.kind) : d.kind === kind))
-      && (!nq || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq))))
-    .sort((a, b) => b.addedAt - a.addedAt);
-  const sel = list.find(d => keyOf(d) === selKey) || list[0] || null;
+  const isOther = d => !['pdf', 'word', 'html'].includes(d.kind);
+  const counts = { all: docs.length, pdf: docs.filter(d => d.kind === 'pdf').length, word: docs.filter(d => d.kind === 'word').length, html: docs.filter(d => d.kind === 'html').length, other: docs.filter(isOther).length };
+  const sorter = { new: (a, b) => b.addedAt - a.addedAt, name: (a, b) => a.name.localeCompare(b.name), size: (a, b) => b.size - a.size }[sort];
+  const match = d => (kind === 'all' || (kind === 'other' ? isOther(d) : d.kind === kind)) && (!nq || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq)));
+  const inbox = docs.filter(d => d.inbox && match(d)).sort((a, b) => b.addedAt - a.addedAt);
+  const rest = docs.filter(d => !d.inbox && match(d)).sort(sorter);
+  const flat = [...inbox, ...rest];
+  const sel = flat.find(d => d.id === selKey) || flat[0] || null;
+  useEffect(() => { setViewVer(null); }, [sel && sel.id]);
   const total = docs.reduce((n, d) => n + (d.size || 0), 0);
+  const move = dir => { const i = flat.findIndex(d => sel && d.id === sel.id); const n = flat[Math.min(flat.length - 1, Math.max(0, i + dir))]; if (n) { setSelKey(n.id); const el = listRef.current && listRef.current.querySelector(`[data-doc="${n.id}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); } };
+  const shownFile = sel && viewVer ? { ...sel, ...viewVer, id: sel.id + '@' + viewVer.file } : sel;
+  const row = d => {
+    const on = sel && sel.id === d.id;
+    const target = d.inbox ? findVersionTarget(d.name, docs, d.id) : null;
+    return (
+      <div key={d.id} data-doc={d.id} role="option" aria-selected={on} onClick={() => setSelKey(d.id)} onDoubleClick={() => openExternal(d)}
+        className={cn('group flex h-9 cursor-default items-center gap-2 rounded-md px-2.5 text-[13px]', on ? 'bg-muted' : 'hover:bg-muted/50')}>
+        {d.inbox && <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />}
+        <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
+        <span className={cn('min-w-0 flex-1 truncate', on && 'font-semibold')}>{d.name}</span>
+        {(d.versions || []).length > 0 && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">v{versionCount(d)}</span>}
+        {d.inbox ? (
+          <span className="flex shrink-0 items-center gap-0.5">
+            <span className="text-[11px] text-muted-foreground group-hover:hidden">{relTime(d.addedAt)}</span>
+            <span className="hidden gap-0.5 group-hover:flex [@media(hover:none)]:flex">
+              {target && <button type="button" title={`Add as v${versionCount(target) + 1} of ${target.name}`} onClick={e => { e.stopPropagation(); onAddVersion(target, d); }} className="flex h-6 items-center rounded border bg-card px-1.5 text-[11px] hover:bg-muted">New version</button>}
+              <button type="button" title="Link to a task" aria-label={`Link ${d.name} to a task`} onClick={e => { e.stopPropagation(); onAttach(d); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.paperclip className="size-3" /></button>
+              <button type="button" title="New task from this file" aria-label={`New task from ${d.name}`} onClick={e => { e.stopPropagation(); onNewTask(d); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.plus className="size-3" /></button>
+              <button type="button" title="Dismiss" aria-label={`Dismiss ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, true); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.x className="size-3" /></button>
+            </span>
+          </span>
+        ) : (
+          <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
+            {d.links.length ? <span className="inline-flex items-center gap-0.5" title={d.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{d.links.length}</span> : <span className="text-muted-foreground/70">Not linked</span>}
+            <span className="tnum w-12 text-right">{fmtSize(d.size)}</span>
+            <span className="w-16 text-right">{relTime(d.addedAt)}</span>
+          </span>
+        )}
+      </div>
+    );
+  };
+  const kindChip = (id, label) => (
+    <button key={id} type="button" onClick={() => setKind(id)} aria-pressed={kind === id}
+      className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors', kind === id ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
+      {label}<span className="tnum opacity-70">{counts[id]}</span>
+    </button>
+  );
+  const iconBtn = (icon, label, fn) => <Button variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={label} title={label} onClick={fn}>{icon}</Button>;
   return (
-    <div className="mt-6">
-      <div className="mb-3 flex flex-wrap items-center gap-3">
+    <div ref={wrap} className="mt-5 flex flex-col" style={{ height }}>
+      <div className="flex flex-wrap items-center gap-2">
         <h2 className="text-base font-semibold">Documents</h2>
         <span className="text-sm text-muted-foreground">{docs.length} {docs.length === 1 ? 'file' : 'files'}{total ? `, ${fmtSize(total)}` : ''}</span>
-        <div className="relative ml-auto w-60">
-          <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-9 bg-card pl-9 shadow-none"
-            onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
+        <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
+        {kindChip('all', 'All')}{kindChip('pdf', 'PDF')}{kindChip('word', 'Word')}{kindChip('html', 'HTML')}{kindChip('other', 'Other')}
+        <div className="ml-auto flex items-center gap-2">
+          <div className="relative w-56">
+            <I.search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-8 bg-card pl-8 text-xs shadow-none md:text-xs"
+              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
+          </div>
+          <Select variant="chip" label="Sort documents" value={sort} onChange={setSort} searchable={false} icon={<I.updown className="size-3.5 shrink-0" />}
+            renderValue={o => <span>Sort: {o.label}</span>} options={[{ value: 'new', label: 'Newest' }, { value: 'name', label: 'Name' }, { value: 'size', label: 'Size' }]} />
         </div>
       </div>
-      <div className="mb-3 overflow-x-auto"><ToggleGroup label="File type" value={kind} onChange={setKind} items={DOC_FILTERS} /></div>
       {docs.length === 0 ? (
-        <Card className={cn(dragOver && 'ring-2 ring-ring')}>
+        <Card className={cn('mt-3 flex flex-1 items-center justify-center', dragOver && 'ring-2 ring-ring')}>
           <Empty icon={<I.file />} title="No documents yet"
-            description="Collect the PDFs, Word files and HTML pages from your WhatsApp group here. Each one is attached to a task, so it’s one search away.">
+            description="Drag files from WhatsApp or File Explorer onto this window, or add a watch folder in Settings so new files arrive here by themselves.">
             <Button variant="outline" size="sm" onClick={() => onAdd([])}><I.upload />Add documents</Button>
           </Empty>
         </Card>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
-          <Card className={cn('overflow-hidden', dragOver && 'ring-2 ring-ring')}>
-            {list.length === 0 ? <Empty icon={<I.search />} title="No documents match" description="Try another word or file type." /> : (
-              <div className="max-h-[min(70vh,720px)] divide-y overflow-y-auto">
-                {list.map(d => {
-                  const on = sel && keyOf(sel) === keyOf(d);
-                  return (
-                    <button key={keyOf(d)} type="button" onClick={() => setSelKey(keyOf(d))} aria-pressed={on}
-                      className={cn('flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:bg-muted/60', on && 'bg-muted/70')}>
-                      <FileBadge kind={d.kind} />
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium">{d.name}</span>
-                        <span className="block truncate text-xs text-muted-foreground">{d.links.length === 0 ? 'Not linked' : d.links.length === 1 ? `${d.links[0].task.title || 'Untitled'}${d.links[0].archived ? ' (archived)' : ''}` : `${d.links.length} tasks`}, {fmtSize(d.size)}</span>
-                      </span>
-                      <span className="shrink-0 text-xs text-muted-foreground">{relTime(d.addedAt)}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+        <div className="mt-3 flex min-h-0 flex-1 gap-3">
+          <Card className={cn('flex w-[380px] shrink-0 flex-col overflow-hidden', dragOver && 'ring-2 ring-ring')}>
+            <div ref={listRef} role="listbox" tabIndex={0} aria-label="Documents" className="min-h-0 flex-1 overflow-y-auto p-1 focus-visible:outline-none"
+              onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); move(1); } if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); } if (e.key === 'Enter' && sel) openExternal(sel); }}>
+              {inbox.length > 0 && (
+                <>
+                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">Inbox<span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white">{inbox.length} new</span></div>
+                  {inbox.map(row)}
+                  <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">All documents</div>
+                </>
+              )}
+              {rest.map(row)}
+              {flat.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted-foreground">No documents match.</div>}
+            </div>
           </Card>
-          <Card className="flex min-h-[24rem] flex-col gap-3 p-4">
+          <Card className="flex min-w-0 flex-1 flex-col overflow-hidden">
             {sel ? (
               <>
-                <div className="flex items-start gap-3">
-                  <FileBadge kind={sel.kind} />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm font-semibold">{sel.name}</div>
-                    <div className="text-xs text-muted-foreground">{fmtSize(sel.size)}, added {relTime(sel.addedAt).toLowerCase()}</div>
+                <div className="flex items-center gap-2.5 border-b px-3 py-2">
+                  <FileBadge kind={sel.kind} className="h-6 w-6 rounded text-[7px]" />
+                  <span className="min-w-0 truncate text-sm font-semibold" title={sel.name}>{viewVer ? viewVer.name : sel.name}</span>
+                  {(sel.versions || []).length > 0 && (
+                    <DropdownMenu align="start"
+                      trigger={p => <button {...p} type="button" className="inline-flex h-5 shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] text-muted-foreground hover:text-foreground">{viewVer ? `v${sel.versions.indexOf(viewVer) + 1}` : `v${versionCount(sel)}`} of {versionCount(sel)}<I.down className="size-3" /></button>}
+                      items={[
+                        { label: `v${versionCount(sel)} (current), ${fmtDay(sel.addedAt)}`, icon: <I.check />, onSelect: () => setViewVer(null) },
+                        ...sel.versions.map((v, i) => ({ label: `v${i + 1}, ${fmtDay(v.addedAt)}`, icon: <I.file />, onSelect: () => setViewVer(v) })).reverse(),
+                        'sep',
+                        { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
+                      ]} />
+                  )}
+                  <span className="shrink-0 text-xs text-muted-foreground">{fmtSize((viewVer || sel).size)}, {relTime((viewVer || sel).addedAt).toLowerCase()}</span>
+                  <div className="ml-auto flex shrink-0 gap-1.5">
+                    {iconBtn(<I.external />, 'Open in its app', () => openExternal(shownFile))}
+                    {iconBtn(<I.download />, 'Save a copy', () => onDownload(shownFile))}
+                    {iconBtn(<I.paperclip />, 'Link to a task', () => onAttach(sel))}
+                    <DropdownMenu trigger={p => <Button {...p} variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={`More for ${sel.name}`}><I.more /></Button>}
+                      items={[
+                        { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
+                        ...(sel.inbox ? [{ label: 'New task from this file', icon: <I.plus />, onSelect: () => onNewTask(sel) }] : []),
+                        'sep',
+                        { label: sel.inbox ? 'Dismiss' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel, !!sel.inbox) },
+                      ]} />
                   </div>
-                  <DropdownMenu trigger={p => <Button {...p} variant="ghost" size="icon-sm" aria-label={`More for ${sel.name}`}><I.more /></Button>}
-                    items={[
-                      { label: 'Link to a task…', icon: <I.paperclip />, onSelect: () => onAttach(sel) },
-                      'sep',
-                      { label: 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel) },
-                    ]} />
                 </div>
-                <div className="rounded-md border px-3 py-2">
-                  <div className="mb-1 flex items-center text-xs font-medium text-muted-foreground">Linked to<span className="ml-1 font-normal">({sel.links.length})</span>
-                    <button type="button" onClick={() => onAttach(sel)} className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-normal hover:bg-muted hover:text-foreground"><I.plus className="size-3" />Link to task…</button>
+                {viewVer && (
+                  <div className="flex items-center gap-3 border-b bg-muted/50 px-3 py-1.5 text-xs">
+                    <span className="text-muted-foreground">You’re looking at an older version.</span>
+                    <button type="button" className="font-medium underline underline-offset-2" onClick={() => { onMakeCurrent(sel, viewVer); setViewVer(null); }}>Make it current</button>
+                    <button type="button" className="text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => setViewVer(null)}>Back to the latest</button>
                   </div>
-                  {sel.links.length === 0 && <div className="py-1 text-xs text-muted-foreground">Not linked to any task yet.</div>}
+                )}
+                <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-1.5">
+                  <span className="mr-1 text-[11px] text-muted-foreground">Linked to</span>
+                  {sel.links.length === 0 && <span className="text-xs text-muted-foreground/70">No tasks yet</span>}
                   {sel.links.map(l => (
-                    <div key={l.task.id} className="group flex h-8 items-center gap-2 text-[13px]">
-                      <span className={cn('size-2 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} />
-                      <button type="button" onClick={() => onOpenTask(l.task.id, l.archived)} className="min-w-0 flex-1 truncate text-left hover:underline underline-offset-4">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</button>
-                      {!l.archived && <button type="button" onClick={() => onRemove(sel, l.task.id)} aria-label={`Unlink from ${l.task.title || 'Untitled'}`} title="Unlink"
-                        className="flex size-6 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 [@media(hover:none)]:opacity-100"><I.x className="size-3.5" /></button>}
-                    </div>
+                    <span key={l.task.id} className="group inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border pl-2 pr-1 text-xs">
+                      <span className={cn('size-1.5 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} />
+                      <button type="button" onClick={() => onOpenTask(l.task.id, l.archived)} className="min-w-0 truncate hover:underline underline-offset-2">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</button>
+                      {!l.archived && <button type="button" onClick={() => onRemove(sel, l.task.id)} aria-label={`Unlink from ${l.task.title || 'Untitled'}`} title="Unlink" className="flex size-4 items-center justify-center rounded opacity-50 hover:bg-muted hover:opacity-100"><I.x className="size-3" /></button>}
+                    </span>
                   ))}
+                  <button type="button" onClick={() => onAttach(sel)} className="inline-flex h-6 items-center gap-1 rounded-md border border-dashed px-2 text-xs text-muted-foreground hover:text-foreground"><I.plus className="size-3" />Link</button>
                 </div>
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => openExternal(sel)}>Open in its app</Button>
-                  <Button size="sm" variant="outline" onClick={() => onDownload(sel)}><I.download />Save a copy</Button>
-                </div>
-                <DocPreview file={sel} className="min-h-[20rem] flex-1" />
+                <DocPreview file={shownFile} className="min-h-0 flex-1 rounded-none border-0" />
               </>
-            ) : <DocPreview file={null} className="flex-1" />}
+            ) : <DocPreview file={null} className="flex-1 rounded-none border-0" />}
           </Card>
         </div>
       )}
-      <p className="mt-3 text-xs text-muted-foreground">Tip: drag files from WhatsApp or File Explorer anywhere onto this window.</p>
     </div>
   );
 }
@@ -2079,7 +2258,7 @@ function TimeSummary({ tasks, onHide }) {
   );
 }
 
-const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
+const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Quick add (in the app)', '`'], ['Quick capture (anywhere in Windows)', 'Ctrl + Shift + Space'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
 function ShortcutsDialog({ open, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} title="Keyboard shortcuts">
@@ -2471,6 +2650,172 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
   );
 }
 
+/* Timesheet: tracked time per day (or per week for a month), grouped how you like. */
+const fmtHM = ms => { const m = Math.round(ms / 60000); return m ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : ''; };
+const startOfDay = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+function timesheetRange(unit, offset) {
+  const today = startOfDay(new Date());
+  if (unit === 'week') {
+    const mon = addDays(today, -((today.getDay() + 6) % 7) + offset * 7);
+    return { start: mon, end: addDays(mon, 7), cols: Array.from({ length: 7 }, (_, i) => { const d = addDays(mon, i); return { s: +d, e: +addDays(d, 1), label: d.toLocaleDateString(undefined, { weekday: 'short' }), sub: String(d.getDate()) }; }) };
+  }
+  const first = new Date(today.getFullYear(), today.getMonth() + offset, 1), next = new Date(first.getFullYear(), first.getMonth() + 1, 1);
+  const cols = []; let c = first;
+  while (c < next) { const wEnd = addDays(c, 7 - ((c.getDay() + 6) % 7)); const e = wEnd < next ? wEnd : next; cols.push({ s: +c, e: +e, label: `${c.getDate()}–${addDays(e, -1).getDate()}`, sub: c.toLocaleDateString(undefined, { month: 'short' }) }); c = e; }
+  return { start: first, end: next, cols };
+}
+function TimesheetView({ tasks, stages, labels, onAddTime, onDeleteSession, onOpenTask, onExportCsv, onPrint }) {
+  const [unit, setUnit] = useState('week');
+  const [offset, setOffset] = useState(0);
+  const [group, setGroup] = useState('task');
+  const [cell, setCell] = useState(null);
+  const now = Date.now();
+  const R = timesheetRange(unit, offset);
+  const sessionsOf = t => [...(t.sessions || []), ...(t.timerStartedAt ? [{ s: t.timerStartedAt, e: now, running: true }] : [])];
+  const keyOf = t => group === 'task' ? t.id : group === 'bucket' ? (t.bucket || '') : group === 'platform' ? (t.project || '') : (t.assignee || '');
+  const nameOf = (k, t) => group === 'task' ? (t.title || 'Untitled') : k || (group === 'bucket' ? `No ${labels.bucket.toLowerCase()}` : group === 'platform' ? `No ${labels.platform.toLowerCase()}` : 'Unassigned');
+  const rows = new Map();
+  tasks.forEach(t => {
+    const ss = sessionsOf(t); if (!ss.length) return;
+    const vals = R.cols.map(c => ss.reduce((n, x) => n + overlap(x.s, x.e, c.s, c.e), 0));
+    const total = vals.reduce((a, b) => a + b, 0); if (!total) return;
+    const k = keyOf(t);
+    if (!rows.has(k)) rows.set(k, { key: k, name: nameOf(k, t), task: group === 'task' ? t : null, vals: R.cols.map(() => 0), total: 0 });
+    const r = rows.get(k); vals.forEach((v, i) => { r.vals[i] += v; }); r.total += total;
+  });
+  const list = [...rows.values()].sort((a, b) => b.total - a.total);
+  const colTotals = R.cols.map((_, i) => list.reduce((n, r) => n + r.vals[i], 0));
+  const grand = colTotals.reduce((a, b) => a + b, 0);
+  const undated = tasks.reduce((n, t) => n + Math.max(0, (t.timeSpent || 0) - (t.sessions || []).reduce((a, x) => a + (x.e - x.s), 0)), 0);
+  const label = unit === 'week' ? `${R.start.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} – ${addDays(R.end, -1).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}`
+    : R.start.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  const preset = unit === 'week' && offset === 0 ? 'w0' : unit === 'week' && offset === -1 ? 'w1' : unit === 'month' && offset === 0 ? 'm0' : unit === 'month' && offset === -1 ? 'm1' : 'custom';
+  const groupLabel = { task: labels.task, bucket: labels.bucket, platform: labels.platform, person: labels.assignee }[group];
+  const exportData = { title: `Timesheet, ${label}`, cols: R.cols.map(c => `${c.label} ${c.sub}`.trim()), groupLabel, rows: list.map(r => ({ name: r.name, vals: r.vals, total: r.total })), colTotals, grand };
+  return (
+    <div className="mt-5">
+      <div className="flex flex-wrap items-center gap-2">
+        <h2 className="text-base font-semibold">Timesheet</h2>
+        <div className="ml-2 flex items-center gap-1">
+          <Button variant="ghost" size="icon-sm" aria-label="Previous" onClick={() => setOffset(o => o - 1)}><I.left /></Button>
+          <span className="min-w-[11rem] text-center text-sm font-medium">{label}</span>
+          <Button variant="ghost" size="icon-sm" aria-label="Next" onClick={() => setOffset(o => o + 1)}><I.right /></Button>
+        </div>
+        <Select variant="chip" label="Period" value={preset} searchable={false} onChange={v => { if (v === 'w0') { setUnit('week'); setOffset(0); } if (v === 'w1') { setUnit('week'); setOffset(-1); } if (v === 'm0') { setUnit('month'); setOffset(0); } if (v === 'm1') { setUnit('month'); setOffset(-1); } }}
+          options={[{ value: 'w0', label: 'This week' }, { value: 'w1', label: 'Last week' }, { value: 'm0', label: 'This month' }, { value: 'm1', label: 'Last month' }, ...(preset === 'custom' ? [{ value: 'custom', label: unit === 'week' ? 'Another week' : 'Another month' }] : [])]} />
+        <Select variant="chip" label="Group by" value={group} onChange={setGroup} searchable={false} icon={<I.rows className="size-3.5 shrink-0" />} renderValue={o => <span>By {o.label.toLowerCase()}</span>}
+          options={[{ value: 'task', label: labels.task }, { value: 'bucket', label: labels.bucket }, { value: 'platform', label: labels.platform }, { value: 'person', label: labels.assignee }]} />
+        <div className="ml-auto">
+          <DropdownMenu trigger={p => <Button {...p} variant="outline" size="sm" className="bg-card shadow-none"><I.download />Export<I.down className="size-3" /></Button>}
+            items={[{ label: 'CSV for Excel…', icon: <I.table />, onSelect: () => onExportCsv(exportData) }, { label: 'Print or save as PDF…', icon: <I.file />, onSelect: () => onPrint(exportData) }]} />
+        </div>
+      </div>
+      <Card className="mt-3 overflow-x-auto">
+        <table className="w-full min-w-[720px] border-collapse text-[13px]">
+          <thead>
+            <tr className="border-b text-xs text-muted-foreground">
+              <th className="h-10 px-3 text-left font-normal">{groupLabel}</th>
+              {R.cols.map(c => (
+                <th key={c.s} className={cn('h-10 w-[84px] px-2 text-right font-normal', startOfDay(new Date()).getTime() >= c.s && startOfDay(new Date()).getTime() < c.e && unit === 'week' && 'text-foreground')}>
+                  <div>{c.label}</div><div className="text-[11px] opacity-70">{c.sub}</div>
+                </th>
+              ))}
+              <th className="h-10 w-[90px] px-3 text-right font-medium text-foreground">Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {list.length === 0 && <tr><td colSpan={R.cols.length + 2} className="px-3 py-10 text-center text-sm text-muted-foreground">No time tracked in this period. Start a timer on a task, or use Add time.</td></tr>}
+            {list.map(r => (
+              <tr key={r.key || '_none'} className="border-b last:border-0 hover:bg-muted/40">
+                <td className="h-9 max-w-0 px-3">
+                  {r.task ? (
+                    <button type="button" onClick={() => onOpenTask(r.task.id)} className="flex max-w-full items-center gap-2 text-left hover:underline underline-offset-4">
+                      <span className={cn('size-2 shrink-0 rounded-full', STATUS_COLORS[statusDef(r.task, stages).color])} /><span className="truncate">{r.name}</span>
+                    </button>
+                  ) : <span className="block truncate">{r.name}</span>}
+                </td>
+                {r.vals.map((v, i) => (
+                  <td key={i} className="h-9 p-0 text-right">
+                    {r.task ? (
+                      <button type="button" onClick={e => setCell({ task: r.task, col: R.cols[i], el: e.currentTarget })}
+                        className={cn('tnum h-9 w-full px-2 text-right hover:bg-muted/70', !v && 'text-muted-foreground/40')}>{fmtHM(v) || '·'}</button>
+                    ) : <span className={cn('tnum block px-2', !v && 'text-muted-foreground/40')}>{fmtHM(v) || '·'}</span>}
+                  </td>
+                ))}
+                <td className="tnum h-9 px-3 text-right font-medium">{fmtHM(r.total)}</td>
+              </tr>
+            ))}
+          </tbody>
+          {list.length > 0 && (
+            <tfoot>
+              <tr className="border-t bg-muted/40 text-xs">
+                <td className="h-9 px-3 font-medium">Total</td>
+                {colTotals.map((v, i) => <td key={i} className="tnum px-2 text-right">{fmtHM(v)}</td>)}
+                <td className="tnum px-3 text-right text-sm font-semibold">{fmtHM(grand)}</td>
+              </tr>
+            </tfoot>
+          )}
+        </table>
+      </Card>
+      <p className="mt-2 text-xs text-muted-foreground">Times are hours:minutes. Click a cell to see or remove its time entries.{undated > 60000 ? ` ${fmtShort(undated)} tracked before daily records began isn’t dated, so it isn’t shown here.` : ''}</p>
+      {cell && <TimeCellPopover cell={cell} onClose={() => setCell(null)} onDelete={(t, x) => { onDeleteSession(t, x); }} onAdd={() => { const c = cell; setCell(null); onAddTime({ taskId: c.task.id, date: toISO(new Date(c.col.s)) }); }} />}
+    </div>
+  );
+}
+function TimeCellPopover({ cell, onClose, onDelete, onAdd }) {
+  const a = useRef(cell.el), p = useRef(null);
+  useDismiss(true, v => { if (!v) onClose(); }, [a, p]);
+  const now = Date.now();
+  const list = [...(cell.task.sessions || []), ...(cell.task.timerStartedAt ? [{ s: cell.task.timerStartedAt, e: now, running: true }] : [])]
+    .filter(x => overlap(x.s, x.e, cell.col.s, cell.col.e) > 0).sort((x, y) => x.s - y.s);
+  const hm = ms => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  return (
+    <Floating anchorRef={a} panelRef={p} open className="w-72 p-1">
+      <div className="px-2 pb-1 pt-1.5 text-xs font-medium text-muted-foreground">{cell.task.title || 'Untitled'}</div>
+      {list.length === 0 && <div className="px-2 py-2 text-sm text-muted-foreground">No time here yet.</div>}
+      {list.map((x, i) => (
+        <div key={i} className="group flex h-8 items-center gap-2 rounded-sm px-2 text-sm hover:bg-accent">
+          <span className="tnum flex-1">{new Date(x.s).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}, {hm(x.s)}–{x.running ? 'now' : hm(x.e)}</span>
+          {x.manual && <span className="text-[10px] text-muted-foreground">added</span>}
+          <span className="tnum text-xs text-muted-foreground">{fmtShort(x.e - x.s)}</span>
+          {!x.running && <button type="button" aria-label="Remove this entry" title="Remove" onClick={() => onDelete(cell.task, x)} className="flex size-6 items-center justify-center rounded opacity-0 hover:bg-muted group-hover:opacity-100"><I.trash className="size-3.5" /></button>}
+        </div>
+      ))}
+      <div className="mx-1 my-1 h-px bg-border" />
+      <button type="button" onClick={onAdd} className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"><I.plus className="size-3.5" />Add time on this day</button>
+    </Floating>
+  );
+}
+function AddTimeDialog({ init, tasks, onClose, onSave }) {
+  const [taskId, setTaskId] = useState('');
+  const [date, setDate] = useState('');
+  const [start, setStart] = useState('09:00');
+  const [h, setH] = useState('1'), [m, setM] = useState('0');
+  useEffect(() => { if (init) { setTaskId(init.taskId || ''); setDate(init.date || toISO(new Date())); setStart('09:00'); setH('1'); setM('0'); } }, [init]);
+  if (!init) return null;
+  const dur = (Number(h) || 0) * 3600e3 + (Number(m) || 0) * 60e3;
+  const ok = taskId && date && dur > 0;
+  return (
+    <Dialog open onClose={onClose} title="Add time" description="For time you worked but didn’t track with the timer." className="max-w-md"
+      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={!ok} onClick={() => { const [hh, mm] = start.split(':').map(Number); const s0 = fromISO(date); s0.setHours(hh || 0, mm || 0, 0, 0); onSave(taskId, +s0, +s0 + dur); }}>Add {fmtShort(dur) || ''}</Button></>}>
+      <div className="grid gap-4">
+        <Field label="Task" htmlFor="at-task">
+          <Select id="at-task" value={taskId} onChange={setTaskId} placeholder="Choose a task…" options={tasks.slice().sort((a, b) => b.createdAt - a.createdAt).map(t => ({ value: t.id, label: t.title || 'Untitled', group: t.status === 'done' ? 'Complete' : 'Open' }))} />
+        </Field>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Day" htmlFor="at-day"><DatePicker id="at-day" value={date} onChange={setDate} /></Field>
+          <Field label="Started at" htmlFor="at-start"><Input id="at-start" type="time" value={start} onChange={e => setStart(e.target.value)} /></Field>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="Hours" htmlFor="at-h"><Input id="at-h" type="number" min="0" max="24" value={h} onChange={e => setH(e.target.value)} /></Field>
+          <Field label="Minutes" htmlFor="at-m"><Input id="at-m" type="number" min="0" max="59" step="5" value={m} onChange={e => setM(e.target.value)} /></Field>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 /* Command palette (Ctrl+K): jump to anything, or run an action, by typing. */
 function CommandPalette({ open, onClose, items }) {
   const [q, setQ] = useState('');
@@ -2705,7 +3050,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const {
     tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
     buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
-    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, undo, redo,
+    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, undo, redo,
   } = useTasks(ws);
   const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
   const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
@@ -2725,13 +3070,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     return () => document.removeEventListener('keydown', k);
   }, []);
   const wsName = (workspaces.find(w => w.id === ws) || {}).name || 'Product';
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [prefs, setPrefs] = useState(readPrefs);
+  const savePrefs = p => setPrefs(x => { const n = { ...x, ...p }; try { localStorage.setItem('tasks-prefs', JSON.stringify(n)); } catch (e) {} return n; });
+  const [quickAdd, setQuickAdd] = useState(false);
+  const [addTime, setAddTime] = useState(null);
+  const [idle, setIdle] = useState(null);
   const [cellEdit, setCellEdit] = useState(null); // { id, field, el }
   const [renaming, setRenaming] = useState(null);
   const [statusesOpen, setStatusesOpen] = useState(false);
   const up = useUpdater();
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
   const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
-  const [view, setView] = useState(['docs', 'projects'].includes(savedView.view) ? savedView.view : 'tasks');
+  const [view, setView] = useState(['docs', 'projects', 'time'].includes(savedView.view) ? savedView.view : 'tasks');
   const [projectEdit, setProjectEdit] = useState(null); // { project } | { project: null } for new
   const [projectDelete, setProjectDelete] = useState(null);
   const [showSummary, setShowSummary] = useState(!!savedView.showSummary);
@@ -3131,6 +3482,74 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       return { list, active: t.active === 'home' || list.includes(t.active) ? t.active : 'home' };
     });
   }, [tasks, loaded]);
+  // Closing the window keeps Tasks running in the tray (unless turned off in Settings).
+  const prefsRef = useRef(prefs); prefsRef.current = prefs;
+  useEffect(() => {
+    if (standaloneId) return;
+    let un = null;
+    getCurrentWindow().onCloseRequested(async e => {
+      if (prefsRef.current.keepInTray) { e.preventDefault(); await flushAll(); getCurrentWindow().hide().catch(() => {}); }
+    }).then(f => { un = f; }).catch(() => {});
+    return () => { try { un && un(); } catch (e) {} };
+  }, []);
+  // The global quick capture shortcut, and tasks typed into the quick capture window.
+  useEffect(() => {
+    if (standaloneId || prefs.captureKey === 'Off') return;
+    const key = accel(prefs.captureKey);
+    registerShortcut(key, ev => { if (!ev || ev.state === 'Pressed') openCaptureWindow(); }).catch(() => toast('Couldn’t set the quick capture shortcut', `${prefs.captureKey} may be used by another app. Choose another in Settings.`));
+    return () => { unregisterShortcut(key).catch(() => {}); };
+  }, [prefs.captureKey]);
+  const captureRef = useRef(null);
+  captureRef.current = title => {
+    const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
+    saveMany([auto.task, ...auto.created]);
+    toast('Task added', title);
+  };
+  useEffect(() => {
+    if (standaloneId) return;
+    let a = null, b = null, dead = false;
+    listen('capture-task', e => { if (e.payload && (e.payload.ws || 'product') === ws && e.payload.title) captureRef.current(e.payload.title); }).then(f => { if (dead) f(); else a = f; }).catch(() => {});
+    listen('tray-capture', () => openCaptureWindow()).then(f => { if (dead) f(); else b = f; }).catch(() => {});
+    return () => { dead = true; try { a && a(); b && b(); } catch (e) {} };
+  }, []);
+  // ` opens quick add inside the app.
+  useEffect(() => {
+    if (standaloneId) return;
+    const k = e => {
+      if (e.key !== '`' || e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
+      if (document.querySelector('[role=dialog],[role=alertdialog]')) return;
+      e.preventDefault(); setQuickAdd(true);
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, []);
+  // Idle detection: while a timer runs, check Windows' idle time every 30 seconds.
+  const idleRef = useRef(null);
+  useEffect(() => {
+    if (standaloneId) return;
+    const i = setInterval(async () => {
+      const mins = prefsRef.current.idleMinutes;
+      const run = Object.values(tasksRef.current).find(t => t.timerStartedAt);
+      if (!mins || !run) { idleRef.current = null; return; }
+      let secs = 0; try { secs = await invoke('idle_seconds'); } catch (e) { return; }
+      const now = Date.now();
+      if (secs >= mins * 60) { if (!idleRef.current) idleRef.current = { id: run.id, start: Math.max(run.timerStartedAt, now - secs * 1000) }; }
+      else if (idleRef.current && secs < 60) { const x = idleRef.current; idleRef.current = null; if (tasksRef.current[x.id] && tasksRef.current[x.id].timerStartedAt) setIdle({ ...x, end: now - secs * 1000, title: tasksRef.current[x.id].title }); }
+    }, 30000);
+    return () => clearInterval(i);
+  }, []);
+  const resolveIdle = mode => {
+    const x = idle; setIdle(null); if (!x || mode === 'keep') return;
+    const t = tasksRef.current[x.id]; if (!t || !t.timerStartedAt) return;
+    const s0 = t.timerStartedAt, cut = Math.max(s0, x.start);
+    const sessions = [...(t.sessions || []), ...(cut > s0 ? [{ s: s0, e: cut }] : [])];
+    const timeSpent = (t.timeSpent || 0) + (cut - s0);
+    saveMany([{ ...t, sessions, timeSpent, timerStartedAt: mode === 'stop' ? null : Date.now() }]);
+    toast(mode === 'stop' ? 'Idle time removed and timer stopped' : 'Idle time removed', t.title, { undo: true });
+  };
+
   // Ctrl+K opens the command palette from anywhere.
   useEffect(() => {
     if (standaloneId) return;
@@ -3173,6 +3592,64 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     looseDocs.forEach(f => add(f, null));
     return [...map.values()];
   }, [all, archived, looseDocs]);
+  const settingsRef = useRef(settings); settingsRef.current = settings;
+  // Versions: the newest file becomes the document; the older ones are kept in its history.
+  const VKEYS = ['file', 'name', 'size', 'kind', 'mime', 'addedAt'];
+  const pickV = f => Object.fromEntries(VKEYS.map(k => [k, f[k]]));
+  const addVersion = (target, src) => {
+    const fresh = { ...pickV(src), addedAt: Date.now() };
+    updateDocEverywhere(target.id, x => ({ ...x, ...fresh, versions: [...(x.versions || []), pickV(x)] }));
+    if (src.id !== target.id) saveLooseDocs(l => l.filter(x => x.id !== src.id));
+    toast(`Saved as version ${versionCount(target) + 1}`, target.name, { undo: true });
+  };
+  const uploadVersion = async target => {
+    const fs = await pickFiles(); if (!fs.length) return;
+    const [meta] = await uploadMany([fs[0]]); if (meta) addVersion(target, meta);
+  };
+  const makeCurrent = (doc, v) => {
+    updateDocEverywhere(doc.id, x => ({ ...x, ...pickV(v), versions: [...(x.versions || []).filter(y => y.file !== v.file), pickV(x)].sort((a, b) => a.addedAt - b.addedAt) }));
+    toast('Version restored', v.name, { undo: true });
+  };
+  const newTaskFromDoc = d => {
+    const meta = stripMeta(d); delete meta.inbox; delete meta.source;
+    const auto = automate({ id: newId(), title: d.name.replace(/\.[^.]+$/, ''), status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', files: [meta], createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
+    saveMany([auto.task, ...auto.created]);
+    saveLooseDocs(l => l.filter(x => x.id !== d.id));
+    toast('Task created from document', d.name, { undo: true });
+  };
+  // Watch folders: new files appear in the Documents Inbox (this computer only remembers what it has seen).
+  const stableRef = useRef({});
+  useEffect(() => {
+    if (standaloneId) return;
+    const seenKey = 'tasks-watch-seen';
+    let busyScan = false;
+    const tick = async () => {
+      const folders = settingsRef.current.watchFolders || [];
+      if (!folders.length || busyScan) return;
+      busyScan = true;
+      let seen = {}; try { seen = JSON.parse(localStorage.getItem(seenKey)) || {}; } catch (e) {}
+      for (const w of folders) {
+        let files = []; try { files = await invoke('list_folder', { path: w.path }); } catch (e) { continue; }
+        for (const f of files) {
+          if (f.modified < (w.since || 0) || seen[f.path] === f.modified) continue;
+          if (!ALLOWED.includes(extOf(f.name)) || /^~\$|^\.|\.(tmp|crdownload|part|partial|download)$/i.test(f.name)) continue;
+          const prev = stableRef.current[f.path]; stableRef.current[f.path] = f.size;
+          if (prev !== f.size || f.size === 0) continue; // wait until the file has finished downloading
+          try {
+            const meta = await importDoc({ path: f.path, name: f.name, size: f.size });
+            saveLooseDocs(l => [...l, { ...meta, inbox: true, source: w.path }]);
+            toast('New document in the Inbox', f.name);
+          } catch (e) {}
+          seen[f.path] = f.modified;
+        }
+      }
+      try { localStorage.setItem(seenKey, JSON.stringify(seen)); } catch (e) {}
+      busyScan = false;
+    };
+    tick();
+    const i = setInterval(tick, 8000);
+    return () => clearInterval(i);
+  }, []);
   const [linkFor, setLinkFor] = useState(null);
   const [docDelete, setDocDelete] = useState(null);
   const stripMeta = f => { const { links, task, archived: _a, ...meta } = f; return meta; };
@@ -3233,8 +3710,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     notifyAuto(auto);
     toast(metas.length === 1 ? 'Document linked' : `${metas.length} documents linked`, t.title);
   };
-  const submitDocs = async (files, { target, project }) => {
-    const metas = await uploadMany(files);
+  const submitDocs = async (files, { target, project, versions = {} }) => {
+    const verIdx = Object.keys(versions).filter(i => versions[i]);
+    for (const i of verIdx) { const [m] = await uploadMany([files[i]]); const t = docs.find(d => d.id === versions[i]); if (m && t) addVersion(t, m); }
+    const rest = files.filter((_, i) => !versions[i]);
+    if (!rest.length) { setAddDocs({ open: false, files: [] }); return; }
+    const metas = await uploadMany(rest);
     if (!metas.length) return;
     if (target === '__new') {
       const now = Date.now();
@@ -3338,6 +3819,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'v-tasks', group: 'Actions', label: 'Go to Tasks', icon: <I.listCheck />, run: () => { setActiveTab('home'); setView('tasks'); } },
     { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setActiveTab('home'); setView('projects'); } },
     { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); } },
+    { id: 'v-time', group: 'Actions', label: 'Go to Timesheet', icon: <I.timer />, run: () => { setActiveTab('home'); setView('time'); } },
+    { id: 'a-addtime', group: 'Actions', label: 'Add time', icon: <I.timer />, run: () => setAddTime({}) },
     { id: 'v-table', group: 'Actions', label: 'Table view', icon: <I.table />, run: () => { setView('tasks'); setViewMode('table'); } },
     { id: 'v-list', group: 'Actions', label: 'List view', icon: <I.rows />, run: () => { setView('tasks'); setViewMode('list'); } },
     { id: 'v-board', group: 'Actions', label: 'Board view', icon: <I.kanban />, run: () => { setView('tasks'); setViewMode('board'); } },
@@ -3352,13 +3835,16 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-redo', group: 'Actions', label: 'Redo', hint: 'Ctrl+Shift+Z', icon: <I.reset />, run: doRedo },
     { id: 'a-backup', group: 'Actions', label: 'Back up data…', icon: <I.download />, run: backup },
     { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: '?', icon: <I.keyboard />, run: () => setKeysOpen(true) },
+    { id: 'a-settings', group: 'Actions', label: 'Settings', icon: <I.sliders />, run: () => setSettingsOpen(true) },
+    { id: 'a-quick', group: 'Actions', label: 'Quick add a task', hint: '`', icon: <I.plus />, run: () => setQuickAdd(true) },
     ...all.map(t => ({ id: 't-' + t.id, group: 'Tasks', label: t.title || 'Untitled', hint: [statusLabel(t, stages), t.bucket, t.project].filter(Boolean).join(', '), keywords: t.assignee, icon: <span className={cn('ml-1 mr-1 size-2 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} />, run: () => openTask(t.id) })),
     ...bucketList.map(b => ({ id: 'b-' + b.name, group: 'Buckets', groupLabel: plural(labels.bucket), label: b.name, icon: <I.layers />, run: () => openBucket(b.name) })),
     ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); setDocFocus(d.id); } })),
   ];
   const primary = view === 'tasks' ? { label: 'Create task', run: () => createTask() }
     : view === 'projects' ? { label: `Create ${labels.bucket.toLowerCase()}`, run: () => setBucketEdit({ bucket: null }) }
-    : view === 'docs' ? { label: 'Add documents', run: () => setAddDocs({ open: true, files: [] }) } : null;
+    : view === 'docs' ? { label: 'Add documents', run: () => setAddDocs({ open: true, files: [] }) }
+    : view === 'time' ? { label: 'Add time', run: () => setAddTime({}) } : null;
   const primaryRef = useRef(primary); primaryRef.current = primary;
   const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled', ws); };
   const sheetToTab = () => { const id = sheet.id; setSheet({ open: false, id: null }); if (id) openTab(id); };
@@ -3422,11 +3908,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             ]} />
           </div>
           <nav aria-label="Sections" className="flex h-full items-stretch gap-5">
-            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length }, { id: 'docs', label: 'Documents', count: docs.length }].map(v => (
+            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
               <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
                 className={cn('-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
                   view === v.id ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
                 {v.label}<span className="tnum text-[11px] font-normal text-muted-foreground">{v.count}</span>
+                {v.fresh > 0 && <span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white" title={`${v.fresh} new in the Inbox`}>{v.fresh} new</span>}
               </button>
             ))}
           </nav>
@@ -3468,6 +3955,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: 'Edit statuses', icon: <I.sliders />, onSelect: () => setStatusesOpen(true) },
               { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
               { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
+              { label: 'Settings', icon: <I.sliders />, onSelect: () => setSettingsOpen(true) },
             ]} />
           <DropdownMenu
             trigger={p => (
@@ -3500,6 +3988,29 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} />
+      ) : view === 'time' ? (
+        <TimesheetView tasks={[...all, ...Object.values(archived)]} stages={stages} labels={labels} onOpenTask={id => openTask(id)} onAddTime={init => setAddTime(init)}
+          onDeleteSession={(t, x) => {
+            const cur = tasksRef.current[t.id];
+            if (!cur) { toast('This task is archived', 'Restore it to change its time.'); return; }
+            saveMany([{ ...cur, sessions: (cur.sessions || []).filter(y => !(y.s === x.s && y.e === x.e)), timeSpent: Math.max(0, (cur.timeSpent || 0) - (x.e - x.s)) }]);
+            toast('Time entry removed', `${fmtShort(x.e - x.s)} from “${cur.title || 'Untitled'}”`, { undo: true });
+          }}
+          onExportCsv={async d => {
+            const esc = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+            const hrs = ms => (ms / 3600e3).toFixed(2);
+            const lines = [[d.groupLabel, ...d.cols, 'Total (hours)'], ...d.rows.map(r => [r.name, ...r.vals.map(hrs), hrs(r.total)]), ['Total', ...d.colTotals.map(hrs), hrs(d.grand)]];
+            const dest = await saveDialog({ defaultPath: `${d.title.replace(/[\\/:*?"<>|]/g, '-')}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] });
+            if (!dest) return;
+            try { await invoke('write_text_file', { dest, content: '\ufeff' + lines.map(l => l.map(esc).join(',')).join('\r\n') }); toast('Timesheet saved', dest); } catch (e) { toast('Couldn’t save the timesheet', String(e)); }
+          }}
+          onPrint={d => {
+            const h = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+            const html = `<!doctype html><html><head><meta charset="utf-8"><title>${h(d.title)}</title><style>body{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;margin:32px}h1{font-size:18px;margin:0 0 4px}p{color:#666;margin:0 0 16px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:right}th:first-child,td:first-child{text-align:left}tfoot td{font-weight:600;border-top:2px solid #111}</style></head><body><h1>${h(d.title)}</h1><p>${h(wsName)}, hours:minutes</p><table><thead><tr><th>${h(d.groupLabel)}</th>${d.cols.map(c => `<th>${h(c)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${d.rows.map(r => `<tr><td>${h(r.name)}</td>${r.vals.map(v => `<td>${fmtHM(v)}</td>`).join('')}<td>${fmtHM(r.total)}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td>${d.colTotals.map(v => `<td>${fmtHM(v)}</td>`).join('')}<td>${fmtHM(d.grand)}</td></tr></tfoot></table></body></html>`;
+            const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0;right:0;bottom:0';
+            f.srcdoc = html; document.body.appendChild(f);
+            f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { toast('Couldn’t open printing', String(e)); } setTimeout(() => f.remove(), 60000); };
+          }} />
       ) : view === 'archive' ? (
         <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveSettings(x => ({ ...x, archiveDays: d }))}
           onRestore={id => { restoreTask(id); toast('Task restored'); }} onTrash={id => { trashTasks([id]); toast('Moved to Trash', undefined, { undo: true }); }} onCleanUp={() => setCleanUpOpen(true)} />
@@ -3507,8 +4018,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         <TrashView items={trash} onRestore={id => { restoreTask(id); toast('Task restored'); }} onDeleteNow={t => setPurgeConfirm([t.id])} onEmpty={() => setPurgeConfirm(Object.keys(trash))} />
       ) : view === 'docs' ? (
         <DocumentsView docs={docs} tasks={all} focusId={docFocus} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
-          onRemove={(file, taskId) => unlinkDoc(file, taskId)} onDelete={f => setDocDelete(f)} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
-          onAttach={f => setAttachDoc(f)} />
+          onRemove={(file, taskId) => unlinkDoc(file, taskId)} onDelete={(f, dismiss) => { if (dismiss) { deleteDocEverywhere(stripMeta(f)); toast('Dismissed', f.name, { undo: true }); } else setDocDelete(f); }} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
+          onAttach={f => setAttachDoc(f)} onNewTask={newTaskFromDoc} onAddVersion={addVersion} onUploadVersion={uploadVersion} onMakeCurrent={makeCurrent} />
       ) : (<>
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
@@ -3825,11 +4336,27 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
-      <AddDocsDialog open={addDocs.open} files={addDocs.files} setFiles={fn => setAddDocs(a => ({ ...a, files: typeof fn === 'function' ? fn(a.files) : fn }))} tasks={all} projects={projects} busy={busy}
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName}
+        watch={settings.watchFolders || []} onWatch={list => saveSettings(x => ({ ...x, watchFolders: list }))} />
+      <AddTimeDialog init={addTime} tasks={all} onClose={() => setAddTime(null)}
+        onSave={(taskId, s0, e0) => {
+          const t = tasksRef.current[taskId]; if (!t) return;
+          saveMany([{ ...t, sessions: [...(t.sessions || []), { s: s0, e: e0, manual: true }].sort((a, b) => a.s - b.s), timeSpent: (t.timeSpent || 0) + (e0 - s0) }]);
+          setAddTime(null); toast('Time added', `${fmtShort(e0 - s0)} to “${t.title || 'Untitled'}”`, { undo: true });
+        }} />
+      <IdleDialog idle={idle} onKeep={() => resolveIdle('keep')} onRemove={() => resolveIdle('remove')} onRemoveStop={() => resolveIdle('stop')} />
+      {quickAdd && (
+        <Dialog open onClose={() => setQuickAdd(false)} title="Quick add" className="max-w-md">
+          <form onSubmit={e => { e.preventDefault(); const v = e.currentTarget.elements.qa.value.trim(); if (v) captureRef.current(v); setQuickAdd(false); }}>
+            <Input name="qa" autoFocus placeholder="New task, press Enter to save" aria-label="New task" />
+          </form>
+        </Dialog>
+      )}
+      <AddDocsDialog library={docs} open={addDocs.open} files={addDocs.files} setFiles={fn => setAddDocs(a => ({ ...a, files: typeof fn === 'function' ? fn(a.files) : fn }))} tasks={all} projects={projects} busy={busy}
         onClose={() => setAddDocs({ open: false, files: [] })} onSubmit={submitDocs} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
       <AttachDocDialog file={attachDoc} tasks={all} onClose={() => setAttachDoc(null)}
-        onAttach={(f, taskId) => { attach(taskId, [stripMeta(f)]); saveLooseDocs(l => l.filter(x => x.id !== f.id)); setAttachDoc(null); }} />
+        onAttach={(f, taskId) => { const m = stripMeta(f); delete m.inbox; delete m.source; attach(taskId, [m]); saveLooseDocs(l => l.filter(x => x.id !== f.id)); setAttachDoc(null); }} />
       <LinkDocsDialog taskId={linkFor} library={docs} linkedIds={linkFor && tasks[linkFor] ? (tasks[linkFor].files || []).map(f => f.id) : []} onClose={() => setLinkFor(null)}
         onLink={(taskId, picked) => { attach(taskId, picked.map(stripMeta)); const ids = picked.map(d => d.id); saveLooseDocs(l => l.filter(x => !ids.includes(x.id))); setLinkFor(null); }} />
       <AlertDialog open={!!docDelete} title={`Delete “${docDelete ? docDelete.name : ''}”?`}
@@ -3991,6 +4518,11 @@ function useWorkspaces() {
 }
 
 export default function Root() {
+  if (HASH.get('capture')) return <QuickCaptureWindow />;
+  return <MainRoot />;
+}
+
+function MainRoot() {
   const prof = useProfile();
   const wsp = useWorkspaces();
   const [openOnLoad, setOpenOnLoad] = useState(null);
