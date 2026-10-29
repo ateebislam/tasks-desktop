@@ -566,19 +566,27 @@ function Dialog({ open, onClose, title, description, children, footer, className
 
 /* Toast (Sonner style) */
 const toastSubs = new Set();
-const toast = (title, description) => toastSubs.forEach(f => f({ title, description }));
+const toast = (title, description, opts = {}) => toastSubs.forEach(f => f({ title, description, undo: !!opts.undo }));
+// Set by the app, so a message's "Undo" button can undo the change it describes.
+const undoHook = { current: null };
 function Toaster() {
   const [items, setItems] = useState([]);
   useEffect(() => {
-    const f = t => { const id = Math.random(); setItems(p => [...p.slice(-2), { ...t, id }]); setTimeout(() => setItems(p => p.filter(x => x.id !== id)), 3000); };
+    const f = t => { const id = Math.random(); setItems(p => [...p.slice(-2), { ...t, id }]); setTimeout(() => setItems(p => p.filter(x => x.id !== id)), t.undo ? 6000 : 3000); };
     toastSubs.add(f); return () => toastSubs.delete(f);
   }, []);
   return (
     <div aria-live="polite" className="fixed right-4 z-[100] flex w-[calc(100%-2rem)] max-w-[356px] flex-col gap-2" style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom,0px))' }}>
       {items.map(t => (
-        <div key={t.id} className="anim-toast rounded-lg border bg-background p-4 text-sm shadow-lg">
-          <div className="font-medium">{t.title}</div>
-          {t.description && <div className="text-muted-foreground mt-0.5">{t.description}</div>}
+        <div key={t.id} className="anim-toast flex items-start gap-3 rounded-lg border bg-background p-4 text-sm shadow-lg">
+          <div className="min-w-0 flex-1">
+            <div className="font-medium">{t.title}</div>
+            {t.description && <div className="text-muted-foreground mt-0.5">{t.description}</div>}
+          </div>
+          {t.undo && undoHook.current && (
+            <button type="button" onClick={() => { undoHook.current(); setItems(p => p.filter(x => x.id !== t.id)); }}
+              className="shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted">Undo</button>
+          )}
         </div>
       ))}
     </div>
@@ -717,7 +725,11 @@ function useTasks(ws = 'product') {
   const [arch, setArch] = useState({ archived: {}, trash: {} });
   const [archLoaded, setArchLoaded] = useState(false);
   const remote = useRef(null), remoteArch = useRef(null);
+  // Undo history: snapshots of this workspace, grouped so a burst of changes is one step.
+  const hist = useRef({ past: [], future: [], last: null, pending: null, mute: 0, timer: null });
+  const [, bumpHist] = useState(0);
   const apply = d => {
+    hist.current.mute += 1;
     setTasks(d.tasks || {});
     if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
     if (Array.isArray(d.projects)) setProjects(d.projects);
@@ -737,6 +749,7 @@ function useTasks(ws = 'product') {
     listen('tasks-arch', e => {
       if (!e.payload || e.payload.from === WINDOW_LABEL || e.payload.ws !== ws) return;
       remoteArch.current = JSON.stringify(e.payload.data);
+      hist.current.mute += 1;
       setArch(e.payload.data);
     }).then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
     return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
@@ -768,6 +781,33 @@ function useTasks(ws = 'product') {
     persist(storeFor('archive', ws), { version: 1, ...arch });
     emit('tasks-arch', { from: WINDOW_LABEL, ws, data: arch }).catch(() => {});
   }, [arch, archLoaded]);
+
+  useEffect(() => {
+    if (!loaded || !archLoaded) return;
+    const h = hist.current;
+    const cur = { tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch };
+    if (!h.last || h.mute > 0) { h.mute = Math.max(0, h.mute - 1); h.last = cur; return; }
+    if (!h.pending) h.pending = h.last;
+    h.last = cur;
+    clearTimeout(h.timer);
+    h.timer = setTimeout(() => { if (h.pending) { h.past.push(h.pending); if (h.past.length > 30) h.past.shift(); h.future = []; h.pending = null; bumpHist(x => x + 1); } }, 700);
+  }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch, loaded, archLoaded]);
+  const restoreSnap = sn => {
+    hist.current.mute += 1;
+    setTasks(sn.tasks); setRules(sn.rules); setProjects(sn.projects); setStages(sn.stages); setBuckets(sn.buckets);
+    setLabels(sn.labels); setSettings(sn.settings); setLooseDocs(sn.looseDocs); setArch(sn.arch);
+  };
+  const flushHist = () => { const h = hist.current; clearTimeout(h.timer); if (h.pending) { h.past.push(h.pending); h.future = []; h.pending = null; } };
+  const undo = useCallback(() => {
+    flushHist();
+    const h = hist.current; if (!h.past.length) return false;
+    const prev = h.past.pop(); h.future.push(h.last); h.last = prev; restoreSnap(prev); bumpHist(x => x + 1); return true;
+  }, []);
+  const redo = useCallback(() => {
+    flushHist();
+    const h = hist.current; if (!h.future.length) return false;
+    const next = h.future.pop(); h.past.push(h.last); h.last = next; restoreSnap(next); bumpHist(x => x + 1); return true;
+  }, []);
 
   // Every save stamps the time, and records when a task was completed (cleared again if it's reopened).
   const saveMany = useCallback(list => {
@@ -840,7 +880,26 @@ function useTasks(ws = 'product') {
     return () => clearInterval(i);
   }, [loaded, archLoaded, settings.archiveDays]);
 
+  // Deleting a document removes it from every task. The file itself is deleted at the next start,
+  // so Undo can still bring it back in this session.
+  const deleteDocEverywhere = useCallback(f => {
+    const strip = t => (t.files || []).some(x => x.id === f.id) ? { ...t, files: t.files.filter(x => x.id !== f.id) } : t;
+    setTasks(p => { const n = {}; Object.entries(p).forEach(([k, t]) => { n[k] = strip(t); }); return n; });
+    setArch(x => ({ archived: Object.fromEntries(Object.entries(x.archived).map(([k, t]) => [k, strip(t)])), trash: Object.fromEntries(Object.entries(x.trash).map(([k, t]) => [k, strip(t)])) }));
+    setLooseDocs(l => l.filter(x => x.id !== f.id));
+    setSettings(st => ({ ...st, purgeFiles: [...(st.purgeFiles || []).filter(x => x.id !== f.id), f] }));
+  }, []);
+  useEffect(() => {
+    if (!loaded || !archLoaded || WINDOW_LABEL !== 'main' || !(settings.purgeFiles || []).length) return;
+    const used = id => [...Object.values(tasksRef.current), ...Object.values(archRef.current.archived), ...Object.values(archRef.current.trash)]
+      .some(t => (t.files || []).some(x => x.id === id)) || looseDocs.some(x => x.id === id);
+    settings.purgeFiles.forEach(f => { if (!used(f.id)) deleteDoc(f); });
+    setSettings(st => ({ ...st, purgeFiles: [] }));
+  }, [loaded, archLoaded]);
+
   return {
+    undo, redo, canUndo: hist.current.past.length > 0 || !!hist.current.pending, canRedo: hist.current.future.length > 0,
+    deleteDocEverywhere,
     tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages,
     buckets, saveBuckets: setBuckets, labels: { ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}), ...labels }, saveLabels: setLabels,
     settings, saveSettings: setSettings, looseDocs, saveLooseDocs: setLooseDocs,
@@ -1218,15 +1277,16 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
 }
 
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
-function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, onAttach, dragOver }) {
+function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, dragOver, focusId }) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
   const [selKey, setSelKey] = useState(null);
+  useEffect(() => { if (focusId) setSelKey(focusId); }, [focusId]);
   const nq = norm(q);
-  const keyOf = d => d.id + ':' + (d.task ? d.task.id : 'none');
+  const keyOf = d => d.id;
   const list = docs
     .filter(d => (kind === 'all' || (kind === 'other' ? !['pdf', 'word', 'html'].includes(d.kind) : d.kind === kind))
-      && (!nq || [d.name, d.task && d.task.title, d.task && d.task.project, d.task && d.task.bucket].some(v => norm(v).includes(nq))))
+      && (!nq || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq))))
     .sort((a, b) => b.addedAt - a.addedAt);
   const sel = list.find(d => keyOf(d) === selKey) || list[0] || null;
   const total = docs.reduce((n, d) => n + (d.size || 0), 0);
@@ -1240,7 +1300,6 @@ function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, o
           <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-9 bg-card pl-9 shadow-none"
             onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
         </div>
-        <Button onClick={() => onAdd([])}><I.upload />Add documents</Button>
       </div>
       <div className="mb-3 overflow-x-auto"><ToggleGroup label="File type" value={kind} onChange={setKind} items={DOC_FILTERS} /></div>
       {docs.length === 0 ? (
@@ -1263,7 +1322,7 @@ function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, o
                       <FileBadge kind={d.kind} />
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm font-medium">{d.name}</span>
-                        <span className="block truncate text-xs text-muted-foreground">{d.task ? `${d.task.title || 'Untitled'}${d.archived ? ' (archived)' : ''}` : 'No task'}, {fmtSize(d.size)}</span>
+                        <span className="block truncate text-xs text-muted-foreground">{d.links.length === 0 ? 'Not linked' : d.links.length === 1 ? `${d.links[0].task.title || 'Untitled'}${d.links[0].archived ? ' (archived)' : ''}` : `${d.links.length} tasks`}, {fmtSize(d.size)}</span>
                       </span>
                       <span className="shrink-0 text-xs text-muted-foreground">{relTime(d.addedAt)}</span>
                     </button>
@@ -1279,17 +1338,28 @@ function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, o
                   <FileBadge kind={sel.kind} />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold">{sel.name}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {fmtSize(sel.size)}, added {relTime(sel.addedAt).toLowerCase()}, {sel.task ? <>attached to <button type="button" className="underline underline-offset-2 hover:text-foreground" onClick={() => onOpenTask(sel.task.id, sel.archived)}>{sel.task.title || 'Untitled'}</button>{sel.archived ? ' (archived)' : ''}</> : 'not attached to a task'}
-                    </div>
+                    <div className="text-xs text-muted-foreground">{fmtSize(sel.size)}, added {relTime(sel.addedAt).toLowerCase()}</div>
                   </div>
                   <DropdownMenu trigger={p => <Button {...p} variant="ghost" size="icon-sm" aria-label={`More for ${sel.name}`}><I.more /></Button>}
                     items={[
-                      ...(!sel.task ? tasks.slice(0, 1).length ? [{ label: 'Attach to a task…', icon: <I.paperclip />, onSelect: () => onAttach(sel) }] : [] : []),
-                      ...(sel.task && !sel.archived ? [{ label: 'Open task', icon: <I.pencil />, onSelect: () => onOpenTask(sel.task.id) }] : []),
+                      { label: 'Link to a task…', icon: <I.paperclip />, onSelect: () => onAttach(sel) },
                       'sep',
-                      { label: sel.task ? 'Remove from task' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onRemove(sel, sel.task ? sel.task.id : null) },
+                      { label: 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel) },
                     ]} />
+                </div>
+                <div className="rounded-md border px-3 py-2">
+                  <div className="mb-1 flex items-center text-xs font-medium text-muted-foreground">Linked to<span className="ml-1 font-normal">({sel.links.length})</span>
+                    <button type="button" onClick={() => onAttach(sel)} className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-normal hover:bg-muted hover:text-foreground"><I.plus className="size-3" />Link to task…</button>
+                  </div>
+                  {sel.links.length === 0 && <div className="py-1 text-xs text-muted-foreground">Not linked to any task yet.</div>}
+                  {sel.links.map(l => (
+                    <div key={l.task.id} className="group flex h-8 items-center gap-2 text-[13px]">
+                      <span className={cn('size-2 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} />
+                      <button type="button" onClick={() => onOpenTask(l.task.id, l.archived)} className="min-w-0 flex-1 truncate text-left hover:underline underline-offset-4">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</button>
+                      {!l.archived && <button type="button" onClick={() => onRemove(sel, l.task.id)} aria-label={`Unlink from ${l.task.title || 'Untitled'}`} title="Unlink"
+                        className="flex size-6 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground group-hover:opacity-100 [@media(hover:none)]:opacity-100"><I.x className="size-3.5" /></button>}
+                    </div>
+                  ))}
                 </div>
                 <div className="flex gap-2">
                   <Button size="sm" onClick={() => openExternal(sel)}>Open in its app</Button>
@@ -1306,16 +1376,46 @@ function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onOpenTask, o
   );
 }
 
+function LinkDocsDialog({ taskId, library, linkedIds, onClose, onLink }) {
+  const [q, setQ] = useState('');
+  const [picked, setPicked] = useState([]);
+  useEffect(() => { setQ(''); setPicked([]); }, [taskId]);
+  if (!taskId) return null;
+  const nq = norm(q);
+  const list = library.filter(d => !linkedIds.includes(d.id) && (!nq || norm(d.name).includes(nq))).sort((a, b) => b.addedAt - a.addedAt);
+  const toggle = id => setPicked(p => p.includes(id) ? p.filter(x => x !== id) : [...p, id]);
+  return (
+    <Dialog open onClose={onClose} title="Choose from Documents" className="max-w-lg"
+      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={!picked.length} onClick={() => onLink(taskId, library.filter(d => picked.includes(d.id)))}>Link {picked.length || ''} {picked.length === 1 ? 'document' : 'documents'}</Button></>}>
+      <div className="relative">
+        <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+        <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="pl-9" />
+      </div>
+      <div className="max-h-80 overflow-y-auto rounded-md border">
+        {list.length === 0 && <div className="p-4 text-sm text-muted-foreground">{library.length ? 'No other documents match.' : 'There are no documents yet.'}</div>}
+        {list.map(d => (
+          <label key={d.id} className="flex cursor-default items-center gap-3 border-b px-3 py-2 last:border-0 hover:bg-muted/50">
+            <Checkbox checked={picked.includes(d.id)} onChange={() => toggle(d.id)} label={d.name} />
+            <FileBadge kind={d.kind} className="h-7 w-6" />
+            <span className="min-w-0 flex-1"><span className="block truncate text-sm">{d.name}</span><span className="block text-xs text-muted-foreground">{fmtSize(d.size)}, {d.links.length ? `linked to ${d.links.length} ${d.links.length === 1 ? 'task' : 'tasks'}` : 'not linked'}</span></span>
+          </label>
+        ))}
+      </div>
+    </Dialog>
+  );
+}
+
 function AttachDocDialog({ file, tasks, onClose, onAttach }) {
   const [target, setTarget] = useState('');
+  const linked = new Set(((file && file.links) || []).map(l => l.task.id));
   useEffect(() => { setTarget(''); }, [file && file.id]);
   if (!file) return null;
   return (
-    <Dialog open={!!file} onClose={onClose} title="Attach to a task" description={file.name} className="max-w-md"
-      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={!target} onClick={() => onAttach(file, target)}>Attach</Button></>}>
+    <Dialog open={!!file} onClose={onClose} title="Link to a task" description={file.name} className="max-w-md"
+      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={!target} onClick={() => onAttach(file, target)}>Link</Button></>}>
       <Field label="Task" htmlFor="att-t">
         <Select id="att-t" value={target} onChange={setTarget} placeholder="Choose a task…"
-          options={tasks.slice().sort((a, b) => b.createdAt - a.createdAt).map(t => ({ value: t.id, label: t.title || 'Untitled', group: t.status === 'done' ? 'Complete' : 'Open' }))} />
+          options={tasks.filter(t => !linked.has(t.id)).sort((a, b) => b.createdAt - a.createdAt).map(t => ({ value: t.id, label: t.title || 'Untitled', group: t.status === 'done' ? 'Complete' : 'Open' }))} />
       </Field>
     </Dialog>
   );
@@ -1344,6 +1444,16 @@ const STATUS_COLORS = {
   gray: 'bg-zinc-400', brown: 'bg-amber-700', orange: 'bg-orange-500', yellow: 'bg-yellow-500', green: 'bg-emerald-500',
   blue: 'bg-blue-500', purple: 'bg-violet-500', pink: 'bg-pink-500', red: 'bg-red-500',
 };
+/* Table columns: standard widths and the narrowest each can be. The Task column takes the rest. */
+const TABLE_COLS = [
+  { key: 'task', min: 200, icon: 'task' },
+  { key: 'status', w: 150, min: 90 },
+  { key: 'bucket', w: 150, min: 90 },
+  { key: 'assignee', w: 140, min: 90 },
+  { key: 'deadline', w: 112, min: 80 },
+  { key: 'priority', w: 92, min: 72 },
+  { key: 'time', w: 96, min: 80 },
+];
 const STATUS_HEX = { gray: '#a1a1aa', brown: '#b45309', orange: '#f97316', yellow: '#eab308', green: '#10b981', blue: '#3b82f6', purple: '#8b5cf6', pink: '#ec4899', red: '#ef4444' };
 const GROUP_HEAD = { todo: 'To-do', doing: 'In progress', blocked: 'Blocked', done: 'Complete' };
 const BUILTIN_COLOR = { todo: 'orange', doing: 'blue', blocked: 'red', done: 'green' };
@@ -1651,7 +1761,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -1850,10 +1960,17 @@ function TaskSheet({ labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMod
           {/* Documents */}
           <div className="mt-4">
             <SectionHead right={canUpload && (
-              <button type="button" onClick={chooseFiles} disabled={busy}
-                className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50">
-                <I.paperclip className="size-3.5" />{busy ? 'Adding…' : 'Attach'}
-              </button>
+              <DropdownMenu
+                trigger={p => (
+                  <button {...p} type="button" disabled={busy}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50">
+                    <I.paperclip className="size-3.5" />{busy ? 'Adding…' : 'Attach'}<I.down className="size-3" />
+                  </button>
+                )}
+                items={[
+                  { label: 'Upload new files', icon: <I.upload />, onSelect: chooseFiles },
+                  { label: 'Choose from Documents', icon: <I.file />, onSelect: () => { if (task) onLinkExisting(task.id); } },
+                ]} />
             )}>Documents{files.length > 0 && <span className="ml-1 font-normal">({files.length})</span>}</SectionHead>
             {files.map(f => <CompactFile key={f.id} f={f} onPreview={onPreview} onDownload={onDownload} onRemove={removeFile} />)}
             {files.length === 0 && (canUpload
@@ -1962,7 +2079,7 @@ function TimeSummary({ tasks, onHide }) {
   );
 }
 
-const SHORTCUTS = [['New task', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
+const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
 function ShortcutsDialog({ open, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} title="Keyboard shortcuts">
@@ -2189,7 +2306,6 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen }) {
       <div className="mb-4 flex items-center gap-3">
         <h2 className="text-base font-semibold">{plural(noun)}</h2>
         <span className="text-sm text-muted-foreground">{list.length} active</span>
-        <Button size="sm" variant="outline" className="ml-auto" onClick={onNew}><I.plus />New {noun.toLowerCase()}</Button>
       </div>
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {list.map(b => card(b, stats(b.name), true))}
@@ -2241,7 +2357,7 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
   const presetFor = g => groupBy === 'status' ? (() => { const d = statusList(stages).find(x => x.id === g.key); return d ? { status: d.group, stage: d.builtin ? '' : d.id } : {}; })()
     : groupBy === 'priority' ? { priority: g.key } : { [groupBy]: g.key };
   return (
-    <div className="mt-3 grid gap-3">
+    <div className="mt-3 grid items-start gap-3 lg:grid-cols-2">
       {groups.map(g => (
         <Card key={g.key || '_none'} className="overflow-hidden">
           <div className="flex h-10 items-center gap-2 px-4 text-xs font-semibold">
@@ -2353,6 +2469,64 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
       )}
     </div>
   );
+}
+
+/* Command palette (Ctrl+K): jump to anything, or run an action, by typing. */
+function CommandPalette({ open, onClose, items }) {
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  const lst = useRef(null);
+  useEffect(() => { if (open) { setQ(''); setHi(0); } }, [open]);
+  useLockScroll(open);
+  useEffect(() => {
+    if (!open) return;
+    const k = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    document.addEventListener('keydown', k, true);
+    return () => document.removeEventListener('keydown', k, true);
+  }, [open, onClose]);
+  useEffect(() => { const el = lst.current && lst.current.querySelector(`[data-i="${hi}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); }, [hi]);
+  if (!open) return null;
+  const words = norm(q).split(/\s+/).filter(Boolean);
+  const match = it => words.every(w => norm(`${it.label} ${it.hint || ''} ${it.keywords || ''}`).includes(w));
+  const groups = ['Actions', 'Tasks', 'Buckets', 'Documents'];
+  const shown = [];
+  groups.forEach(g => { shown.push(...items.filter(it => it.group === g && match(it)).slice(0, g === 'Actions' && !q ? 8 : 8)); });
+  const run = it => { onClose(); setTimeout(() => it.run(), 0); };
+  const onKey = e => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, shown.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
+    else if (e.key === 'Enter') { e.preventDefault(); if (shown[hi]) run(shown[hi]); }
+  };
+  let last = null;
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[85] bg-black/40 anim-fade" onClick={onClose} />
+      <div role="dialog" aria-modal="true" aria-label="Command palette"
+        className="fixed left-1/2 top-[14vh] z-[86] w-[min(640px,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl anim-pop">
+        <div className="flex items-center gap-2 border-b px-4">
+          <I.search className="text-muted-foreground" />
+          <input autoFocus value={q} onChange={e => { setQ(e.target.value); setHi(0); }} onKeyDown={onKey} placeholder="Type a command, or search tasks, buckets and documents…" aria-label="Command"
+            className="h-12 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus-visible:outline-none" />
+          <Kbd>Esc</Kbd>
+        </div>
+        <div ref={lst} role="listbox" className="max-h-[min(26rem,60vh)] overflow-y-auto p-1.5">
+          {shown.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted-foreground">Nothing matches “{q}”.</div>}
+          {shown.map((it, i) => {
+            const head = it.group !== last ? it.group : null; last = it.group;
+            return (
+              <React.Fragment key={it.id}>
+                {head && <div className="px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">{head === 'Buckets' && it.groupLabel ? it.groupLabel : head}</div>}
+                <div role="option" aria-selected={i === hi} data-i={i} onMouseEnter={() => setHi(i)} onClick={() => run(it)}
+                  className={cn('flex h-9 cursor-default items-center gap-2.5 rounded-md px-2.5 text-sm [&_svg]:size-4 [&_svg]:shrink-0 [&_svg]:text-muted-foreground', i === hi && 'bg-accent')}>
+                  {it.icon}<span className="min-w-0 flex-1 truncate">{it.label}</span>
+                  {it.hint && <span className="shrink-0 truncate text-xs text-muted-foreground">{it.hint}</span>}
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      </div>
+    </>, document.body);
 }
 
 /* Archive: finished tasks moved out of the way after a while. Searchable, restorable. */
@@ -2531,8 +2705,25 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const {
     tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
     buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
-    archived, trash, trashTasks, restoreTask, purgeTrash,
+    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, undo, redo,
   } = useTasks(ws);
+  const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
+  const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
+  undoHook.current = undo;
+  // Ctrl+Z undoes, Ctrl+Shift+Z or Ctrl+Y redoes (text fields keep their own undo while you type).
+  const undoKeys = useRef(null); undoKeys.current = { doUndo, doRedo };
+  useEffect(() => {
+    const k = e => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const el = document.activeElement;
+      if (el && (/^(INPUT|TEXTAREA)$/.test(el.tagName) || el.isContentEditable)) return;
+      const key = e.key.toLowerCase();
+      if (key === 'z' && !e.shiftKey) { e.preventDefault(); undoKeys.current.doUndo(); }
+      else if ((key === 'z' && e.shiftKey) || key === 'y') { e.preventDefault(); undoKeys.current.doRedo(); }
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, []);
   const wsName = (workspaces.find(w => w.id === ws) || {}).name || 'Product';
   const [cellEdit, setCellEdit] = useState(null); // { id, field, el }
   const [renaming, setRenaming] = useState(null);
@@ -2625,7 +2816,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     saveRules(rules.filter(r => norm(r.project) !== n && !((r.action === 'copy' || r.action === 'move') && norm(r.target) === n)));
     saveProjects(projectList.filter(x => norm(x.name) !== n));
     if (projectFilter === p.name) setProjectFilter('all');
-    toast(`${labels.platform} deleted`, p.name);
+    toast(`${labels.platform} deleted`, p.name, { undo: true });
   };
   const ensureProject = name => {
     if (!name || projectList.some(p => norm(p.name) === norm(name))) return;
@@ -2658,6 +2849,22 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const bucketNames = useMemo(() => bucketList.map(b => b.name), [bucketList]);
   const [bucketFilter, setBucketFilter] = useState('all');
   const [cleanUpOpen, setCleanUpOpen] = useState(false);
+  const COLS_KEY = 'tasks-cols-' + ws;
+  const [cols, setCols] = useState(() => { try { const v = JSON.parse(localStorage.getItem(COLS_KEY)); return { widths: (v && v.widths) || {}, hidden: (v && v.hidden) || [] }; } catch (e) { return { widths: {}, hidden: [] }; } });
+  useEffect(() => { try { localStorage.setItem(COLS_KEY, JSON.stringify(cols)); } catch (e) {} }, [cols]);
+  const visibleCols = TABLE_COLS.filter(c => c.key === 'task' || !cols.hidden.includes(c.key));
+  const colW = c => cols.widths[c.key] || c.w;
+  const setColWidth = (key, w) => setCols(c => { const widths = { ...c.widths }; if (w == null) delete widths[key]; else widths[key] = w; return { ...c, widths }; });
+  const hideCol = (key, hide) => setCols(c => ({ ...c, hidden: hide ? [...new Set([...c.hidden, key])] : c.hidden.filter(k => k !== key) }));
+  // Drag the line between two headings to resize a column; double-click it to reset.
+  const startResize = (e, c) => {
+    e.preventDefault(); e.stopPropagation();
+    const x0 = e.clientX, w0 = colW(c);
+    const move = ev => setColWidth(c.key, Math.max(c.min, Math.round(w0 + ev.clientX - x0)));
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); document.body.style.cursor = ''; };
+    document.body.style.cursor = 'col-resize';
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
   const VM_KEY = 'tasks-view-mode-' + ws, GB_KEY = 'tasks-group-by-' + ws;
   const [viewMode, setViewMode] = useState(() => { try { return localStorage.getItem(VM_KEY) || 'table'; } catch (e) { return 'table'; } });
   const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem(GB_KEY) || 'project'; } catch (e) { return 'project'; } });
@@ -2697,7 +2904,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if (moved.length) saveMany(moved);
     saveBuckets(bucketList.filter(x => norm(x.name) !== norm(b.name)));
     if (bucketFilter === b.name) setBucketFilter('all');
-    toast(`${labels.bucket} deleted`, b.name);
+    toast(`${labels.bucket} deleted`, b.name, { undo: true });
   };
   const openBucket = name => { setBucketFilter(name); setFilter('all'); setView('tasks'); };
   const scoped = useMemo(() => {
@@ -2912,7 +3119,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const discardEmpty = id => remove(id);
   const doDelete = () => {
     const t = tasks[confirmId]; trashTasks([confirmId]); setConfirmId(null); setSheet({ open: false, id: null });
-    toast('Moved to Trash', `You can restore “${(t && t.title) || 'Untitled'}” from the Trash for ${TRASH_DAYS} days.`);
+    toast('Moved to Trash', `You can restore “${(t && t.title) || 'Untitled'}” from the Trash for ${TRASH_DAYS} days.`, { undo: true });
   };
   const closeSheet = useCallback(() => setSheet({ open: false, id: null }), []);
   // Close tabs whose task was deleted.
@@ -2924,6 +3131,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       return { list, active: t.active === 'home' || list.includes(t.active) ? t.active : 'home' };
     });
   }, [tasks, loaded]);
+  // Ctrl+K opens the command palette from anywhere.
+  useEffect(() => {
+    if (standaloneId) return;
+    const k = e => { if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(o => !o); } };
+    document.addEventListener('keydown', k, true);
+    return () => document.removeEventListener('keydown', k, true);
+  }, []);
   // Ctrl+W closes the tab, Ctrl+Tab moves to the next one, Ctrl+1 goes Home.
   useEffect(() => {
     if (standaloneId) return;
@@ -2950,11 +3164,26 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   /* ---- documents ---- */
   // Documents: from tasks, archived tasks, and files whose task is gone ("No task").
-  const docs = useMemo(() => [
-    ...all.flatMap(t => (t.files || []).map(f => ({ ...f, task: t }))),
-    ...Object.values(archived).flatMap(t => (t.files || []).map(f => ({ ...f, task: t, archived: true }))),
-    ...looseDocs.map(f => ({ ...f, task: null })),
-  ], [all, archived, looseDocs]);
+  // The document library: every file once, with the tasks it's linked to (many to many).
+  const docs = useMemo(() => {
+    const map = new Map();
+    const add = (f, link) => { if (!map.has(f.id)) map.set(f.id, { ...f, links: [] }); if (link) map.get(f.id).links.push(link); };
+    all.forEach(t => (t.files || []).forEach(f => add(f, { task: t })));
+    Object.values(archived).forEach(t => (t.files || []).forEach(f => add(f, { task: t, archived: true })));
+    looseDocs.forEach(f => add(f, null));
+    return [...map.values()];
+  }, [all, archived, looseDocs]);
+  const [linkFor, setLinkFor] = useState(null);
+  const [docDelete, setDocDelete] = useState(null);
+  const stripMeta = f => { const { links, task, archived: _a, ...meta } = f; return meta; };
+  // Removing a document from a task only unlinks it; if nothing else uses it, it stays in Documents as "Not linked".
+  const unlinkDoc = (file, taskId) => {
+    const t = tasksRef.current[taskId]; if (!t) return;
+    saveMany([{ ...t, files: (t.files || []).filter(x => x.id !== file.id) }]);
+    const elsewhere = [...Object.values(tasksRef.current).filter(o => o.id !== taskId), ...Object.values(archived), ...Object.values(trash)].some(o => (o.files || []).some(x => x.id === file.id));
+    if (!elsewhere) saveLooseDocs(l => l.some(x => x.id === file.id) ? l : [...l, stripMeta(file)]);
+    toast('Document unlinked', `“${file.name}” stays in Documents.`, { undo: true });
+  };
   const [attachDoc, setAttachDoc] = useState(null);
   // Search extras: archived tasks, and tasks in your other workspaces.
   const [incArchived, setIncArchived] = useState(false);
@@ -3002,7 +3231,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const auto = automate({ ...t, files: [...(t.files || []), ...metas] }, t);
     saveMany([auto.task, ...auto.created]);
     notifyAuto(auto);
-    toast(metas.length === 1 ? 'Document attached' : `${metas.length} documents attached`, t.title);
+    toast(metas.length === 1 ? 'Document linked' : `${metas.length} documents linked`, t.title);
   };
   const submitDocs = async (files, { target, project }) => {
     const metas = await uploadMany(files);
@@ -3085,14 +3314,52 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       const el = document.activeElement;
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
       if (document.querySelector('[role=dialog],[role=alertdialog]') || standaloneId) return;
-      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); createRef.current(); }
-      else if (e.key === '/' && searchRef.current) { e.preventDefault(); searchRef.current.focus(); }
+      if ((e.key === 'n' || e.key === 'N') && tabsRef.current.active === 'home') { e.preventDefault(); if (primaryRef.current) primaryRef.current.run(); }
+      else if (e.key === '/') { e.preventDefault(); setSearchOpen(true); setTimeout(() => searchRef.current && searchRef.current.focus(), 0); }
       else if (e.key === '?') { e.preventDefault(); setKeysOpen(true); }
     };
     document.addEventListener('keydown', k);
     return () => document.removeEventListener('keydown', k);
   }, []);
   const sheetTask = sheet.id ? all.find(t => t.id === sheet.id) : null;
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [docFocus, setDocFocus] = useState(null);
+  const toggleTheme = () => {
+    const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches, cur = readTheme();
+    const next = cur === 'dark' || (cur === 'system' && sysDark) ? 'light' : 'dark';
+    saveTheme(next); applyTheme(next); window.dispatchEvent(new CustomEvent('tasks-theme', { detail: next }));
+  };
+  const paletteItems = !paletteOpen ? [] : [
+    { id: 'a-task', group: 'Actions', label: 'Create task', hint: 'N', icon: <I.plus />, run: () => { setView('tasks'); createTask(); } },
+    { id: 'a-bucket', group: 'Actions', label: `Create ${labels.bucket.toLowerCase()}`, icon: <I.layers />, run: () => { setView('projects'); setBucketEdit({ bucket: null }); } },
+    { id: 'a-docs', group: 'Actions', label: 'Add documents', icon: <I.upload />, run: () => setAddDocs({ open: true, files: [] }) },
+    ...(running ? [{ id: 'a-pause', group: 'Actions', label: `Pause timer: ${running.title || 'Untitled'}`, icon: <I.pause />, run: () => toggleTimer(running.id) }] : []),
+    { id: 'v-tasks', group: 'Actions', label: 'Go to Tasks', icon: <I.listCheck />, run: () => { setActiveTab('home'); setView('tasks'); } },
+    { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setActiveTab('home'); setView('projects'); } },
+    { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); } },
+    { id: 'v-table', group: 'Actions', label: 'Table view', icon: <I.table />, run: () => { setView('tasks'); setViewMode('table'); } },
+    { id: 'v-list', group: 'Actions', label: 'List view', icon: <I.rows />, run: () => { setView('tasks'); setViewMode('list'); } },
+    { id: 'v-board', group: 'Actions', label: 'Board view', icon: <I.kanban />, run: () => { setView('tasks'); setViewMode('board'); } },
+    ...workspaces.filter(w => w.id !== ws).map(w => ({ id: 'ws-' + w.id, group: 'Actions', label: `Switch to ${w.name}`, keywords: 'workspace', icon: <I.layers />, run: () => onSwitchWorkspace(w.id) })),
+    { id: 'a-archive', group: 'Actions', label: 'Open Archive', icon: <I.clipboard />, run: () => setView('archive') },
+    { id: 'a-trash', group: 'Actions', label: 'Open Trash', icon: <I.trash />, run: () => setView('trash') },
+    { id: 'a-auto', group: 'Actions', label: 'Automations', icon: <I.zap />, run: () => setRulesOpen(true) },
+    { id: 'a-status', group: 'Actions', label: 'Edit statuses', icon: <I.sliders />, run: () => setStatusesOpen(true) },
+    { id: 'a-plat', group: 'Actions', label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, run: () => setPlatformsOpen(true) },
+    { id: 'a-theme', group: 'Actions', label: 'Switch light and dark mode', hint: 'Shift+D', icon: <I.moon />, run: toggleTheme },
+    { id: 'a-undo', group: 'Actions', label: 'Undo', hint: 'Ctrl+Z', icon: <I.reset />, run: doUndo },
+    { id: 'a-redo', group: 'Actions', label: 'Redo', hint: 'Ctrl+Shift+Z', icon: <I.reset />, run: doRedo },
+    { id: 'a-backup', group: 'Actions', label: 'Back up data…', icon: <I.download />, run: backup },
+    { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: '?', icon: <I.keyboard />, run: () => setKeysOpen(true) },
+    ...all.map(t => ({ id: 't-' + t.id, group: 'Tasks', label: t.title || 'Untitled', hint: [statusLabel(t, stages), t.bucket, t.project].filter(Boolean).join(', '), keywords: t.assignee, icon: <span className={cn('ml-1 mr-1 size-2 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} />, run: () => openTask(t.id) })),
+    ...bucketList.map(b => ({ id: 'b-' + b.name, group: 'Buckets', groupLabel: plural(labels.bucket), label: b.name, icon: <I.layers />, run: () => openBucket(b.name) })),
+    ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); setDocFocus(d.id); } })),
+  ];
+  const primary = view === 'tasks' ? { label: 'Create task', run: () => createTask() }
+    : view === 'projects' ? { label: `Create ${labels.bucket.toLowerCase()}`, run: () => setBucketEdit({ bucket: null }) }
+    : view === 'docs' ? { label: 'Add documents', run: () => setAddDocs({ open: true, files: [] }) } : null;
+  const primaryRef = useRef(primary); primaryRef.current = primary;
   const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled', ws); };
   const sheetToTab = () => { const id = sheet.id; setSheet({ open: false, id: null }); if (id) openTab(id); };
   const onSheetMode = m => { chooseMode(m); if (m === 'tab') sheetToTab(); };
@@ -3110,7 +3377,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
-        onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
+        onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
       <AlertDialog open={!!confirmId} title="Move this task to the Trash?"
         description={`“${(tasks[confirmId] || {}).title || 'Untitled'}” goes to the Trash, where you can restore it for ${TRASH_DAYS} days. After that it’s deleted for good. Its documents are kept.`}
@@ -3134,18 +3401,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
           onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(tabTask.id)} onToggle={toggleTimer} onReset={resetTimer}
           storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
-          onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
-      ) : (
-      <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-6xl px-4 pb-10 md:px-6">
-      {/* Top bar */}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 py-4">
-        <div className="flex min-w-0 items-center">
+          onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
+      ) : (<>
+      {/* Elevated top bar: workspace, sections as underlined tabs, tools and the main action */}
+      <div className="shrink-0 border-b bg-card">
+        <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4 md:px-6">
+          <div className="flex min-w-0 shrink-0 items-center">
           <DropdownMenu align="start"
             trigger={p => (
               <button {...p} type="button" aria-label="Switch workspace" className="-ml-1.5 flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <span className="flex size-8 shrink-0 items-center justify-center rounded-[10px] bg-primary text-primary-foreground"><I.check className="size-4" /></span>
-                <span className="truncate text-base font-semibold tracking-tight">{wsName}</span>
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><I.check className="size-4" /></span>
+                <span className="truncate text-[15px] font-semibold tracking-tight">{wsName}</span>
                 <I.down className="size-4 shrink-0 text-muted-foreground" />
               </button>
             )}
@@ -3154,17 +3420,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               'sep',
               { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
             ]} />
-        </div>
-        <nav aria-label="Sections" className="flex items-center gap-1.5">
-          {[{ id: 'tasks', label: 'Tasks', count: all.length, icon: <I.listCheck /> }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length, icon: <I.layers /> }, { id: 'docs', label: 'Documents', count: docs.length, icon: <I.file /> }].map(v => (
-            <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
-              className={cn('inline-flex h-9 items-center gap-2 rounded-full border px-3.5 text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&_svg]:size-3.5',
-                view === v.id ? 'border-primary bg-primary text-primary-foreground' : 'bg-card text-foreground/80 hover:text-foreground')}>
-              {v.icon}{v.label}<span className="tnum text-[11px] opacity-60">{v.count}</span>
-            </button>
-          ))}
-        </nav>
-        <div className="flex min-w-0 items-center justify-end gap-2">
+          </div>
+          <nav aria-label="Sections" className="flex h-full items-stretch gap-5">
+            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length }, { id: 'docs', label: 'Documents', count: docs.length }].map(v => (
+              <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
+                className={cn('-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
+                  view === v.id ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
+                {v.label}<span className="tnum text-[11px] font-normal text-muted-foreground">{v.count}</span>
+              </button>
+            ))}
+          </nav>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
           {running && (
             <div className="flex min-w-0 items-center gap-2 rounded-full border bg-card py-1 pl-3 pr-1 text-xs" role="status">
               <span className="relative flex size-2 shrink-0">
@@ -3177,6 +3443,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               <button type="button" onClick={() => toggleTimer(running.id)} aria-label="Pause timer"
                 className="flex size-6 items-center justify-center rounded-full hover:bg-muted"><I.pause className="size-3" /></button>
             </div>
+          )}
+          {searchOpen || query ? (
+            <div className="relative w-56">
+              <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input ref={searchRef} autoFocus value={query} onChange={e => { setQuery(e.target.value); if (view !== 'tasks') setView('tasks'); }} placeholder="Search all tasks" aria-label="Search all tasks"
+                className="h-9 rounded-full bg-background pl-9 pr-9 shadow-none"
+                onBlur={() => { if (!query) setSearchOpen(false); }}
+                onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQuery(''); setSearchOpen(false); e.currentTarget.blur(); } }} />
+              {query && <button type="button" onClick={() => { setQuery(''); setSearchOpen(false); }} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-sm opacity-60 hover:opacity-100"><I.x /></button>}
+            </div>
+          ) : (
+            <Button variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label="Search (/)" title="Search (/)" onClick={() => setSearchOpen(true)}><I.search /></Button>
           )}
           <ThemeToggle />
           <DropdownMenu
@@ -3206,44 +3484,36 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               'sep',
               { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
             ]} />
+          {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
+          </div>
         </div>
       </div>
-
-      {/* Welcome, search and Create task */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="mr-auto min-w-0">
-          <h1 className="truncate text-lg font-semibold tracking-tight">Welcome back, {(me.name || '').split(' ')[0] || 'there'}</h1>
-          <p className="text-sm text-muted-foreground">{new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</p>
+      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-6xl px-4 pb-10 md:px-6">
+      {view === 'tasks' && (
+        <div className="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-lg font-semibold tracking-tight">Tasks</h1>
+          <span className="text-sm text-muted-foreground">{query ? `Searching for “${query}”` : `${overview.open} open${viewMode === 'list' ? `, grouped by ${(labels[groupBy === 'project' ? 'platform' : groupBy] || '').toLowerCase()}` : ''}`}</span>
         </div>
-        <div className="relative w-52 lg:w-64">
-          <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-          <Input ref={searchRef} value={query} onChange={e => { setQuery(e.target.value); if (view !== 'tasks') setView('tasks'); }} placeholder="Search all tasks" aria-label="Search all tasks"
-            className="h-9 rounded-lg bg-card pl-9 pr-9 shadow-none"
-            onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQuery(''); e.currentTarget.blur(); } }} />
-          {query
-            ? <button type="button" onClick={() => setQuery('')} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-sm opacity-60 hover:opacity-100"><I.x /></button>
-            : <Kbd className="absolute right-3 top-1/2 -translate-y-1/2">/</Kbd>}
-        </div>
-        <Button className="shadow-none" onClick={() => createTask()}><I.plus />Create task</Button>
-      </div>
+      )}
 
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} />
       ) : view === 'archive' ? (
         <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveSettings(x => ({ ...x, archiveDays: d }))}
-          onRestore={id => { restoreTask(id); toast('Task restored'); }} onTrash={id => { trashTasks([id]); toast('Moved to Trash'); }} onCleanUp={() => setCleanUpOpen(true)} />
+          onRestore={id => { restoreTask(id); toast('Task restored'); }} onTrash={id => { trashTasks([id]); toast('Moved to Trash', undefined, { undo: true }); }} onCleanUp={() => setCleanUpOpen(true)} />
       ) : view === 'trash' ? (
         <TrashView items={trash} onRestore={id => { restoreTask(id); toast('Task restored'); }} onDeleteNow={t => setPurgeConfirm([t.id])} onEmpty={() => setPurgeConfirm(Object.keys(trash))} />
       ) : view === 'docs' ? (
-        <DocumentsView docs={docs} tasks={all} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
-          onRemove={(file, taskId) => setFileConfirm({ file, taskId })} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
+        <DocumentsView docs={docs} tasks={all} focusId={docFocus} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
+          onRemove={(file, taskId) => unlinkDoc(file, taskId)} onDelete={f => setDocDelete(f)} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
           onAttach={f => setAttachDoc(f)} />
       ) : (<>
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
       {/* Status chips and the view switch; below, filters and a one-line summary */}
-      <div className="mt-4 flex flex-wrap items-center gap-1.5">
+      <div className="mt-3 flex flex-wrap items-center gap-1.5">
         {[{ id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }].map(c => (
           <button key={c.id} type="button" onClick={() => { setFilter(c.id); if (query) setQuery(''); }} aria-pressed={filter === c.id && !query}
             className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -3251,7 +3521,21 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             {c.dot && <span className={cn('size-1.5 rounded-full', c.dot)} />}{c.label}<span className="tnum opacity-70">{c.count}</span>
           </button>
         ))}
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-1.5">
+          {viewMode === 'table' && (
+            <Popover align="end" className="w-56 p-1"
+              trigger={p => <button {...p} type="button" aria-label="Show or hide columns" title="Columns"
+                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"><I.sliders className="size-3.5" />Columns{cols.hidden.length ? <span className="tnum">({cols.hidden.length} hidden)</span> : null}</button>}>
+              <div className="px-2 py-1.5 text-xs text-muted-foreground">Show columns</div>
+              {TABLE_COLS.filter(c => c.key !== 'task').map(c => (
+                <label key={c.key} className="flex h-8 cursor-default items-center gap-2.5 rounded-sm px-2 text-sm hover:bg-accent">
+                  <Checkbox checked={!cols.hidden.includes(c.key)} onChange={v => hideCol(c.key, !v)} label={labels[c.key]} />{labels[c.key]}
+                </label>
+              ))}
+              <div className="mx-1 my-1 h-px bg-border" />
+              <button type="button" onClick={() => setCols({ widths: {}, hidden: [] })} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Show all and reset widths</button>
+            </Popover>
+          )}
           <div role="group" aria-label="View" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
           {[['table', 'Table', <I.table />], ['list', 'List', <I.rows />], ['board', 'Board', <I.kanban />]].map(([id, label, icon]) => (
             <button key={id} type="button" aria-pressed={viewMode === id} aria-label={`${label} view`} title={label} onClick={() => setViewMode(id)}
@@ -3307,7 +3591,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               <label className="inline-flex items-center gap-1.5"><Checkbox checked={incArchived} onChange={setIncArchived} label="Include archived" />Include archived</label>
               {workspaces.length > 1 && <label className="inline-flex items-center gap-1.5"><Checkbox checked={allWs} onChange={setAllWs} label="All workspaces" />All workspaces</label>}
             </span>
-          ) : <>{overview.open} open, {overview.week} due this week</>}
+          ) : <>{overview.week} due this week</>}
           {!query && overview.overdue > 0 && <>, <span className="font-medium text-red-600 dark:text-red-400">{overview.overdue} overdue</span></>}
         </span>
       </div>
@@ -3334,20 +3618,39 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           </Empty>
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] table-fixed border-collapse text-[13px]">
+            <table className="w-full table-fixed border-collapse text-[13px]" style={{ minWidth: visibleCols.reduce((n, c) => n + (c.key === 'task' ? 320 : colW(c)), 36) }}>
               <colgroup>
-                <col /><col className="w-[150px]" /><col className="w-[150px]" /><col className="w-[140px]" /><col className="w-[112px]" /><col className="w-[92px]" /><col className="w-[96px]" /><col className="w-[36px]" />
+                {visibleCols.map(c => <col key={c.key} style={c.key === 'task' ? undefined : { width: colW(c) }} />)}
+                <col style={{ width: 36 }} />
               </colgroup>
               <thead>
                 <tr className="border-b text-left text-xs text-muted-foreground">
-                  {[['task', <span className="text-[11px] font-semibold">Aa</span>], ['status', <I.loader />], ['bucket', <I.layers />], ['assignee', <I.user />], ['deadline', <I.calendar />], ['priority', <I.flag />], ['time', <I.timer />]].map(([key, icon]) => (
-                    <th key={key} className="h-8 border-r p-0 font-normal last:border-r-0">
-                      <button type="button" onClick={() => setLabelEdit(key)} title="Rename column"
-                        className="flex h-8 w-full items-center gap-1.5 px-2.5 text-left hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:bg-muted/60 [&_svg]:size-3.5">
-                        {icon}<span className="truncate">{labels[key]}</span>
-                      </button>
-                    </th>
-                  ))}
+                  {visibleCols.map(c => {
+                    const icon = { task: <span className="text-[11px] font-semibold">Aa</span>, status: <I.loader />, bucket: <I.layers />, assignee: <I.user />, deadline: <I.calendar />, priority: <I.flag />, time: <I.timer /> }[c.key];
+                    return (
+                      <th key={c.key} className="relative h-8 border-r p-0 font-normal">
+                        <DropdownMenu align="start"
+                          trigger={p => (
+                            <button {...p} type="button" title={`${labels[c.key]}: rename, hide or resize`}
+                              className="flex h-8 w-full items-center gap-1.5 px-2.5 text-left hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:bg-muted/60 [&_svg]:size-3.5">
+                              {icon}<span className="truncate">{labels[c.key]}</span>
+                            </button>
+                          )}
+                          items={[
+                            { label: 'Rename', icon: <I.pencil />, onSelect: () => setLabelEdit(c.key) },
+                            ...(c.key === 'task' ? [] : [
+                              { label: 'Hide column', icon: <I.eye />, onSelect: () => hideCol(c.key, true) },
+                              ...(cols.widths[c.key] ? [{ label: 'Reset width', icon: <I.reset />, onSelect: () => setColWidth(c.key, null) }] : []),
+                            ]),
+                          ]} />
+                        {c.key !== 'task' && (
+                          <span role="separator" aria-orientation="vertical" aria-label={`Resize ${labels[c.key]}`} title="Drag to resize, double-click to reset"
+                            onPointerDown={e => startResize(e, c)} onDoubleClick={() => setColWidth(c.key, null)}
+                            className="absolute -right-1 top-0 z-10 h-full w-2 cursor-col-resize after:absolute after:inset-y-1 after:left-[3px] after:w-0.5 after:rounded after:bg-transparent hover:after:bg-foreground/30" />
+                        )}
+                      </th>
+                    );
+                  })}
                   <th className="h-8"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
@@ -3409,7 +3712,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           : <span className="text-muted-foreground/60">Empty</span>],
                         ['deadline', t.deadline ? <span className={cn('whitespace-nowrap', dueCls[d.tone])}>{d.text}</span> : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
-                      ].map(([field, content]) => {
+                      ].filter(([field]) => !cols.hidden.includes(field)).map(([field, content]) => {
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
                         return (
                           <td key={field} tabIndex={0} role="button" aria-label={`Change ${(labels[field] || field).toLowerCase()} of ${t.title || 'Untitled'}`}
@@ -3420,12 +3723,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           </td>
                         );
                       })}
-                      <td className={cn(cell, 'px-1')}>
+                      {!cols.hidden.includes('time') && <td className={cn(cell, 'px-1')}>
                         <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title}`}
                           className={cn('tnum inline-flex h-6 w-full items-center gap-1.5 rounded px-1.5 text-xs transition-colors hover:bg-muted', on ? 'font-semibold text-primary' : 'text-muted-foreground')}>
                           {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{fmt(elapsed(t))}
                         </button>
-                      </td>
+                      </td>}
                       <td className="h-[34px] px-0.5 text-center">
                         <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                           <DropdownMenu
@@ -3477,12 +3780,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
       </div>
       </div>
-      )}
+      </>)}
 
       <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
-        onRemoveFile={(file, taskId) => setFileConfirm({ file, taskId })} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
+        onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <AlertDialog open={!!confirmId} title="Move this task to the Trash?"
         description={`“${(tasks[confirmId] || {}).title || 'Untitled'}” goes to the Trash, where you can restore it for ${TRASH_DAYS} days. After that it’s deleted for good. Its documents are kept.`}
         confirmLabel="Move to Trash" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
@@ -3521,11 +3824,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} rules={rules} projects={projects} people={people} me={me.name}
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
+      {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
       <AddDocsDialog open={addDocs.open} files={addDocs.files} setFiles={fn => setAddDocs(a => ({ ...a, files: typeof fn === 'function' ? fn(a.files) : fn }))} tasks={all} projects={projects} busy={busy}
         onClose={() => setAddDocs({ open: false, files: [] })} onSubmit={submitDocs} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
       <AttachDocDialog file={attachDoc} tasks={all} onClose={() => setAttachDoc(null)}
-        onAttach={(f, taskId) => { const { task, archived: _a, ...meta } = f; attach(taskId, [meta]); saveLooseDocs(l => l.filter(x => x.id !== f.id)); setAttachDoc(null); }} />
+        onAttach={(f, taskId) => { attach(taskId, [stripMeta(f)]); saveLooseDocs(l => l.filter(x => x.id !== f.id)); setAttachDoc(null); }} />
+      <LinkDocsDialog taskId={linkFor} library={docs} linkedIds={linkFor && tasks[linkFor] ? (tasks[linkFor].files || []).map(f => f.id) : []} onClose={() => setLinkFor(null)}
+        onLink={(taskId, picked) => { attach(taskId, picked.map(stripMeta)); const ids = picked.map(d => d.id); saveLooseDocs(l => l.filter(x => !ids.includes(x.id))); setLinkFor(null); }} />
+      <AlertDialog open={!!docDelete} title={`Delete “${docDelete ? docDelete.name : ''}”?`}
+        description={docDelete ? (docDelete.links.length ? `It will be removed from ${docDelete.links.length === 1 ? 'this task' : `these ${docDelete.links.length} tasks`}: ${docDelete.links.slice(0, 5).map(l => `“${l.task.title || 'Untitled'}”`).join(', ')}${docDelete.links.length > 5 ? ' and more' : ''}.` : 'It isn’t linked to any task.') : ''}
+        confirmLabel="Delete document" onConfirm={() => { const f = docDelete; setDocDelete(null); deleteDocEverywhere(stripMeta(f)); toast('Document deleted', f.name, { undo: true }); }} onCancel={() => setDocDelete(null)} />
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
         description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
