@@ -74,6 +74,7 @@ const I = {
   table: p => <Icon {...p}><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></Icon>,
   rows: p => <Icon {...p}><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></Icon>,
   kanban: p => <Icon {...p}><path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/></Icon>,
+  refresh: p => <Icon {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></Icon>,
   user: p => <Icon {...p}><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></Icon>,
 };
 
@@ -507,7 +508,7 @@ function Sheet({ open, onClose, children, labelledBy, variant = 'side' }) {
       </div>
     </>, document.body);
 }
-function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCancel }) {
+function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCancel, cancelLabel = 'Cancel', destructive = true }) {
   const cancelRef = useRef(null);
   useEffect(() => {
     if (!open) return;
@@ -526,8 +527,8 @@ function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCanc
           <p className="text-sm text-muted-foreground">{description}</p>
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button ref={cancelRef} variant="outline" onClick={onCancel}>Cancel</Button>
-          <Button variant="destructive" onClick={onConfirm}>{confirmLabel}</Button>
+          <Button ref={cancelRef} variant="outline" onClick={onCancel}>{cancelLabel}</Button>
+          <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>{confirmLabel}</Button>
         </div>
       </div>
     </>, document.body);
@@ -1031,8 +1032,7 @@ function ThemeToggle() {
 /* Preferences for this computer. */
 const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20 };
 const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
-const CAPTURE_KEYS = ['Ctrl+Shift+Space', 'Ctrl+Alt+Space', 'Ctrl+Alt+T', 'Alt+Shift+N', 'Off'];
-const accel = k => k.replace('Ctrl', 'CommandOrControl');
+const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p === 'Win' ? 'Super' : p).join('+');
 
 // Quick capture: a small window that floats over whatever you're doing.
 async function openCaptureWindow() {
@@ -1073,12 +1073,53 @@ function QuickCaptureWindow() {
 }
 
 /* Settings for this computer, plus the current workspace's watch folders. */
-function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onWatch, wsName }) {
+// Turns a key press into a shortcut like "Ctrl+Alt+Q". Letters, digits, F-keys, Space and common symbols are allowed.
+const KEY_NAMES = { Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Backslash: '\\', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/' };
+function shortcutFromEvent(e) {
+  const c = e.code || '';
+  let key = null;
+  if (/^Key[A-Z]$/.test(c)) key = c.slice(3);
+  else if (/^Digit\d$/.test(c)) key = c.slice(5);
+  else if (/^F([1-9]|1\d|2[0-4])$/.test(c)) key = c;
+  else if (c === 'Space') key = 'Space';
+  else if (KEY_NAMES[c]) key = c;
+  if (!key) return null;
+  const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Win'].filter(Boolean);
+  return { combo: [...mods, key].join('+'), ok: /^F\d+$/.test(key) || e.ctrlKey || e.altKey };
+}
+const showShortcut = k => (k || '').split('+').map(p => KEY_NAMES[p] || p).join(' + ');
+
+function ShortcutRecorder({ value, onChange, error }) {
+  const [rec, setRec] = useState(false);
+  const [msg, setMsg] = useState('');
+  return (
+    <div className="grid gap-1.5">
+      <div className="flex gap-2">
+        <button type="button" onClick={() => { setRec(true); setMsg(''); }} onBlur={() => setRec(false)}
+          onKeyDown={e => {
+            if (!rec) return;
+            e.preventDefault(); e.stopPropagation();
+            if (e.key === 'Escape') { setRec(false); return; }
+            if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+            const r = shortcutFromEvent(e);
+            if (!r) { setMsg('That key can’t be used. Try a letter, a number, Space or F1–F12.'); return; }
+            if (!r.ok) { setMsg('Include Ctrl or Alt, so the shortcut doesn’t get in the way of typing in other apps. Function keys work on their own.'); return; }
+            setRec(false); setMsg(''); onChange(r.combo);
+          }}
+          className={cn(inputCls, 'h-9 flex-1 items-center justify-between text-left', rec && 'ring-1 ring-ring')}>
+          <span className={cn(rec && 'text-muted-foreground')}>{rec ? 'Press the keys you want…' : value === 'Off' ? 'Off' : showShortcut(value)}</span>
+          <span className="text-xs text-muted-foreground">{rec ? 'Esc to cancel' : 'Click to change'}</span>
+        </button>
+        <Button variant="outline" onClick={() => onChange(PREF_DEFAULTS.captureKey)} disabled={value === PREF_DEFAULTS.captureKey}>Reset</Button>
+        <Button variant="ghost" onClick={() => onChange('Off')} disabled={value === 'Off'}>Off</Button>
+      </div>
+      {(msg || error) && <p className="text-[0.8rem] text-destructive">{msg || error}</p>}
+    </div>
+  );
+}
+
+function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onAddFolder, onRemoveFolder, onSubfolders, status, wsName, shortcutError }) {
   if (!open) return null;
-  const addFolder = async () => {
-    const dir = await openDialog({ directory: true, multiple: false });
-    if (dir) onWatch([...watch.filter(w => w.path !== dir), { path: Array.isArray(dir) ? dir[0] : dir, since: Date.now(), seen: {} }]);
-  };
   return (
     <Dialog open onClose={onClose} title="Settings" className="max-w-lg" footer={<Button onClick={onClose}>Done</Button>}>
       <div className="grid gap-5">
@@ -1086,23 +1127,35 @@ function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onWatch, wsName 
           <Switch checked={prefs.keepInTray} onChange={v => onPrefs({ keepInTray: v })} label="Keep running in the system tray" />
           <div><div className="text-sm font-medium">Keep running in the system tray</div><div className="text-xs text-muted-foreground">Closing the window hides Tasks instead of quitting, so quick capture and watch folders keep working. Quit from the tray icon.</div></div>
         </div>
-        <Field label="Quick capture shortcut (anywhere in Windows)" htmlFor="st-key" hint="Inside the app, press ` (the key left of 1) for quick capture.">
-          <Select id="st-key" value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} searchable={false} options={CAPTURE_KEYS.map(k => ({ value: k, label: k === 'Off' ? 'Off' : k.replace(/\+/g, ' + ') }))} />
-        </Field>
+        <div className="grid gap-2">
+          <Label>Quick capture shortcut (anywhere in Windows)</Label>
+          <ShortcutRecorder value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} error={shortcutError} />
+          <p className="text-[0.8rem] text-muted-foreground">Inside the app, press ` (the key left of 1) for quick capture.</p>
+        </div>
         <Field label="Ask about idle time after" htmlFor="st-idle" hint="When a timer is running and there’s no keyboard or mouse activity for this long, Tasks asks what to do with that time.">
           <Select id="st-idle" value={String(prefs.idleMinutes)} onChange={v => onPrefs({ idleMinutes: Number(v) })} searchable={false}
             options={[['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['20', '20 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['0', 'Never']].map(([value, label]) => ({ value, label }))} />
         </Field>
         <div className="grid gap-2">
           <Label>Watch folders for {wsName}</Label>
-          <p className="text-xs text-muted-foreground">New files saved in these folders (for example from WhatsApp) appear in the Documents Inbox. Your original files stay where they are.</p>
-          {watch.map(w => (
-            <div key={w.path} className="flex h-9 items-center gap-2 rounded-md border px-3 text-sm">
-              <I.folder className="size-4 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
-              <Button variant="ghost" size="icon-sm" aria-label={`Stop watching ${w.path}`} onClick={() => onWatch(watch.filter(x => x.path !== w.path))}><I.x className="size-3.5" /></Button>
-            </div>
-          ))}
-          <Button variant="outline" className="justify-start" onClick={addFolder}><I.plus />Add a folder…</Button>
+          <p className="text-xs text-muted-foreground">Any new PDF, Word, HTML or other supported file saved in these folders appears in the Documents Inbox, however it got there. Your original files stay where they are.</p>
+          {watch.map(w => {
+            const st = status[w.path] || {};
+            return (
+              <div key={w.path} className="grid gap-1.5 rounded-md border px-3 py-2">
+                <div className="flex items-center gap-2 text-sm">
+                  <I.folder className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
+                  <Button variant="ghost" size="icon-sm" aria-label={`Stop watching ${w.path}`} title="Stop watching" onClick={() => onRemoveFolder(w.path)}><I.x className="size-3.5" /></Button>
+                </div>
+                <label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={!!w.subfolders} onChange={v => onSubfolders(w.path, v)} label="Include subfolders" />Include subfolders</label>
+                <div className="text-xs text-muted-foreground">
+                  {st.error ? <span className="text-destructive">{st.error}</span>
+                    : st.checkedAt ? <>Checked {relTime(st.checkedAt).toLowerCase()}{st.added ? `, ${st.added} added` : ''}{st.skipped && st.skipped.length ? <>, <span title={st.skipped.map(x => `${x.name}: ${x.why}`).join('\n')} className="underline decoration-dotted underline-offset-2">{st.skipped.length} skipped</span></> : ''}</> : 'Not checked yet'}
+                </div>
+              </div>
+            );
+          })}
+          <Button variant="outline" className="justify-start" onClick={onAddFolder}><I.plus />Add a folder…</Button>
         </div>
       </div>
     </Dialog>
@@ -1392,12 +1445,13 @@ const findVersionTarget = (name, docs, skipId) => docs.find(d => d.id !== skipId
 const versionCount = d => (d.versions || []).length + 1;
 
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
-function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onNewTask, onAddVersion, onUploadVersion, onMakeCurrent, dragOver, focusId }) {
+function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onNewTask, onAddVersion, onUploadVersion, onMakeCurrent, dragOver, focusId }) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
   const [sort, setSort] = useState('new');
   const [selKey, setSelKey] = useState(null);
   const [viewVer, setViewVer] = useState(null); // an older version being previewed
+  const [spin, setSpin] = useState(false);
   const wrap = useRef(null), listRef = useRef(null);
   const [height, setHeight] = useState(600);
   // The page fits the window: the preview stretches to the bottom edge.
@@ -1469,6 +1523,10 @@ function DocumentsView({ docs, tasks, onAdd, onDownload, onRemove, onDelete, onO
             <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-8 bg-card pl-8 text-xs shadow-none md:text-xs"
               onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
           </div>
+          <Button variant="outline" size="icon-sm" className="bg-card shadow-none" onClick={async () => { setSpin(true); try { await onRefresh(); } finally { setSpin(false); } }}
+            aria-label="Check watch folders now" title={hasWatch ? 'Check watch folders now' : 'Check watch folders now (add one in Settings)'}>
+            <I.refresh className={cn(spin && 'animate-spin')} />
+          </Button>
           <Select variant="chip" label="Sort documents" value={sort} onChange={setSort} searchable={false} icon={<I.updown className="size-3.5 shrink-0" />}
             renderValue={o => <span>Sort: {o.label}</span>} options={[{ value: 'new', label: 'Newest' }, { value: 'name', label: 'Name' }, { value: 'size', label: 'Size' }]} />
         </div>
@@ -3074,6 +3132,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [prefs, setPrefs] = useState(readPrefs);
   const savePrefs = p => setPrefs(x => { const n = { ...x, ...p }; try { localStorage.setItem('tasks-prefs', JSON.stringify(n)); } catch (e) {} return n; });
   const [quickAdd, setQuickAdd] = useState(false);
+  const [shortcutError, setShortcutError] = useState('');
   const [addTime, setAddTime] = useState(null);
   const [idle, setIdle] = useState(null);
   const [cellEdit, setCellEdit] = useState(null); // { id, field, el }
@@ -3496,7 +3555,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   useEffect(() => {
     if (standaloneId || prefs.captureKey === 'Off') return;
     const key = accel(prefs.captureKey);
-    registerShortcut(key, ev => { if (!ev || ev.state === 'Pressed') openCaptureWindow(); }).catch(() => toast('Couldn’t set the quick capture shortcut', `${prefs.captureKey} may be used by another app. Choose another in Settings.`));
+    setShortcutError('');
+    registerShortcut(key, ev => { if (!ev || ev.state === 'Pressed') openCaptureWindow(); })
+      .catch(() => { setShortcutError(`${showShortcut(prefs.captureKey)} is already used by Windows or another app. Choose another.`); toast('Couldn’t set the quick capture shortcut', `${showShortcut(prefs.captureKey)} is already in use.`); });
     return () => { unregisterShortcut(key).catch(() => {}); };
   }, [prefs.captureKey]);
   const captureRef = useRef(null);
@@ -3617,39 +3678,105 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     saveLooseDocs(l => l.filter(x => x.id !== d.id));
     toast('Task created from document', d.name, { undo: true });
   };
-  // Watch folders: new files appear in the Documents Inbox (this computer only remembers what it has seen).
+  // Watch folders: any file that wasn't in the folder before is new, whatever its date says.
+  // This computer remembers which files it has seen per folder, and why it skipped any.
+  const SEEN_KEY = 'tasks-watch-seen-v2', STATUS_KEY = 'tasks-watch-status';
+  const readJSON = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) || d; } catch (e) { return d; } };
+  const [watchStatus, setWatchStatus] = useState(() => readJSON(STATUS_KEY, {}));
+  const [watchOffer, setWatchOffer] = useState(null); // { path, files, why }
   const stableRef = useRef({});
+  const scanBusy = useRef(false);
+  const skipReason = f => {
+    if (/^~\$|\.(tmp|crdownload|part|partial|download)$/i.test(f.name)) return 'still downloading';
+    if (!ALLOWED.includes(extOf(f.name))) return 'unsupported type';
+    if (f.size === 0) return 'empty file';
+    return null;
+  };
+  const importToInbox = async (w, f) => {
+    const meta = await importDoc({ path: f.path, name: f.name, size: f.size });
+    saveLooseDocs(l => [...l, { ...meta, inbox: true, source: w.path }]);
+  };
+  // manual: from the refresh button; waits briefly to be sure files have finished downloading.
+  const scanFolders = async (manual = false) => {
+    const folders = settingsRef.current.watchFolders || [];
+    if (scanBusy.current) return null;
+    if (!folders.length) { if (manual) toast('No watch folders yet', 'Add one in Settings (⋯ menu).'); return null; }
+    scanBusy.current = true;
+    const seen = readJSON(SEEN_KEY, {}), status = readJSON(STATUS_KEY, {});
+    let added = 0;
+    try {
+      for (const w of folders) {
+        const list = async () => invoke('list_folder', { path: w.path, recursive: !!w.subfolders });
+        let files;
+        try { files = await list(); } catch (e) { status[w.path] = { checkedAt: Date.now(), error: String(e) }; continue; }
+        if (manual) { files.forEach(f => { stableRef.current[f.path] = f.size; }); await new Promise(r => setTimeout(r, 1500)); try { files = await list(); } catch (e) {} }
+        const known = seen[w.path];
+        // A folder added before this version: offer the files it missed instead of importing silently.
+        if (!known) {
+          const missed = files.filter(f => !skipReason(f) && !docs.some(d => d.name === f.name && d.size === f.size));
+          seen[w.path] = Object.fromEntries(files.map(f => [f.path, f.modified]));
+          if (missed.length) setWatchOffer({ path: w.path, files: missed, why: 'missed' });
+          status[w.path] = { checkedAt: Date.now(), added: 0, skipped: [] };
+          continue;
+        }
+        const skipped = [];
+        for (const f of files) {
+          if (known[f.path] === f.modified) continue;
+          const why = skipReason(f);
+          if (why) { if (why !== 'still downloading') { skipped.push({ name: f.name, why }); known[f.path] = f.modified; } continue; }
+          const prev = stableRef.current[f.path]; stableRef.current[f.path] = f.size;
+          if (prev !== f.size) { skipped.push({ name: f.name, why: 'still downloading' }); continue; }
+          try { await importToInbox(w, f); added++; known[f.path] = f.modified; }
+          catch (e) { skipped.push({ name: f.name, why: 'couldn’t be copied' }); }
+        }
+        const present = new Set(files.map(f => f.path));
+        Object.keys(known).forEach(k => { if (!present.has(k)) delete known[k]; });
+        const prevSt = status[w.path] || {};
+        status[w.path] = { checkedAt: Date.now(), added: (prevSt.added || 0) + added, skipped: [...skipped, ...(prevSt.skipped || []).filter(x => !skipped.some(y => y.name === x.name))].slice(0, 20) };
+      }
+    } finally {
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); localStorage.setItem(STATUS_KEY, JSON.stringify(status)); } catch (e) {}
+      setWatchStatus(status);
+      scanBusy.current = false;
+    }
+    if (added) toast(added === 1 ? 'New document in the Inbox' : `${added} new documents in the Inbox`);
+    else if (manual) toast('No new files', 'Your watch folders are up to date.');
+    return added;
+  };
+  const scanRef = useRef(scanFolders); scanRef.current = scanFolders;
   useEffect(() => {
     if (standaloneId) return;
-    const seenKey = 'tasks-watch-seen';
-    let busyScan = false;
-    const tick = async () => {
-      const folders = settingsRef.current.watchFolders || [];
-      if (!folders.length || busyScan) return;
-      busyScan = true;
-      let seen = {}; try { seen = JSON.parse(localStorage.getItem(seenKey)) || {}; } catch (e) {}
-      for (const w of folders) {
-        let files = []; try { files = await invoke('list_folder', { path: w.path }); } catch (e) { continue; }
-        for (const f of files) {
-          if (f.modified < (w.since || 0) || seen[f.path] === f.modified) continue;
-          if (!ALLOWED.includes(extOf(f.name)) || /^~\$|^\.|\.(tmp|crdownload|part|partial|download)$/i.test(f.name)) continue;
-          const prev = stableRef.current[f.path]; stableRef.current[f.path] = f.size;
-          if (prev !== f.size || f.size === 0) continue; // wait until the file has finished downloading
-          try {
-            const meta = await importDoc({ path: f.path, name: f.name, size: f.size });
-            saveLooseDocs(l => [...l, { ...meta, inbox: true, source: w.path }]);
-            toast('New document in the Inbox', f.name);
-          } catch (e) {}
-          seen[f.path] = f.modified;
-        }
-      }
-      try { localStorage.setItem(seenKey, JSON.stringify(seen)); } catch (e) {}
-      busyScan = false;
-    };
-    tick();
-    const i = setInterval(tick, 8000);
-    return () => clearInterval(i);
+    const t = setTimeout(() => scanRef.current(false), 1500);
+    const i = setInterval(() => scanRef.current(false), 8000);
+    return () => { clearTimeout(t); clearInterval(i); };
   }, []);
+  // Adding a folder: note what's already there, and offer to bring those files in too.
+  const addWatchFolder = async () => {
+    const sel = await openDialog({ directory: true, multiple: false });
+    const dir = Array.isArray(sel) ? sel[0] : sel; if (!dir) return;
+    let files = []; try { files = await invoke('list_folder', { path: dir, recursive: false }); } catch (e) { toast('Couldn’t open that folder', String(e)); return; }
+    const seen = readJSON(SEEN_KEY, {}); seen[dir] = Object.fromEntries(files.map(f => [f.path, f.modified]));
+    try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) {}
+    saveSettings(x => ({ ...x, watchFolders: [...(x.watchFolders || []).filter(w => w.path !== dir), { path: dir, subfolders: false, added: Date.now() }] }));
+    const existing = files.filter(f => !skipReason(f));
+    if (existing.length) setWatchOffer({ path: dir, files: existing, why: 'existing' });
+    else toast('Watching folder', dir);
+  };
+  const setFolderSubfolders = async (path, on) => {
+    saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).map(w => w.path === path ? { ...w, subfolders: on } : w) }));
+    if (on) {
+      // Files already in subfolders count as seen; only new ones arrive in the Inbox.
+      let files = []; try { files = await invoke('list_folder', { path, recursive: true }); } catch (e) {}
+      const seen = readJSON(SEEN_KEY, {}); seen[path] = { ...(seen[path] || {}), ...Object.fromEntries(files.map(f => [f.path, f.modified])) };
+      try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) {}
+    }
+  };
+  const acceptOffer = async () => {
+    const o = watchOffer; setWatchOffer(null); if (!o) return;
+    const w = { path: o.path }; let n = 0;
+    for (const f of o.files) { try { await importToInbox(w, f); n++; } catch (e) {} }
+    toast(`${n} ${n === 1 ? 'file' : 'files'} added to the Inbox`, o.path);
+  };
   const [linkFor, setLinkFor] = useState(null);
   const [docDelete, setDocDelete] = useState(null);
   const stripMeta = f => { const { links, task, archived: _a, ...meta } = f; return meta; };
@@ -4017,7 +4144,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ) : view === 'trash' ? (
         <TrashView items={trash} onRestore={id => { restoreTask(id); toast('Task restored'); }} onDeleteNow={t => setPurgeConfirm([t.id])} onEmpty={() => setPurgeConfirm(Object.keys(trash))} />
       ) : view === 'docs' ? (
-        <DocumentsView docs={docs} tasks={all} focusId={docFocus} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
+        <DocumentsView onRefresh={() => scanFolders(true)} hasWatch={(settings.watchFolders || []).length > 0} docs={docs} tasks={all} focusId={docFocus} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
           onRemove={(file, taskId) => unlinkDoc(file, taskId)} onDelete={(f, dismiss) => { if (dismiss) { deleteDocEverywhere(stripMeta(f)); toast('Dismissed', f.name, { undo: true }); } else setDocDelete(f); }} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
           onAttach={f => setAttachDoc(f)} onNewTask={newTaskFromDoc} onAddVersion={addVersion} onUploadVersion={uploadVersion} onMakeCurrent={makeCurrent} />
       ) : (<>
@@ -4336,8 +4463,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName}
-        watch={settings.watchFolders || []} onWatch={list => saveSettings(x => ({ ...x, watchFolders: list }))} />
+      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName} shortcutError={shortcutError}
+        watch={settings.watchFolders || []} status={watchStatus} onAddFolder={addWatchFolder} onSubfolders={setFolderSubfolders}
+        onRemoveFolder={path => saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).filter(w => w.path !== path) }))} />
+      <AlertDialog open={!!watchOffer} title={watchOffer ? (watchOffer.why === 'missed' ? `${watchOffer.files.length} ${watchOffer.files.length === 1 ? 'file wasn’t' : 'files weren’t'} picked up` : `Add the ${watchOffer.files.length} ${watchOffer.files.length === 1 ? 'file' : 'files'} already in this folder?`) : ''}
+        description={watchOffer ? `${watchOffer.path}: ${watchOffer.files.slice(0, 4).map(f => f.name).join(', ')}${watchOffer.files.length > 4 ? ` and ${watchOffer.files.length - 4} more` : ''}. ${watchOffer.why === 'missed' ? 'Add them to the Documents Inbox now?' : 'From now on, new files arrive in the Inbox by themselves.'}` : ''}
+        confirmLabel="Add to Inbox" cancelLabel="Only new files" destructive={false} onConfirm={acceptOffer} onCancel={() => { const o = watchOffer; setWatchOffer(null); if (o && o.why === 'existing') toast('Watching folder', o.path); }} />
       <AddTimeDialog init={addTime} tasks={all} onClose={() => setAddTime(null)}
         onSave={(taskId, s0, e0) => {
           const t = tasksRef.current[taskId]; if (!t) return;

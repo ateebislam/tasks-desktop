@@ -442,23 +442,31 @@ struct FolderFile {
     modified: u64,
 }
 
-#[tauri::command]
-fn list_folder(path: String) -> Res<Vec<FolderFile>> {
-    let mut out = Vec::new();
-    for entry in fs::read_dir(&path).map_err(err)? {
-        let entry = match entry { Ok(e) => e, Err(_) => continue };
+fn collect_files(dir: &Path, depth: u32, out: &mut Vec<FolderFile>) {
+    let rd = match fs::read_dir(dir) { Ok(r) => r, Err(_) => return };
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with('.') { continue; }
         let meta = match entry.metadata() { Ok(m) => m, Err(_) => continue };
+        if meta.is_dir() {
+            if depth > 0 { collect_files(&entry.path(), depth - 1, out); }
+            continue;
+        }
         if !meta.is_file() { continue; }
         let modified = meta.modified().ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64).unwrap_or(0);
-        out.push(FolderFile {
-            path: entry.path().to_string_lossy().to_string(),
-            name: entry.file_name().to_string_lossy().to_string(),
-            size: meta.len(),
-            modified,
-        });
+        out.push(FolderFile { path: entry.path().to_string_lossy().to_string(), name, size: meta.len(), modified });
     }
+}
+
+/// Lists the files in a folder, and (if asked) up to 4 levels of subfolders.
+#[tauri::command]
+fn list_folder(path: String, recursive: Option<bool>) -> Res<Vec<FolderFile>> {
+    let dir = Path::new(&path);
+    if !dir.is_dir() { return Err("This folder can’t be found. It may have been moved or renamed.".into()); }
+    let mut out = Vec::new();
+    collect_files(dir, if recursive.unwrap_or(false) { 4 } else { 0 }, &mut out);
     Ok(out)
 }
 
