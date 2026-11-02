@@ -48,6 +48,7 @@ const I = {
   sliders: p => <Icon {...p}><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></Icon>,
   keyboard: p => <Icon {...p}><path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/></Icon>,
   chart: p => <Icon {...p}><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></Icon>,
+  inbox: p => <Icon {...p}><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></Icon>,
   listCheck: p => <Icon {...p}><path d="M11 18H3"/><path d="m15 18 2 2 4-4"/><path d="M16 12H3"/><path d="M16 6H3"/></Icon>,
   flag: p => <Icon {...p}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></Icon>,
   paperclip: p => <Icon {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></Icon>,
@@ -482,11 +483,11 @@ function useLockScroll(on) {
   useEffect(() => { if (!on) return; const o = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = o; }; }, [on]);
 }
 const SHEET_VARIANTS = {
-  side: 'fixed inset-y-0 right-0 z-50 flex h-full w-full flex-col border-l bg-background shadow-lg sm:max-w-md anim-sheet',
+  side: 'fixed inset-y-0 right-0 z-50 flex h-full w-full flex-col border-l bg-background shadow-lg sm:w-[max(28rem,40vw)] sm:max-w-full anim-sheet',
   center: 'fixed left-1/2 top-1/2 z-50 flex h-[min(88vh,920px)] w-[min(880px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl anim-zoom',
   full: 'fixed inset-0 z-50 flex flex-col bg-background anim-fade',
 };
-function Sheet({ open, onClose, children, labelledBy, variant = 'side' }) {
+function Sheet({ open, onClose, children, labelledBy, variant = 'side', onPick }) {
   useLockScroll(open);
   useEffect(() => {
     if (!open) return;
@@ -497,7 +498,17 @@ function Sheet({ open, onClose, children, labelledBy, variant = 'side' }) {
   if (!open) return null;
   return createPortal(
     <>
-      {variant !== 'full' && <div className="fixed inset-0 z-50 bg-black/80 anim-fade" onClick={onClose} />}
+      {variant !== 'full' && <div className={cn('fixed inset-0 z-50 anim-fade', variant === 'side' ? 'bg-black/30' : 'bg-black/80')} onClick={e => {
+        // With the side sheet open, clicking another task in the list behind it switches to that task.
+        if (variant === 'side' && onPick) {
+          e.currentTarget.style.pointerEvents = 'none';
+          const under = document.elementFromPoint(e.clientX, e.clientY);
+          e.currentTarget.style.pointerEvents = '';
+          const row = under && under.closest && under.closest('[data-task-id]');
+          if (row) { onPick(row.getAttribute('data-task-id')); return; }
+        }
+        onClose();
+      }} />}
       <div role="dialog" aria-modal="true" aria-labelledby={labelledBy}
         className={SHEET_VARIANTS[variant] || SHEET_VARIANTS.side}
         style={{ paddingTop: 'env(safe-area-inset-top,0px)', paddingBottom: 'env(safe-area-inset-bottom,0px)', ...(variant === 'center' ? { transform: 'translate(-50%,-50%)' } : {}) }}>
@@ -2018,10 +2029,10 @@ const OPEN_MODES = [
   { id: 'full', label: 'Full screen', icon: <I.maximize className="size-3.5" /> },
   { id: 'tab', label: 'New tab', icon: <I.tab className="size-3.5" /> },
 ];
-function SheetFrame({ mode, open, onClose, children }) {
+function SheetFrame({ mode, open, onClose, children, onPick }) {
   if (mode === 'tab') return <div className="flex min-h-0 flex-1 flex-col bg-background" role="tabpanel" aria-labelledby="sheet-title">{children}</div>;
   if (mode === 'window') return <div className="flex h-screen flex-col bg-background" role="main" aria-labelledby="sheet-title">{children}</div>;
-  return <Sheet open={open} onClose={onClose} labelledBy="sheet-title" variant={mode}>{children}</Sheet>;
+  return <Sheet open={open} onClose={onClose} labelledBy="sheet-title" variant={mode} onPick={onPick}>{children}</Sheet>;
 }
 
 const FORM_KEYS = ['title', 'project', 'bucket', 'status', 'stage', 'assignee', 'deadline', 'description', 'priority', 'checklist'];
@@ -2031,7 +2042,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -2104,9 +2115,17 @@ function TaskSheet({ onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode
   const canUpload = storageOk !== false;
 
   return (
-    <SheetFrame mode={mode} open={open} onClose={cancel}>
+    <SheetFrame mode={mode} open={open} onClose={cancel} onPick={onPick && (id => { if (id === task.id) return; if (isEmpty()) { clearTimeout(timer.current); pending.current = {}; onDiscardEmpty(task.id); } else commit(); onPick(id); })}>
       <form onSubmit={submit} className="flex h-full min-h-0 flex-col" autoComplete="off"
-        onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); } }}>
+        onKeyDown={e => {
+          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); return; }
+          // Alt + a letter jumps to a field: Status, Bucket, platForm, deadLine, Priority, Assignee.
+          const fid = e.altKey && !e.ctrlKey && !e.metaKey && { s: 't-status', b: 't-bucket', f: 't-project', l: 't-deadline', p: 't-priority', a: 't-assignee' }[e.code.replace('Key', '').toLowerCase()];
+          const el = fid && document.getElementById(fid);
+          if (!el) return;
+          e.preventDefault(); e.stopPropagation(); el.focus();
+          if (el.tagName === 'BUTTON' && fid !== 't-priority') el.click();
+        }}>
         {/* Header */}
         <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && mode !== 'tab' && 'pr-12', mode === 'tab' && 'px-5')}>
           {mode === 'tab' && (
@@ -2143,6 +2162,14 @@ function TaskSheet({ onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode
         <div className={cn('relative flex-1 overflow-y-auto py-4', mode === 'side' ? 'px-3' : 'px-6')}>
           <div className={cn(mode !== 'side' && 'mx-auto w-full max-w-3xl')}>
 
+          {task.inbox && (
+            <div className="mx-2 mb-3 flex items-center gap-3 rounded-lg border border-blue-500/30 bg-blue-500/10 px-3 py-2 text-sm">
+              <I.inbox className="size-4 shrink-0 text-blue-600 dark:text-blue-400" />
+              <span className="min-w-0 flex-1">In your Inbox from quick capture. Accept it, or give it a {labels.platform.toLowerCase()}, to move it to Open.</span>
+              {onAccept && <Button type="button" size="sm" onClick={() => { commit(); onAccept(task.id); }}>Accept</Button>}
+            </div>
+          )}
+
           <textarea ref={titleRef} rows={1} value={form.title} onChange={set('title')} placeholder="Task title" aria-label="Task title"
             onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) e.preventDefault(); }}
             style={{ fieldSizing: 'content' }}
@@ -2158,7 +2185,7 @@ function TaskSheet({ onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode
             <PropRow label={labels.priority}>
               <div role="radiogroup" aria-label="Priority" className="inline-flex rounded-md bg-muted p-0.5 ml-1">
                 {['low', 'normal', 'high'].map(pid => (
-                  <button key={pid} type="button" role="radio" aria-checked={form.priority === pid} onClick={() => set('priority')(pid)}
+                  <button key={pid} id={form.priority === pid ? 't-priority' : undefined} type="button" role="radio" aria-checked={form.priority === pid} onClick={() => set('priority')(pid)}
                     className={cn('inline-flex h-7 items-center gap-1 rounded px-2.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                       form.priority === pid ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>
                     {pid === 'high' && <I.flag className={cn('size-3', form.priority === 'high' && 'text-red-600 dark:text-red-400')} />}{P[pid].label}
@@ -2565,6 +2592,139 @@ function PlatformsDialog({ open, onClose, list, tasks, noun, onNew, onEdit, onDe
   );
 }
 
+// Home is a command center: one box to find a task, bucket or document, start a timer, or capture
+// something to the Inbox. It stays a plain search bar until you type. Three tiles sit underneath.
+function HomeView({ tasks, archived, buckets, docs, onOpenTask, onToggle, onCapture, onGo, onOpenBucket, onOpenDoc }) {
+  const [q, setQ] = useState('');
+  const [hi, setHi] = useState(0);
+  const inRef = useRef(null);
+  useEffect(() => {
+    const k = e => {
+      if (e.ctrlKey || e.metaKey || e.altKey || !['q', 'Q'].includes(e.key)) return;
+      const el = document.activeElement;
+      if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable) || document.querySelector('[role=dialog],[role=alertdialog]')) return;
+      e.preventDefault(); inRef.current && inRef.current.focus();
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, []);
+  const open = tasks.filter(t => !t.inbox && t.status !== 'done');
+  const overdue = open.filter(t => t.deadline && dayDiff(t.deadline) < 0).sort((a, b) => a.deadline.localeCompare(b.deadline));
+  const dueToday = open.filter(t => t.deadline && dayDiff(t.deadline) === 0).length;
+  const inbox = tasks.filter(t => t.inbox).sort((a, b) => b.createdAt - a.createdAt);
+  const running = tasks.find(t => t.timerStartedAt);
+  const d0 = new Date(); d0.setHours(0, 0, 0, 0);
+  const todayMs = [...tasks, ...archived].reduce((x, t) => x + trackedIn(t, d0.getTime(), d0.getTime() + 864e5), 0);
+
+  const term = q.trim().toLowerCase();
+  const hit = s => (s || '').toLowerCase().includes(term);
+  const items = [];
+  if (term) {
+    tasks.filter(t => hit(t.title)).sort((a, b) => (a.status === 'done') - (b.status === 'done')).slice(0, 5).forEach(t => {
+      const d = t.deadline ? due(t) : null;
+      items.push({ group: 'Tasks', kind: 'task', t, label: t.title || 'Untitled', key: 'Shift ↵',
+        hint: t.inbox ? 'In Inbox' : t.status === 'done' ? 'Complete' : [t.bucket, d && d.text].filter(Boolean).join(' · '),
+        tone: t.timerStartedAt ? 'run' : d && d.tone === 'late' ? 'late' : '' });
+    });
+    buckets.filter(b => hit(b.name)).slice(0, 2).forEach(b => {
+      const ts = tasks.filter(t => norm(t.bucket) === norm(b.name)), pc = ts.length ? Math.round(ts.filter(t => t.status === 'done').length / ts.length * 100) : 0;
+      items.push({ group: 'Buckets and documents', kind: 'bucket', b, label: b.name, key: '↵', hint: `Bucket · ${pc}%` });
+    });
+    docs.filter(d => hit(d.name)).slice(0, 2).forEach(d => items.push({ group: 'Buckets and documents', kind: 'doc', d, label: d.name, key: '↵', hint: d.addedAt ? `Document · ${fmtDay(d.addedAt)}` : 'Document' }));
+    items.push({ group: 'Create', kind: 'capture', label: `Capture “${q.trim()}” to Inbox`, key: 'Tab', hint: '', tone: 'blue' });
+  }
+  const sel = Math.min(hi, Math.max(0, items.length - 1));
+  const capture = () => { const v = q.trim(); if (!v) return; onCapture(v); setQ(''); setHi(0); };
+  const run = (it, shift) => {
+    if (!it) return;
+    if (it.kind === 'task') { if (shift) onToggle(it.t.id); else onOpenTask(it.t.id); return; }
+    if (it.kind === 'bucket') return onOpenBucket(it.b.name);
+    if (it.kind === 'doc') return onOpenDoc(it.d.id);
+    if (it.kind === 'capture') capture();
+  };
+  const onKey = e => {
+    if (e.key === 'Escape') { e.stopPropagation(); if (q) { setQ(''); setHi(0); } else e.currentTarget.blur(); return; }
+    if (!items.length) { if (e.key === 'Enter') e.preventDefault(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); setHi((sel + 1) % items.length); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((sel - 1 + items.length) % items.length); }
+    else if (e.key === 'Enter') { e.preventDefault(); run(items[sel], e.shiftKey); }
+    else if (e.key === 'Tab' && !e.shiftKey) { e.preventDefault(); capture(); }
+  };
+  const iconFor = it => it.kind === 'task' ? (it.t.timerStartedAt ? <I.pause /> : <I.play className="translate-x-px" />)
+    : it.kind === 'bucket' ? <I.layers /> : it.kind === 'doc' ? <I.file /> : <I.plus />;
+  const toneCls = { run: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400', late: 'bg-amber-500/15 text-amber-600 dark:text-amber-400', blue: 'bg-blue-500/15 text-blue-600 dark:text-blue-400' };
+  const tile = (onClick, label, labelCls, title, sub) => (
+    <button type="button" onClick={onClick} className="flex min-w-0 flex-col gap-1 rounded-xl border bg-card px-4 py-3.5 text-left transition-colors hover:border-foreground/25">
+      <span className={cn('text-xs font-medium', labelCls)}>{label}</span>
+      <span className="truncate text-[15px] font-medium">{title}</span>
+      <span className="truncate text-xs text-muted-foreground">{sub}</span>
+    </button>
+  );
+  let lastGroup = '';
+  return (
+    <div className="mx-auto grid w-full max-w-[760px] gap-6 pt-6 sm:pt-12">
+      <div className="grid gap-2 text-center">
+        <p className="text-sm text-muted-foreground">
+          {new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}
+          {' · '}{dueToday} due today
+          {overdue.length > 0 && <> · <span className="font-medium text-amber-600 dark:text-amber-400">{overdue.length} overdue</span></>}
+          {' · '}{inbox.length ? <span className="font-medium text-blue-600 dark:text-blue-400">{inbox.length} in Inbox</span> : 'Inbox clear'}
+        </p>
+        <h1 className="text-3xl font-semibold tracking-tight">What next?</h1>
+      </div>
+
+      <div className="overflow-hidden rounded-2xl border border-input bg-card transition-shadow focus-within:border-blue-500/70 focus-within:ring-4 focus-within:ring-blue-500/15">
+        <label className="flex items-center gap-3 px-4">
+          <I.search className="size-[18px] shrink-0 text-muted-foreground" />
+          <input ref={inRef} id="home-cmd-in" value={q} onChange={e => { setQ(e.target.value); setHi(0); }} onKeyDown={onKey} autoComplete="off" spellCheck={false}
+            role="combobox" aria-expanded={items.length > 0} aria-controls="home-cmd" aria-activedescendant={items.length ? `home-cmd-${sel}` : undefined}
+            placeholder="Find a task, start a timer, or type anything to capture it" aria-label="Search, start a timer or capture"
+            className="h-14 min-w-0 flex-1 bg-transparent text-lg text-foreground placeholder:text-muted-foreground focus-visible:outline-none" />
+          <Kbd>/</Kbd>
+        </label>
+        {items.length > 0 && (
+          <>
+            <div id="home-cmd" role="listbox" aria-label="Results" className="grid max-h-[22rem] gap-0.5 overflow-auto border-t px-2 pb-2 pt-1">
+              {items.map((it, i) => {
+                const head = it.group !== lastGroup ? (lastGroup = it.group) : null;
+                return (
+                  <React.Fragment key={i}>
+                    {head && <div className="px-3 pb-1 pt-2.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">{head}</div>}
+                    <button type="button" id={`home-cmd-${i}`} role="option" aria-selected={i === sel} onMouseMove={() => i !== sel && setHi(i)}
+                      onMouseDown={e => e.preventDefault()} onClick={e => run(it, e.shiftKey)}
+                      className={cn('flex min-h-[2.75rem] w-full items-center gap-3 rounded-lg px-3 text-left text-sm', i === sel && 'bg-accent')}>
+                      <span className={cn('flex size-[26px] shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground [&_svg]:size-3.5', toneCls[it.tone])}>{iconFor(it)}</span>
+                      <span className="min-w-0 flex-1 truncate">{it.label}</span>
+                      {it.hint && <span className="hidden max-w-[45%] truncate text-xs text-muted-foreground sm:block">{it.hint}</span>}
+                      <Kbd>{it.key}</Kbd>
+                    </button>
+                  </React.Fragment>
+                );
+              })}
+            </div>
+            <div className="flex flex-wrap gap-4 border-t px-4 py-2.5 text-xs text-muted-foreground">
+              <span className="inline-flex items-center gap-1.5"><Kbd>↑↓</Kbd>move</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>↵</Kbd>open</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>Shift ↵</Kbd>start timer</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>Tab</Kbd>capture to Inbox</span>
+              <span className="inline-flex items-center gap-1.5"><Kbd>Esc</Kbd>clear</span>
+            </div>
+          </>
+        )}
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        {overdue.length
+          ? tile(() => onOpenTask(overdue[0].id), `Overdue${overdue.length > 1 ? ` · ${overdue.length}` : ''}`, 'text-amber-600 dark:text-amber-400', overdue[0].title || 'Untitled', [overdue[0].bucket || overdue[0].project, due(overdue[0]).text].filter(Boolean).join(' · '))
+          : tile(() => onGo('tasks', 'open'), 'Overdue', 'text-emerald-600 dark:text-emerald-400', 'Nothing overdue', `${dueToday} due today`)}
+        {tile(() => onGo('tasks', 'inbox'), 'Inbox', 'text-blue-600 dark:text-blue-400', inbox.length ? `${inbox.length} capture${inbox.length > 1 ? 's' : ''} to sort` : 'All sorted',
+          inbox.length ? `Latest ${fmtDay(inbox[0].createdAt)}, ${new Date(inbox[0].createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Quick captures land here')}
+        {tile(() => onGo('time'), 'Today', 'text-emerald-600 dark:text-emerald-400', `${fmtShort(todayMs)} tracked`, running ? `Now: ${running.title || 'Untitled'}` : 'No timer running')}
+      </div>
+    </div>
+  );
+}
+
 /* Create or edit a bucket: name, an optional description, and its status. */
 function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', handoffs = () => 0 }) {
   const [name, setName] = useState('');
@@ -2604,10 +2764,10 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
 }
 
 /* Buckets page: a compact list (name and description, status, progress). Click a bucket for its details. */
-function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onOpenTask, onAddTask }) {
+function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onOpenTask, onAddTask, focus }) {
   const [tab, setTab] = useState('active');
   const [q, setQ] = useState('');
-  const [sel, setSel] = useState(null);
+  const [sel, setSel] = useState(focus || null);
   const [showDone, setShowDone] = useState(false);
   const lower = noun.toLowerCase();
   const stats = name => {
@@ -2813,7 +2973,7 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
           {g.tasks.map(t => {
             const def = statusDef(t, stages), d = due(t), done = t.status === 'done';
             return (
-              <div key={t.id} className="group flex h-10 items-center gap-3 border-t border-border/60 px-4 text-[13px] hover:bg-muted/40">
+              <div key={t.id} data-task-id={t.id} className="group flex h-10 items-center gap-3 border-t border-border/60 px-4 text-[13px] hover:bg-muted/40">
                 <span title={def.name} aria-label={def.name} className={cn('flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px]', done && STATUS_COLORS[def.color])}
                   style={{ borderColor: STATUS_HEX[def.color] }}>{done && <I.check className="size-2.5 text-white" />}</span>
                 <button type="button" title={t.title} onClick={e => onOpen(t.id, e)} onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onOpen(t.id, { ctrlKey: true }); } }}
@@ -2863,7 +3023,7 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
   const card = t => {
     const d = due(t), on = !!t.timerStartedAt;
     return (
-      <div key={t.id} role="button" tabIndex={0} onPointerDown={e => startDrag(e, t)}
+      <div key={t.id} data-task-id={t.id} role="button" tabIndex={0} onPointerDown={e => startDrag(e, t)}
         onClick={e => { if (!justDragged.current) onOpen(t.id, e); }}
         onKeyDown={e => { if (e.key === 'Enter') onOpen(t.id, e); }}
         className={cn('flex cursor-grab select-none flex-col gap-2.5 rounded-lg border bg-card p-3 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing', drag && drag.id === t.id && 'opacity-40', on && 'ring-1 ring-foreground/20')}>
@@ -3348,7 +3508,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const up = useUpdater();
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
   const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
-  const [view, setView] = useState(['docs', 'projects', 'time'].includes(savedView.view) ? savedView.view : 'tasks');
+  // The app opens on Home.
+  const [view, setView] = useState(standaloneId ? 'tasks' : 'home');
+  const [bucketFocus, setBucketFocus] = useState(null);
+  useEffect(() => { if (view !== 'projects') setBucketFocus(null); }, [view]);
   const [projectEdit, setProjectEdit] = useState(null); // { project } | { project: null } for new
   const [projectDelete, setProjectDelete] = useState(null);
   const [showSummary, setShowSummary] = useState(!!savedView.showSummary);
@@ -3581,15 +3744,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       && (bucketFilter === 'all' || (bucketFilter === 'none' ? !t.bucket : norm(t.bucket) === norm(bucketFilter)))
       && (!q || [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
   }, [all, projectFilter, bucketFilter, query]);
-  const counts = useMemo(() => { const c = { all: scoped.length, open: scoped.filter(t => t.status !== 'done').length }; STATUSES.forEach(s => { c[s.id] = scoped.filter(t => t.status === s.id).length; }); return c; }, [scoped]);
+  // Quick captures wait in the Inbox (inbox: true) and stay out of Open and the status tabs until accepted.
+  const sorted = useMemo(() => scoped.filter(t => !t.inbox), [scoped]);
+  const counts = useMemo(() => { const c = { all: scoped.length, inbox: scoped.length - sorted.length, open: sorted.filter(t => t.status !== 'done').length }; STATUSES.forEach(s => { c[s.id] = sorted.filter(t => t.status === s.id).length; }); return c; }, [scoped, sorted]);
+  const inboxCount = useMemo(() => all.filter(t => t.inbox).length, [all]);
   const overview = useMemo(() => {
-    const open = scoped.filter(t => t.status !== 'done');
+    const open = sorted.filter(t => t.status !== 'done');
     return {
       open: open.length,
       week: open.filter(t => t.deadline && dayDiff(t.deadline) >= 0 && dayDiff(t.deadline) < 7).length,
       overdue: open.filter(t => t.deadline && dayDiff(t.deadline) < 0).length,
     };
-  }, [scoped]);
+  }, [sorted]);
 
   const shown = useMemo(() => {
     const by = {
@@ -3604,7 +3770,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     // While searching, look through every task (finished ones too, in any project).
     const q = norm(query);
     const base = q ? all.filter(t => [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q)))
-      : scoped.filter(t => filter === 'all' || (filter === 'open' ? t.status !== 'done' : t.status === filter));
+      : scoped.filter(t => filter === 'all' || (filter === 'inbox' ? t.inbox : !t.inbox && (filter === 'open' ? t.status !== 'done' : t.status === filter)));
     return base.sort((a, b) => {
       if (sortBy !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
       return by(a, b);
@@ -3738,6 +3904,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       if ((next.status === 'done' || next.status === 'blocked') && next.timerStartedAt) next = stopT(next);
     }
     if ('deadline' in p && p.deadline !== t.deadline) next.autoFired = {};
+    if (t.inbox && 'project' in p && p.project) next.inbox = false;
     const blocked = blockOthers(next, t);
     const auto = automate(next, t);
     saveMany(merge([...blocked, auto.task, ...auto.created]));
@@ -3771,12 +3938,16 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     setQuick('');
   };
   // The task panel saves each change as you make it, through the same rules as the table.
-  const saveSheet = (id, patch) => updateTask(id, patch);
-  // "Create task" and N make a real task straight away and open it, ready for a title.
+  const saveSheet = (id, patch) => { if (patch.project) { try { localStorage.setItem('tasks-last-platform', patch.project); } catch (e) {} } updateTask(id, patch); };
+  // "Create task" and N make a real task straight away and open it, ready for a title. Every change
+  // saves automatically, and a new task you close without typing anything is removed again.
+  // It's prefilled from where you are: the status tab, the platform and bucket filters, or the
+  // Board column / group you added from. With no platform filter it uses the last platform you picked.
   const createTask = (opts = {}) => {
+    let lastPlat = ''; try { lastPlat = localStorage.getItem('tasks-last-platform') || ''; } catch (e) {}
     const auto = automate({
-      id: newId(), title: '', status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [],
-      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', bucket: bucketFilter !== 'all' && bucketFilter !== 'none' ? bucketFilter : '',
+      id: newId(), title: '', status: S[filter] && filter !== 'done' ? filter : 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [],
+      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : lastPlat, bucket: bucketFilter !== 'all' && bucketFilter !== 'none' ? bucketFilter : '',
       ...(opts && opts.preset ? opts.preset : {}), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     }, null);
     saveMany([auto.task, ...auto.created]);
@@ -3819,10 +3990,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     return () => { unregisterShortcut(key).catch(() => {}); };
   }, [prefs.captureKey]);
   const captureRef = useRef(null);
+  // Quick capture (the Windows shortcut, ` in the app, or the box on Home) saves just a title into the Inbox.
   captureRef.current = title => {
-    const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
+    const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, inbox: true }, null);
     saveMany([auto.task, ...auto.created]);
-    toast('Task added', title);
+    toast('Saved to Inbox', title);
+  };
+  // Accepting moves a captured task into Open. Giving it a platform accepts it too.
+  const acceptTask = id => {
+    const t = tasksRef.current[id]; if (!t || !t.inbox) return;
+    saveMany([{ ...t, inbox: false }]);
+    toast('Moved to Open', t.title || 'Untitled', { undo: true });
   };
   useEffect(() => {
     if (standaloneId) return;
@@ -4181,6 +4359,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
       if (document.querySelector('[role=dialog],[role=alertdialog]') || standaloneId) return;
       if ((e.key === 'n' || e.key === 'N') && tabsRef.current.active === 'home') { e.preventDefault(); if (primaryRef.current) primaryRef.current.run(); }
+      else if (e.key === '/' && tabsRef.current.active === 'home' && document.getElementById('home-cmd-in')) { e.preventDefault(); document.getElementById('home-cmd-in').focus(); }
       else if (e.key === '/') { e.preventDefault(); setSearchOpen(true); setTimeout(() => searchRef.current && searchRef.current.focus(), 0); }
       else if (e.key === '?') { e.preventDefault(); setKeysOpen(true); }
     };
@@ -4201,6 +4380,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-bucket', group: 'Actions', label: `Create ${labels.bucket.toLowerCase()}`, icon: <I.layers />, run: () => { setView('projects'); setBucketEdit({ bucket: null }); } },
     { id: 'a-docs', group: 'Actions', label: 'Add documents', icon: <I.upload />, run: () => setAddDocs({ open: true, files: [] }) },
     ...(running ? [{ id: 'a-pause', group: 'Actions', label: `Pause timer: ${running.title || 'Untitled'}`, icon: <I.pause />, run: () => toggleTimer(running.id) }] : []),
+    { id: 'v-home', group: 'Actions', label: 'Go to Home', icon: <I.home />, run: () => { setActiveTab('home'); setView('home'); } },
     { id: 'v-tasks', group: 'Actions', label: 'Go to Tasks', icon: <I.listCheck />, run: () => { setActiveTab('home'); setView('tasks'); } },
     { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setActiveTab('home'); setView('projects'); } },
     { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); } },
@@ -4226,7 +4406,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     ...bucketList.map(b => ({ id: 'b-' + b.name, group: 'Buckets', groupLabel: plural(labels.bucket), label: b.name, icon: <I.layers />, run: () => openBucket(b.name) })),
     ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); setDocFocus(d.id); } })),
   ];
-  const primary = view === 'tasks' ? { label: 'Create task', run: () => createTask() }
+  const primary = view === 'tasks' || view === 'home' ? { label: 'Create task', run: () => createTask() }
     : view === 'projects' ? { label: `Create ${labels.bucket.toLowerCase()}`, run: () => setBucketEdit({ bucket: null }) }
     : view === 'docs' ? { label: 'Add documents', run: () => setAddDocs({ open: true, files: [] }) }
     : view === 'time' ? { label: 'Add time', run: () => setAddTime({}) } : null;
@@ -4245,7 +4425,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -4266,7 +4446,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSelect={setActiveTab} onNew={() => createTask({ tab: true })}
         onClose={id => { if (id === tabs.active && tabClose.current) tabClose.current(); else closeTab(id); }} />
       {tabs.active !== 'home' && tabTask ? (
-        <TaskSheet key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
+        <TaskSheet onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
           onHome={() => setActiveTab('home')} onClose={() => closeTab(tabTask.id)}
           onPopOut={() => { const t = tabTask; closeTab(t.id); openTaskWindow(t.id, t.title || 'Untitled', ws); }}
           people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
@@ -4293,12 +4473,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             ]} />
           </div>
           <nav aria-label="Sections" className="flex h-full items-stretch gap-5">
-            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.filter(b => bucketStatus(b) !== 'done').length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
+            {[{ id: 'home', label: 'Home', count: '' }, { id: 'tasks', label: 'Tasks', count: all.length, fresh: inboxCount, freshLabel: 'inbox' }, { id: 'projects', label: plural(labels.bucket), count: bucketList.filter(b => bucketStatus(b) !== 'done').length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
               <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
                 className={cn('-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
                   view === v.id ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
                 {v.label}<span className="tnum text-[11px] font-normal text-muted-foreground">{v.count}</span>
-                {v.fresh > 0 && <span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white" title={`${v.fresh} new in the Inbox`}>{v.fresh} new</span>}
+                {v.fresh > 0 && <span className="whitespace-nowrap rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white" title={v.freshLabel ? `${v.fresh} quick ${v.fresh === 1 ? 'capture' : 'captures'} waiting in the Inbox` : `${v.fresh} new in the Inbox`}>{v.fresh} {v.freshLabel || 'new'}</span>}
               </button>
             ))}
           </nav>
@@ -4373,7 +4553,11 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} onStatus={setBucketStatus}
-          onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} />
+          onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} focus={bucketFocus} />
+      ) : view === 'home' ? (
+        <HomeView tasks={all} archived={Object.values(archived)} buckets={bucketList} docs={docs} onOpenTask={id => openTask(id)} onToggle={toggleTimer}
+          onCapture={title => captureRef.current(title)} onGo={(v, f) => { setView(v); if (f) { setFilter(f); setQuery(''); } }}
+          onOpenBucket={n => { setBucketFocus(n); setView('projects'); }} onOpenDoc={id => { setView('docs'); setDocFocus(id); }} />
       ) : view === 'time' ? (
         <TimesheetView tasks={[...all, ...Object.values(archived)]} stages={stages} labels={labels} onOpenTask={id => openTask(id)} onAddTime={init => setAddTime(init)}
           onDeleteSession={(t, x) => {
@@ -4411,11 +4595,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
       {/* Status chips and the view switch; below, filters and a one-line summary */}
       <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {[{ id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }].map(c => (
+        {[{ id: 'inbox', label: 'Inbox', count: counts.inbox, inbox: true }, { id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }].map(c => (
           <button key={c.id} type="button" onClick={() => { setFilter(c.id); if (query) setQuery(''); }} aria-pressed={filter === c.id && !query}
             className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
               filter === c.id && !query ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
-            {c.dot && <span className={cn('size-1.5 rounded-full', c.dot)} />}{c.label}<span className="tnum opacity-70">{c.count}</span>
+            {c.dot && <span className={cn('size-1.5 rounded-full', c.dot)} />}{c.inbox && <I.inbox className="size-3.5" />}{c.label}
+            {c.inbox && c.count > 0 ? <span className="tnum rounded-full bg-blue-500 px-1.5 text-[10px] font-medium leading-4 text-white">{c.count}</span> : <span className="tnum opacity-70">{c.count}</span>}
           </button>
         ))}
         <div className="ml-auto flex items-center gap-1.5">
@@ -4498,7 +4683,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {viewMode === 'list' && all.length > 0 ? (
         <ListView tasks={shown} stages={stages} labels={labels} groupBy={groupBy} onOpen={openFromView} onToggle={toggleTimer} onAdd={preset => createTask({ preset })} />
       ) : viewMode === 'board' && all.length > 0 ? (
-        <BoardView tasks={!query && filter === 'open' ? scoped : shown} stages={stages} labels={labels} onOpen={openFromView} onToggle={toggleTimer} onMove={moveToColumn} onAdd={preset => createTask({ preset })} />
+        <BoardView tasks={!query && filter === 'open' ? sorted : shown} stages={stages} labels={labels} onOpen={openFromView} onToggle={toggleTimer} onMove={moveToColumn} onAdd={preset => createTask({ preset })} />
       ) : (
       <Card className="mt-3 overflow-hidden">
         {all.length === 0 ? (
@@ -4510,7 +4695,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             <Button variant="outline" size="sm" onClick={() => setQuery('')}>Clear search</Button>
           </Empty>
         ) : shown.length === 0 ? (
-          <Empty icon={<I.clipboard />} title={filter === 'all' ? 'Nothing here yet' : filter === 'open' ? 'Nothing open' : `Nothing in ${GROUP_HEAD[filter].toLowerCase()}`} description="Try another filter or project to see the rest of your tasks.">
+          <Empty icon={<I.clipboard />} title={filter === 'all' ? 'Nothing here yet' : filter === 'inbox' ? 'Inbox is empty' : filter === 'open' ? 'Nothing open' : `Nothing in ${GROUP_HEAD[filter].toLowerCase()}`} description="Try another filter or project to see the rest of your tasks.">
             <Button variant="outline" size="sm" onClick={() => { setFilter('all'); setProjectFilter('all'); }}>Show all tasks</Button>
           </Empty>
         ) : (
@@ -4557,7 +4742,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                   const blocker = t.status === 'blocked' && tasks[t.blockedBy];
                   const cell = 'h-[34px] border-r px-2.5 align-middle';
                   return (
-                    <tr key={t.id} className={cn('group border-b transition-colors hover:bg-muted/40', on && 'bg-accent/60')}>
+                    <tr key={t.id} data-task-id={t.id} className={cn('group border-b transition-colors hover:bg-muted/40', on && 'bg-accent/60')}>
                       <td className={cn(cell, 'group/title')}>
                         {renaming === t.id ? (
                           <input autoFocus defaultValue={t.title} aria-label="Task title"
@@ -4566,12 +4751,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                             onBlur={e => { const v = e.target.value.trim(); if (v && v !== t.title) updateTask(t.id, { title: v }); setRenaming(null); }} />
                         ) : (
                           <div className="flex min-w-0 items-center gap-2">
-                            <I.file className="size-3.5 shrink-0 text-muted-foreground" />
+                            {done ? <span className="size-6 shrink-0" aria-hidden="true" /> : (
+                              <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Stop' : 'Start'} timer for ${t.title || 'Untitled'}`} title={on ? 'Stop timer' : 'Start timer'}
+                                className={cn('flex size-6 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3',
+                                  on ? 'border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600' : 'text-muted-foreground hover:border-foreground/30 hover:text-foreground')}>
+                                {on ? <I.pause /> : <I.play className="translate-x-px" />}
+                              </button>
+                            )}
                             <button type="button" title={t.title}
                               onClick={e => { if (e.ctrlKey || e.metaKey) openTab(t.id); else openTask(t.id); }}
                               onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openTab(t.id); } }}
                               onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
-                              className={cn('min-w-0 truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
+                              className={cn('min-w-[5rem] truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
                             {(() => {
                               const editing = cellEdit && cellEdit.id === t.id && cellEdit.field === 'project';
                               return t.project ? (
@@ -4579,7 +4770,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                                   className={cn('inline-flex h-5 max-w-[11rem] shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 text-[11px] text-foreground/75 transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 bg-muted')}>
                                   <I.folder className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{t.project}</span>
                                 </button>
-                              ) : (
+                              ) : t.inbox ? null : (
                                 <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Add a ${labels.platform.toLowerCase()}`}
                                   className={cn('inline-flex h-5 shrink-0 items-center rounded-md border border-dashed px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 [@media(hover:none)]:opacity-100', editing && 'opacity-100')}>
                                   + {labels.platform}
@@ -4592,6 +4783,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                               {(t.files || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5" title="Documents"><I.paperclip className="size-3" />{t.files.length}</span>}
                               {t.generatedFrom && <span title="Created by an automation"><I.zap className="size-3" /></span>}
                             </span>
+                            {t.inbox && (
+                              <button type="button" onClick={() => acceptTask(t.id)} title="Move to Open"
+                                className="inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Accept</button>
+                            )}
                             <button type="button" onClick={() => setRenaming(t.id)} aria-label={`Rename ${t.title}`} title="Rename"
                               className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100">
                               <I.pencil className="size-3" />
@@ -4621,10 +4816,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                         );
                       })}
                       {!cols.hidden.includes('time') && <td className={cn(cell, 'px-1')}>
-                        <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title}`}
-                          className={cn('tnum inline-flex h-6 w-full items-center gap-1.5 rounded px-1.5 text-xs transition-colors hover:bg-muted', on ? 'font-semibold text-primary' : 'text-muted-foreground')}>
-                          {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{fmt(elapsed(t))}
-                        </button>
+                        <span className={cn('tnum inline-flex h-6 w-full items-center px-1.5 text-xs', on ? 'font-semibold text-emerald-600 dark:text-emerald-400' : elapsed(t) ? 'text-foreground/80' : 'text-muted-foreground/60')}>{fmt(elapsed(t))}</span>
                       </td>}
                       <td className="h-[34px] px-0.5 text-center">
                         <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
@@ -4679,7 +4871,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </>)}
 
-      <TaskSheet mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
