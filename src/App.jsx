@@ -60,6 +60,7 @@ const I = {
   moon: p => <Icon {...p}><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></Icon>,
   monitor: p => <Icon {...p}><rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/></Icon>,
   loader: p => <Icon {...p}><path d="M21 12a9 9 0 1 1-6.219-8.56"/></Icon>,
+  grip: p => <Icon {...p}><circle cx="9" cy="6" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="18" r="1"/><circle cx="15" cy="6" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="18" r="1"/></Icon>,
   layers: p => <Icon {...p}><path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/></Icon>,
   ban: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="m4.9 4.9 14.2 14.2"/></Icon>,
   calendarCheck: p => <Icon {...p}><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-4"/></Icon>,
@@ -926,6 +927,22 @@ function useTasks(ws = 'product') {
     setSettings(st => ({ ...st, purgeFiles: [] }));
   }, [loaded, archLoaded]);
 
+  // Merging: the documents in `ids` become one record. A task that had any of them keeps one copy, where the first one was.
+  const replaceDocsEverywhere = useCallback((ids, merged) => {
+    const up = t => {
+      const fs = t.files || []; if (!fs.some(x => ids.includes(x.id))) return t;
+      const out = []; let put = false;
+      fs.forEach(x => { if (!ids.includes(x.id)) out.push(x); else if (!put) { out.push(merged); put = true; } });
+      return { ...t, files: out };
+    };
+    setTasks(p => Object.fromEntries(Object.entries(p).map(([k, t]) => [k, up(t)])));
+    setArch(x => ({ archived: Object.fromEntries(Object.entries(x.archived).map(([k, t]) => [k, up(t)])), trash: Object.fromEntries(Object.entries(x.trash).map(([k, t]) => [k, up(t)])) }));
+    setLooseDocs(l => {
+      const used = [...Object.values(tasksRef.current), ...Object.values(archRef.current.archived)].some(t => (t.files || []).some(x => ids.includes(x.id)));
+      const rest = l.filter(x => !ids.includes(x.id));
+      return used ? rest : [...rest, merged];
+    });
+  }, []);
   const updateDocEverywhere = useCallback((id, fn) => {
     const up = t => (t.files || []).some(x => x.id === id) ? { ...t, files: t.files.map(x => x.id === id ? fn(x) : x) } : t;
     setTasks(p => Object.fromEntries(Object.entries(p).map(([k, t]) => [k, up(t)])));
@@ -935,7 +952,7 @@ function useTasks(ws = 'product') {
   return {
     updateDocEverywhere,
     undo, redo, canUndo: hist.current.past.length > 0 || !!hist.current.pending, canRedo: hist.current.future.length > 0,
-    deleteDocEverywhere,
+    deleteDocEverywhere, replaceDocsEverywhere,
     tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages,
     buckets, saveBuckets: setBuckets, labels: { ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}), ...labels }, saveLabels: setLabels,
     settings, saveSettings: setSettings, looseDocs, saveLooseDocs: setLooseDocs,
@@ -1413,7 +1430,7 @@ function PreviewDialog({ file, onClose, onDownload }) {
 }
 
 function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, onSubmit, library = [] }) {
-  const [target, setTarget] = useState('__new');
+  const [target, setTarget] = useState('__none');
   const [asVersion, setAsVersion] = useState({});
   const [project, setProject] = useState('');
   const openTasks = tasks.filter(t => t.status !== 'done').sort((a, b) => b.createdAt - a.createdAt);
@@ -1421,7 +1438,7 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
   const n = files.length;
   return (
     <Dialog open={open} onClose={onClose} title="Add documents"
-      description="Attach files to a task so they’re easy to find later. You can drag files straight from WhatsApp or File Explorer onto this window."
+      description="Add files to Documents, and link them to a task if you like. You can drag files straight from WhatsApp or File Explorer onto this window."
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button disabled={!n || busy} onClick={() => onSubmit(files, { target, project, versions: Object.fromEntries(files.map((f, i) => { const m = findVersionTarget(f.name, library); return [i, m && asVersion[i] !== false ? m.id : null]; })) })}>{busy ? 'Uploading…' : n ? `Add ${n} ${n === 1 ? 'file' : 'files'}` : 'Add files'}</Button>
@@ -1447,12 +1464,12 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="Attach to" htmlFor="ad-target">
             <Select id="ad-target" value={target} onChange={setTarget} options={[
-              { value: '__new', label: 'A new task for each file', icon: <I.plus className="size-3.5 text-muted-foreground" /> },
+              { value: '__none', label: 'No task, just add to Documents', icon: <I.file className="size-3.5 text-muted-foreground" /> },
               ...openTasks.map(t => ({ value: t.id, label: t.title || 'Untitled', group: 'Open tasks' })),
               ...doneTasks.map(t => ({ value: t.id, label: t.title || 'Untitled', group: 'Complete' })),
             ]} />
           </Field>
-          {target === '__new' && (
+          {false && (
             <Field label="Project" htmlFor="ad-project">
               <Select id="ad-project" value={project} onChange={setProject} options={[
                 { value: '', label: 'No project', node: <span className="text-muted-foreground">No project</span> },
@@ -1471,10 +1488,126 @@ const docBase = name => { const ext = extOf(name); return ext + ':' + norm((name
 const findVersionTarget = (name, docs, skipId) => docs.find(d => d.id !== skipId && !d.inbox && docBase(d.name) === docBase(name));
 const versionCount = d => (d.versions || []).length + 1;
 
+// Every document has a status. Documents saved before 0.15 read as Draft.
+const DOC_STATUSES = [
+  { id: 'draft', label: 'Draft', dot: 'bg-slate-400', key: '1' },
+  { id: 'review', label: 'In review', dot: 'bg-amber-500', key: '2' },
+  { id: 'approved', label: 'Approved', dot: 'bg-emerald-500', key: '3' },
+  { id: 'outdated', label: 'Outdated', dot: 'bg-zinc-500', key: '4' },
+];
+const DSt = Object.fromEntries(DOC_STATUSES.map(s => [s.id, s]));
+const docStatus = d => (d && DSt[d.status] ? d.status : 'draft');
+const DocStatusPill = ({ status, className }) => (
+  <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}><span className={cn('size-1.5 shrink-0 rounded-full', DSt[status].dot)} /><span className="truncate">{DSt[status].label}</span></span>
+);
+function DocStatusPicker({ doc, onSetStatus, compact }) {
+  const st = docStatus(doc);
+  return (
+    <DropdownMenu align="start"
+      trigger={p => <button {...p} type="button" title="Status (1–4)" className={cn('inline-flex shrink-0 items-center gap-1 rounded-md border text-muted-foreground hover:text-foreground', compact ? 'h-5 px-1.5 text-[11px]' : 'h-6 px-2 text-xs')}><DocStatusPill status={st} /><I.down className="size-3" /></button>}
+      items={DOC_STATUSES.map(s => ({ label: s.label, icon: <span className={cn('mx-1 size-2 rounded-full', s.dot)} />, shortcut: s.key + (s.id === st ? ' ✓' : ''), onSelect: () => onSetStatus(doc, s.id) }))} />
+  );
+}
+
+// Merge documents into versions: pick files, drag them into order (oldest at the top, the last row is the latest),
+// then they become one document with a version history.
+function MergeDocsDialog({ doc, docs, onClose, onMerge }) {
+  const [q, setQ] = useState('');
+  const [order, setOrder] = useState([]);
+  const [drag, setDrag] = useState(null); // { id, over }
+  const listRef = useRef(null);
+  useEffect(() => { setQ(''); setOrder(doc ? [doc.id] : []); setDrag(null); }, [doc && doc.id]);
+  if (!doc) return null;
+  const byId = Object.fromEntries(docs.map(d => [d.id, d]));
+  const nq = norm(q);
+  const base = docBase(doc.name).split(':')[1];
+  const similar = d => { const b = docBase(d.name).split(':')[1]; return b === base || (base.length > 3 && (b.includes(base) || base.includes(b))); };
+  const cands = docs.filter(d => d.id !== doc.id && (!nq || norm(d.name).includes(nq)))
+    .sort((a, b) => (similar(b) - similar(a)) || b.addedAt - a.addedAt);
+  const sugg = nq ? [] : cands.filter(similar);
+  const others = nq ? cands : cands.filter(d => !similar(d));
+  const picked = order.map(id => byId[id]).filter(Boolean);
+  // A newly picked file goes in by date; files already placed keep the order you dragged them into.
+  const toggle = d => setOrder(o => { if (o.includes(d.id)) return o.filter(x => x !== d.id); const k = o.findIndex(x => byId[x].addedAt > d.addedAt); const n = [...o]; n.splice(k < 0 ? n.length : k, 0, d.id); return n; });
+  const sortByDate = () => setOrder(o => [...o].sort((a, b) => byId[a].addedAt - byId[b].addedAt));
+  const shift = (id, dir) => setOrder(o => { const i = o.indexOf(id), j = i + dir; if (j < 0 || j >= o.length) return o; const n = [...o]; [n[i], n[j]] = [n[j], n[i]]; return n; });
+  // Pointer drag (the window's own file drop handling turns off HTML drag and drop).
+  const startDrag = (e, id) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const rows = () => [...listRef.current.querySelectorAll('[data-ord]')];
+    const overAt = y => { const rs = rows(); let k = rs.length; for (let i = 0; i < rs.length; i++) { const r = rs[i].getBoundingClientRect(); if (y < r.top + r.height / 2) { k = i; break; } } return k; };
+    setDrag({ id, over: order.indexOf(id) });
+    const mv = ev => setDrag({ id, over: overAt(ev.clientY) });
+    const up = ev => {
+      window.removeEventListener('pointermove', mv); window.removeEventListener('pointerup', up); document.body.style.cursor = '';
+      const k = overAt(ev.clientY);
+      setOrder(o => { const n = o.filter(x => x !== id); const from = o.indexOf(id); n.splice(k > from ? k - 1 : k, 0, id); return n; });
+      setDrag(null);
+    };
+    document.body.style.cursor = 'grabbing';
+    window.addEventListener('pointermove', mv); window.addEventListener('pointerup', up);
+  };
+  const latest = picked[picked.length - 1];
+  const candRow = d => (
+    <label key={d.id} className="flex cursor-default items-center gap-2.5 rounded-md px-2 py-1.5 hover:bg-muted/50">
+      <Checkbox checked={order.includes(d.id)} onChange={() => toggle(d)} label={d.name} />
+      <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
+      <span className="min-w-0 flex-1 truncate text-[13px]">{d.name}</span>
+      {(d.versions || []).length > 0 && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">v{versionCount(d)}</span>}
+      <span className="shrink-0 text-[11px] text-muted-foreground">{fmtDay(d.addedAt)}</span>
+    </label>
+  );
+  return (
+    <Dialog open onClose={onClose} title="Merge documents into versions" className="max-w-3xl"
+      description={`The files you pick become versions of “${doc.name}”. Its status stays, and their task links move over. The files stay in their folders.`}
+      footer={<><Button variant="outline" onClick={onClose}>Cancel</Button><Button disabled={picked.length < 2} onClick={() => onMerge(doc, order)}>{picked.length < 2 ? 'Pick at least one more file' : `Merge ${picked.length} files into versions`}</Button></>}>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="flex min-h-0 flex-col gap-2">
+          <PageSearch value={q} onChange={setQ} placeholder="Search documents" />
+          <div className="max-h-80 min-h-[12rem] overflow-y-auto rounded-md border p-1">
+            {sugg.length > 0 && <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">Similar names</div>}
+            {sugg.map(candRow)}
+            {sugg.length > 0 && others.length > 0 && <div className="px-2 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Other documents</div>}
+            {others.map(candRow)}
+            {cands.length === 0 && <div className="p-3 text-sm text-muted-foreground">No other documents match.</div>}
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-col gap-2">
+          <div className="flex h-8 items-center justify-between">
+            <span className="text-xs font-medium">Version order <span className="font-normal text-muted-foreground">· drag to rearrange</span></span>
+            <button type="button" onClick={sortByDate} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">Sort by date</button>
+          </div>
+          <div ref={listRef} className="relative max-h-80 overflow-y-auto rounded-md border p-1">
+            {picked.map((d, i) => (
+              <div key={d.id}>
+                {drag && drag.over === i && drag.id !== d.id && <div className="mx-1 h-0.5 rounded bg-primary" />}
+                <div data-ord={d.id} tabIndex={0}
+                  onKeyDown={e => { if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); shift(d.id, -1); setTimeout(() => e.target.focus(), 0); } if (e.altKey && e.key === 'ArrowDown') { e.preventDefault(); shift(d.id, 1); setTimeout(() => e.target.focus(), 0); } }}
+                  className={cn('flex select-none items-center gap-2 rounded-md px-1.5 py-1.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', drag && drag.id === d.id ? 'bg-muted opacity-60' : 'hover:bg-muted/50', i === picked.length - 1 && 'bg-primary/5')}>
+                  <button type="button" aria-label={`Drag ${d.name}`} title="Drag to reorder (Alt+↑/↓)" onPointerDown={e => startDrag(e, d.id)} className="flex h-6 w-5 cursor-grab items-center justify-center text-muted-foreground hover:text-foreground"><I.grip className="size-3.5" /></button>
+                  <span className="w-6 shrink-0 text-[11px] font-medium text-muted-foreground tnum">v{picked.slice(0, i).reduce((n, x) => n + versionCount(x), 0) + versionCount(d)}</span>
+                  <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
+                  <span className="min-w-0 flex-1"><span className="block truncate text-[13px]">{d.name}</span><span className="block text-[11px] text-muted-foreground">{fmtDay(d.addedAt)}, {fmtSize(d.size)}{d.links.length ? `, ${d.links.length} ${d.links.length === 1 ? 'task' : 'tasks'}` : ''}</span></span>
+                  {i === picked.length - 1 && <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-medium text-primary-foreground">Latest</span>}
+                  {d.id !== doc.id && <button type="button" aria-label={`Remove ${d.name}`} onClick={() => toggle(d)} className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3" /></button>}
+                </div>
+              </div>
+            ))}
+            {drag && drag.over >= picked.length && <div className="mx-1 h-0.5 rounded bg-primary" />}
+          </div>
+          <p className="text-[11px] text-muted-foreground">The oldest is at the top. {latest ? `“${latest.name}” will show as the current version.` : ''}</p>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
-function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onNewTask, onAddVersion, onUploadVersion, onMakeCurrent, dragOver, focusId }) {
+function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onAddVersion, onUploadVersion, onMakeCurrent, onSetStatus, onSeen, onMerge, dragOver, focusId }) {
   const [q, setQ] = useState('');
   const [kind, setKind] = useState('all');
+  const [stF, setStF] = useState('all');
   const [sort, setSort] = useState('new');
   const [selKey, setSelKey] = useState(null);
   const [viewVer, setViewVer] = useState(null); // an older version being previewed
@@ -1491,7 +1624,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
   const isOther = d => !['pdf', 'word', 'html'].includes(d.kind);
   const counts = { all: docs.length, pdf: docs.filter(d => d.kind === 'pdf').length, word: docs.filter(d => d.kind === 'word').length, html: docs.filter(d => d.kind === 'html').length, other: docs.filter(isOther).length };
   const sorter = { new: (a, b) => b.addedAt - a.addedAt, name: (a, b) => a.name.localeCompare(b.name), size: (a, b) => b.size - a.size }[sort];
-  const match = d => (kind === 'all' || (kind === 'other' ? isOther(d) : d.kind === kind)) && (!nq || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq)));
+  const match = d => (kind === 'all' || (kind === 'other' ? isOther(d) : d.kind === kind)) && (stF === 'all' || docStatus(d) === stF) && (!nq || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq)));
   const inbox = docs.filter(d => d.inbox && match(d)).sort((a, b) => b.addedAt - a.addedAt);
   const rest = docs.filter(d => !d.inbox && match(d)).sort(sorter);
   const flat = [...inbox, ...rest];
@@ -1499,12 +1632,15 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
   useEffect(() => { setViewVer(null); }, [sel && sel.id]);
   const total = docs.reduce((n, d) => n + (d.size || 0), 0);
   const move = dir => { const i = flat.findIndex(d => sel && d.id === sel.id); const n = flat[Math.min(flat.length - 1, Math.max(0, i + dir))]; if (n) { setSelKey(n.id); const el = listRef.current && listRef.current.querySelector(`[data-doc="${n.id}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); } };
+  // Clicking a new document marks it as seen: it leaves the Inbox and stays selected.
+  const viewerRef = useRef(null);
+  const pick = (d, focusViewer) => { setSelKey(d.id); if (d.inbox) onSeen(d); if (focusViewer && viewerRef.current) viewerRef.current.focus(); };
   const shownFile = sel && viewVer ? { ...sel, ...viewVer, id: sel.id + '@' + viewVer.file } : sel;
   const row = d => {
     const on = sel && sel.id === d.id;
     const target = d.inbox ? findVersionTarget(d.name, docs, d.id) : null;
     return (
-      <div key={d.id} data-doc={d.id} role="option" aria-selected={on} onClick={() => setSelKey(d.id)} onDoubleClick={() => openExternal(d)}
+      <div key={d.id} data-doc={d.id} role="option" aria-selected={on} onClick={() => pick(d)} onDoubleClick={() => pick(d, true)}
         className={cn('group flex h-9 cursor-default items-center gap-2 rounded-md px-2.5 text-[13px]', on ? 'bg-muted' : 'hover:bg-muted/50')}>
         {d.inbox && <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />}
         <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
@@ -1516,14 +1652,14 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
             <span className="hidden gap-0.5 group-hover:flex [@media(hover:none)]:flex">
               {target && <button type="button" title={`Add as v${versionCount(target) + 1} of ${target.name}`} onClick={e => { e.stopPropagation(); onAddVersion(target, d); }} className="flex h-6 items-center rounded border bg-card px-1.5 text-[11px] hover:bg-muted">New version</button>}
               <button type="button" title="Link to a task" aria-label={`Link ${d.name} to a task`} onClick={e => { e.stopPropagation(); onAttach(d); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.paperclip className="size-3" /></button>
-              <button type="button" title="New task from this file" aria-label={`New task from ${d.name}`} onClick={e => { e.stopPropagation(); onNewTask(d); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.plus className="size-3" /></button>
               <button type="button" title="Dismiss" aria-label={`Dismiss ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, true); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.x className="size-3" /></button>
             </span>
           </span>
         ) : (
           <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
-            {d.links.length ? <span className="inline-flex items-center gap-0.5" title={d.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{d.links.length}</span> : <span className="text-muted-foreground/70">Not linked</span>}
-            <span className="tnum w-12 text-right">{fmtSize(d.size)}</span>
+            <DocStatusPill status={docStatus(d)} className="w-[4.25rem]" />
+            {d.links.length ? <span className="inline-flex items-center gap-0.5" title={d.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{d.links.length}</span> : <span className="w-6" title="Not linked to a task" />}
+            <span className="tnum hidden w-12 text-right 2xl:inline">{fmtSize(d.size)}</span>
             <span className="w-16 text-right">{relTime(d.addedAt)}</span>
           </span>
         )}
@@ -1538,26 +1674,23 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
   );
   const iconBtn = (icon, label, fn) => <Button variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={label} title={label} onClick={fn}>{icon}</Button>;
   return (
-    <div ref={wrap} className="mt-5 flex flex-col" style={{ height }}>
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-semibold">Documents</h2>
-        <span className="text-sm text-muted-foreground">{docs.length} {docs.length === 1 ? 'file' : 'files'}{total ? `, ${fmtSize(total)}` : ''}</span>
-        <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
-        {kindChip('all', 'All')}{kindChip('pdf', 'PDF')}{kindChip('word', 'Word')}{kindChip('html', 'HTML')}{kindChip('other', 'Other')}
-        <div className="ml-auto flex items-center gap-2">
-          <div className="relative w-56">
-            <I.search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="h-8 bg-card pl-8 text-xs shadow-none md:text-xs"
-              onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQ(''); e.currentTarget.blur(); } }} />
-          </div>
+    <div ref={wrap} className="flex flex-col" style={{ height }}>
+      <PageHead title="Documents" sub={`${docs.length} ${docs.length === 1 ? 'file' : 'files'}${total ? `, ${fmtSize(total)}` : ''}`} />
+      <PageBar>
+        <FilterTabs label="File type" value={kind} onChange={setKind}
+          items={[['all', 'All'], ['pdf', 'PDF'], ['word', 'Word'], ['html', 'HTML'], ['other', 'Other']].map(([id, label]) => ({ id, label, count: counts[id] }))} />
+        <div className="ml-auto flex items-center gap-1.5">
+          <PageSearch value={q} onChange={setQ} placeholder="Search documents" />
           <Button variant="outline" size="icon-sm" className="bg-card shadow-none" onClick={async () => { setSpin(true); try { await onRefresh(); } finally { setSpin(false); } }}
             aria-label="Check watch folders now" title={hasWatch ? 'Check watch folders now' : 'Check watch folders now (add one in Settings)'}>
             <I.refresh className={cn(spin && 'animate-spin')} />
           </Button>
+          <Select variant="chip" label="Filter by status" value={stF} onChange={setStF} searchable={false}
+            renderValue={o => <span>Status: {o.label}</span>} options={[{ value: 'all', label: 'All' }, ...DOC_STATUSES.map(s => ({ value: s.id, label: s.label, icon: <span className={cn('size-2 rounded-full', s.dot)} /> }))]} />
           <Select variant="chip" label="Sort documents" value={sort} onChange={setSort} searchable={false} icon={<I.updown className="size-3.5 shrink-0" />}
             renderValue={o => <span>Sort: {o.label}</span>} options={[{ value: 'new', label: 'Newest' }, { value: 'name', label: 'Name' }, { value: 'size', label: 'Size' }]} />
         </div>
-      </div>
+      </PageBar>
       {docs.length === 0 ? (
         <Card className={cn('mt-3 flex flex-1 items-center justify-center', dragOver && 'ring-2 ring-ring')}>
           <Empty icon={<I.file />} title="No documents yet"
@@ -1566,10 +1699,10 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
           </Empty>
         </Card>
       ) : (
-        <div className="mt-3 flex min-h-0 flex-1 gap-3">
-          <Card className={cn('flex w-[380px] shrink-0 flex-col overflow-hidden', dragOver && 'ring-2 ring-ring')}>
+        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+          <Card className={cn('flex max-h-[40%] w-full shrink-0 flex-col overflow-hidden lg:max-h-none lg:w-[clamp(380px,36%,600px)]', dragOver && 'ring-2 ring-ring')}>
             <div ref={listRef} role="listbox" tabIndex={0} aria-label="Documents" className="min-h-0 flex-1 overflow-y-auto p-1 focus-visible:outline-none"
-              onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); move(1); } if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); } if (e.key === 'Enter' && sel) openExternal(sel); }}>
+              onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); move(1); } if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); } if (e.key === 'Enter' && sel) pick(sel, true); const ds = DOC_STATUSES.find(s => s.key === e.key); if (ds && sel && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); onSetStatus(sel, ds.id); } if (e.key === 'U' && e.shiftKey && sel) { e.preventDefault(); onMerge(sel); } }}>
               {inbox.length > 0 && (
                 <>
                   <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">Inbox<span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white">{inbox.length} new</span></div>
@@ -1581,7 +1714,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
               {flat.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted-foreground">No documents match.</div>}
             </div>
           </Card>
-          <Card className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          <div ref={viewerRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground focus-visible:outline-none">
             {sel ? (
               <>
                 <div className="flex items-center gap-2.5 border-b px-3 py-2">
@@ -1595,17 +1728,19 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
                         ...sel.versions.map((v, i) => ({ label: `v${i + 1}, ${fmtDay(v.addedAt)}`, icon: <I.file />, onSelect: () => setViewVer(v) })).reverse(),
                         'sep',
                         { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
+                        { label: 'Merge existing documents…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
                       ]} />
                   )}
+                  <DocStatusPicker doc={sel} onSetStatus={onSetStatus} compact />
                   <span className="shrink-0 text-xs text-muted-foreground">{fmtSize((viewVer || sel).size)}, {relTime((viewVer || sel).addedAt).toLowerCase()}</span>
                   <div className="ml-auto flex shrink-0 gap-1.5">
-                    {iconBtn(<I.external />, 'Open in its app', () => openExternal(shownFile))}
+                    {iconBtn(<I.external />, 'Open in its Windows app', () => openExternal(shownFile))}
                     {iconBtn(<I.download />, 'Save a copy', () => onDownload(shownFile))}
                     {iconBtn(<I.paperclip />, 'Link to a task', () => onAttach(sel))}
                     <DropdownMenu trigger={p => <Button {...p} variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={`More for ${sel.name}`}><I.more /></Button>}
                       items={[
                         { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
-                        ...(sel.inbox ? [{ label: 'New task from this file', icon: <I.plus />, onSelect: () => onNewTask(sel) }] : []),
+                        { label: 'Merge into versions…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
                         'sep',
                         { label: sel.inbox ? 'Dismiss' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel, !!sel.inbox) },
                       ]} />
@@ -1633,7 +1768,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
                 <DocPreview file={shownFile} className="min-h-0 flex-1 rounded-none border-0" />
               </>
             ) : <DocPreview file={null} className="flex-1 rounded-none border-0" />}
-          </Card>
+          </div>
         </div>
       )}
     </div>
@@ -2764,6 +2899,39 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
 }
 
 /* Buckets page: a compact list (name and description, status, progress). Click a bucket for its details. */
+/* Every page uses the same header: a title with a short summary, then one bar with filter tabs on
+   the left and the page's own controls on the right. */
+const PageHead = ({ title, sub }) => (
+  <div className="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+    <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
+    {sub && <span className="text-sm text-muted-foreground">{sub}</span>}
+  </div>
+);
+const PageBar = ({ children, className }) => <div className={cn('mt-3 flex min-h-8 flex-wrap items-center gap-1.5', className)}>{children}</div>;
+function FilterTabs({ items, value, onChange, label }) {
+  return (
+    <div role="tablist" aria-label={label} className="inline-flex h-9 max-w-full items-center overflow-x-auto rounded-lg bg-muted p-1 text-muted-foreground">
+      {items.map(c => (
+        <button key={c.id} role="tab" type="button" aria-selected={value === c.id} onClick={() => onChange(c.id)}
+          className={cn('inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            value === c.id ? 'bg-background text-foreground shadow' : 'hover:text-foreground')}>
+          {c.dot && <span className={cn('size-2 rounded-full', c.dot)} />}{c.icon}{c.label}
+          {c.count === undefined || c.count === null ? null : c.badge && c.count > 0
+            ? <span className="tnum rounded-full bg-blue-500 px-1.5 text-[10px] font-medium leading-4 text-white">{c.count}</span>
+            : <span className="tnum text-xs font-normal opacity-70">{c.count}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}
+const PageSearch = ({ value, onChange, placeholder }) => (
+  <div className="relative w-full sm:w-56">
+    <I.search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+    <Input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder} aria-label={placeholder} className="h-9 bg-card pl-8 text-sm shadow-none"
+      onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); onChange(''); e.currentTarget.blur(); } }} />
+  </div>
+);
+
 function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onOpenTask, onAddTask, focus }) {
   const [tab, setTab] = useState('active');
   const [q, setQ] = useState('');
@@ -2848,7 +3016,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
       </button>
     );
     return (
-      <Card className="w-full shrink-0 self-start p-4 lg:sticky lg:top-4 lg:w-80" aria-label={`${b.label || b.name} details`}>
+      <Card className="w-full shrink-0 self-start p-4 lg:sticky lg:top-4 lg:w-[clamp(20rem,28%,30rem)]" aria-label={`${b.label || b.name} details`}>
         <div className="flex items-start gap-2">
           <h3 className="min-w-0 flex-1 break-words text-base font-semibold">{b.label || b.name}</h3>
           <Button variant="ghost" size="icon-sm" aria-label="Close details (Esc)" title="Close  Esc" onClick={() => setSel(null)}><I.x /></Button>
@@ -2885,25 +3053,13 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
   };
   const tabs = [['active', 'Active'], ...BUCKET_STATUSES.map(x => [x.id, x.label])];
   return (
-    <div className="mt-6">
-      <div className="mb-4 flex flex-wrap items-center gap-3">
-        <h2 className="text-base font-semibold">{plural(noun)}</h2>
-        <span className="text-sm text-muted-foreground">{count('active')} active{count('done') ? `, ${count('done')} done` : ''}</span>
-      </div>
-      <div className="mb-3 flex flex-wrap items-center gap-2">
-        <div role="tablist" aria-label={`${noun} status`} className="inline-flex h-9 items-center rounded-lg bg-muted p-1 text-muted-foreground">
-          {tabs.map(([id, label]) => (
-            <button key={id} role="tab" type="button" aria-selected={tab === id} onClick={() => { setTab(id); setSel(null); }}
-              className={cn('inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-sm font-medium transition-colors', tab === id ? 'bg-background text-foreground shadow' : 'hover:text-foreground')}>
-              {id !== 'active' && <span className={cn('size-2 rounded-full', BS[id].dot)} />}{label}<span className="tnum text-xs font-normal opacity-70">{count(id)}</span>
-            </button>
-          ))}
-        </div>
-        <div className="relative ml-auto w-full sm:w-56">
-          <I.search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={e => setQ(e.target.value)} placeholder={`Search ${plural(lower)}`} aria-label={`Search ${plural(lower)}`} className="pl-8" />
-        </div>
-      </div>
+    <div>
+      <PageHead title={plural(noun)} sub={`${count('active')} active${count('done') ? `, ${count('done')} done` : ''}`} />
+      <PageBar className="mb-3">
+        <FilterTabs label={`${noun} status`} value={tab} onChange={id => { setTab(id); setSel(null); }}
+          items={tabs.map(([id, label]) => ({ id, label, count: count(id), dot: id !== 'active' ? BS[id].dot : null }))} />
+        <div className="ml-auto w-full sm:w-auto"><PageSearch value={q} onChange={setQ} placeholder={`Search ${plural(lower)}`} /></div>
+      </PageBar>
       <div className="flex flex-col items-start gap-4 lg:flex-row">
         <Card className="w-full min-w-0 flex-1 overflow-hidden" role="grid" aria-label={plural(noun)}>
           <div role="row" className="hidden grid-cols-[minmax(0,1fr)_9.5rem_13rem_2rem] gap-x-4 border-b px-4 py-2 text-xs font-medium text-muted-foreground md:grid">
@@ -2961,32 +3117,42 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
   const presetFor = g => groupBy === 'status' ? (() => { const d = statusList(stages).find(x => x.id === g.key); return d ? { status: d.group, stage: d.builtin ? '' : d.id } : {}; })()
     : groupBy === 'priority' ? { priority: g.key } : { [groupBy]: g.key };
   return (
-    <div className="mt-3 grid items-start gap-3 lg:grid-cols-2">
+    <div className="mt-3 gap-3 [column-width:30rem]">
       {groups.map(g => (
-        <Card key={g.key || '_none'} className="overflow-hidden">
-          <div className="flex h-10 items-center gap-2 px-4 text-xs font-semibold">
+        <Card key={g.key || '_none'} className="mb-3 break-inside-avoid overflow-hidden">
+          <div className="flex h-12 items-center gap-2 px-4 text-sm font-semibold">
             {groupBy === 'status' ? <DefPill def={statusList(stages).find(x => x.id === g.key)} />
               : <>{groupBy === 'project' ? <I.folder className="size-3.5 text-muted-foreground" /> : groupBy === 'bucket' ? <I.layers className="size-3.5 text-muted-foreground" /> : groupBy === 'assignee' ? <Avatar name={g.key} className="h-5 w-5 [&_span]:text-[9px]" /> : <I.flag className="size-3.5 text-muted-foreground" />}<span className="truncate">{g.name}</span></>}
             <span className="font-normal text-muted-foreground">{g.tasks.length}</span>
             <button type="button" onClick={() => onAdd(presetFor(g))} className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 font-normal text-muted-foreground hover:bg-muted hover:text-foreground"><I.plus className="size-3.5" />Add</button>
           </div>
           {g.tasks.map(t => {
-            const def = statusDef(t, stages), d = due(t), done = t.status === 'done';
+            const def = statusDef(t, stages), d = due(t), done = t.status === 'done', on = !!t.timerStartedAt;
             return (
-              <div key={t.id} data-task-id={t.id} className="group flex h-10 items-center gap-3 border-t border-border/60 px-4 text-[13px] hover:bg-muted/40">
-                <span title={def.name} aria-label={def.name} className={cn('flex size-4 shrink-0 items-center justify-center rounded-full border-[1.5px]', done && STATUS_COLORS[def.color])}
-                  style={{ borderColor: STATUS_HEX[def.color] }}>{done && <I.check className="size-2.5 text-white" />}</span>
-                <button type="button" title={t.title} onClick={e => onOpen(t.id, e)} onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onOpen(t.id, { ctrlKey: true }); } }}
-                  className={cn('min-w-0 truncate text-left font-medium hover:underline underline-offset-4', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
-                {groupBy !== 'status' && t.status !== 'todo' && !done && <span className="shrink-0 text-[11px] text-muted-foreground">{def.name}</span>}
-                {groupBy !== 'project' && t.project && <MiniTag icon={<I.folder className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
-                {groupBy !== 'bucket' && t.bucket && <MiniTag icon={<I.layers className="size-3 text-muted-foreground" />}>{t.bucket}</MiniTag>}
-                <span className="ml-auto flex shrink-0 items-center gap-3.5 text-xs text-muted-foreground">
-                  {groupBy !== 'priority' && <span className="inline-flex items-center gap-1.5"><span className={cn('size-1.5 rounded-full', PRI_DOT[t.priority || 'normal'])} />{P[t.priority || 'normal'].label}</span>}
-                  <span className={cn('w-24 text-right', t.deadline && dueCls[d.tone])}>{t.deadline ? d.text : ''}</span>
-                  <TaskTimer t={t} onToggle={onToggle} className="w-16 justify-end" />
-                  {groupBy !== 'assignee' && (t.assignee ? <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /> : <span className="w-5" />)}
-                </span>
+              <div key={t.id} data-task-id={t.id} className="group flex gap-3 border-t border-border/60 px-4 py-3 hover:bg-muted/40">
+                {done
+                  ? <span title={def.name} aria-label={def.name} className="mt-px flex size-[26px] shrink-0 items-center justify-center rounded-full bg-emerald-500 text-white [&_svg]:size-3"><I.check /></span>
+                  : <button type="button" onClick={() => onToggle(t.id)} aria-label={`${on ? 'Stop' : 'Start'} timer for ${t.title || 'Untitled'}`} title={on ? 'Stop timer' : 'Start timer'}
+                      className={cn('mt-px flex size-[26px] shrink-0 items-center justify-center rounded-full border transition-colors [&_svg]:size-3', on ? 'border-emerald-500 bg-emerald-500 text-white' : 'text-muted-foreground hover:text-foreground')}>
+                      {on ? <I.pause /> : <I.play className="translate-x-px" />}
+                    </button>}
+                <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+                  <div className="flex items-baseline gap-3">
+                    <button type="button" onClick={e => onOpen(t.id, e)} onAuxClick={e => { if (e.button === 1) { e.preventDefault(); onOpen(t.id, { ctrlKey: true }); } }}
+                      className={cn('min-w-0 flex-1 text-left text-sm font-medium leading-snug hover:underline underline-offset-4', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
+                    {t.deadline && !done && <span className={cn('shrink-0 whitespace-nowrap text-xs', dueCls[d.tone])}>{d.text}</span>}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
+                    {groupBy !== 'status' && <span className="inline-flex h-[22px] items-center gap-1.5 rounded-md border px-1.5 text-foreground/85"><span className="size-1.5 rounded-full" style={{ background: STATUS_HEX[def.color] }} />{def.name}</span>}
+                    {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.folder className="size-3 text-muted-foreground" />{t.project}</span>}
+                    {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
+                    {groupBy !== 'priority' && <span className="inline-flex h-[22px] items-center gap-1.5 rounded-md border px-1.5 text-foreground/85"><span className={cn('size-1.5 rounded-full', PRI_DOT[t.priority || 'normal'])} />{P[t.priority || 'normal'].label}</span>}
+                    <span className="ml-auto flex items-center gap-2.5 text-muted-foreground">
+                      <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(t))}</span>
+                      {groupBy !== 'assignee' && t.assignee && <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" />}
+                    </span>
+                  </div>
+                </div>
               </div>
             );
           })}
@@ -3049,7 +3215,7 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
       {cols.filter(c => c.group !== 'done' || doneOpen).map(c => {
         const list = byCol(c.id);
         return (
-          <div key={c.id} data-col={c.id} className={cn('flex w-72 shrink-0 flex-col gap-2 rounded-xl bg-muted/60 p-2 transition-colors', drag && drag.over === c.id && 'bg-muted ring-1 ring-foreground/20')}>
+          <div key={c.id} data-col={c.id} className={cn('flex min-w-[17rem] flex-1 basis-72 flex-col gap-2 rounded-xl bg-muted/60 p-2 transition-colors', drag && drag.over === c.id && 'bg-muted ring-1 ring-foreground/20')}>
             <div className="flex h-7 items-center gap-2 px-1.5 text-[13px] font-medium">
               <span className={cn('size-2 rounded-full', STATUS_COLORS[c.color])} />{c.name}<span className="font-normal text-muted-foreground">{list.length}</span>
               {c.group === 'done' && <button type="button" onClick={() => setDoneOpen(false)} className="ml-auto text-xs font-normal text-muted-foreground hover:text-foreground">Collapse</button>}
@@ -3119,23 +3285,23 @@ function TimesheetView({ tasks, stages, labels, onAddTime, onDeleteSession, onOp
   const groupLabel = { task: labels.task, bucket: labels.bucket, platform: labels.platform, person: labels.assignee }[group];
   const exportData = { title: `Timesheet, ${label}`, cols: R.cols.map(c => `${c.label} ${c.sub}`.trim()), groupLabel, rows: list.map(r => ({ name: r.name, vals: r.vals, total: r.total })), colTotals, grand };
   return (
-    <div className="mt-5">
-      <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-base font-semibold">Timesheet</h2>
-        <div className="ml-2 flex items-center gap-1">
-          <Button variant="ghost" size="icon-sm" aria-label="Previous" onClick={() => setOffset(o => o - 1)}><I.left /></Button>
-          <span className="min-w-[11rem] text-center text-sm font-medium">{label}</span>
-          <Button variant="ghost" size="icon-sm" aria-label="Next" onClick={() => setOffset(o => o + 1)}><I.right /></Button>
-        </div>
-        <Select variant="chip" label="Period" value={preset} searchable={false} onChange={v => { if (v === 'w0') { setUnit('week'); setOffset(0); } if (v === 'w1') { setUnit('week'); setOffset(-1); } if (v === 'm0') { setUnit('month'); setOffset(0); } if (v === 'm1') { setUnit('month'); setOffset(-1); } }}
-          options={[{ value: 'w0', label: 'This week' }, { value: 'w1', label: 'Last week' }, { value: 'm0', label: 'This month' }, { value: 'm1', label: 'Last month' }, ...(preset === 'custom' ? [{ value: 'custom', label: unit === 'week' ? 'Another week' : 'Another month' }] : [])]} />
-        <Select variant="chip" label="Group by" value={group} onChange={setGroup} searchable={false} icon={<I.rows className="size-3.5 shrink-0" />} renderValue={o => <span>By {o.label.toLowerCase()}</span>}
-          options={[{ value: 'task', label: labels.task }, { value: 'bucket', label: labels.bucket }, { value: 'platform', label: labels.platform }, { value: 'person', label: labels.assignee }]} />
-        <div className="ml-auto">
-          <DropdownMenu trigger={p => <Button {...p} variant="outline" size="sm" className="bg-card shadow-none"><I.download />Export<I.down className="size-3" /></Button>}
+    <div>
+      <PageHead title="Timesheet" sub={`${label}, ${fmtShort(grand)} tracked`} />
+      <PageBar>
+        <FilterTabs label="Period" value={preset} onChange={v => { if (v === 'w0') { setUnit('week'); setOffset(0); } if (v === 'w1') { setUnit('week'); setOffset(-1); } if (v === 'm0') { setUnit('month'); setOffset(0); } if (v === 'm1') { setUnit('month'); setOffset(-1); } }}
+          items={[{ id: 'w0', label: 'This week' }, { id: 'w1', label: 'Last week' }, { id: 'm0', label: 'This month' }, { id: 'm1', label: 'Last month' }]} />
+        <div className="ml-auto flex items-center gap-1.5">
+          <div className="flex items-center">
+            <Button variant="ghost" size="icon-sm" aria-label={unit === 'week' ? 'Previous week' : 'Previous month'} title={unit === 'week' ? 'Previous week' : 'Previous month'} onClick={() => setOffset(o => o - 1)}><I.left /></Button>
+            <span className="min-w-[9.5rem] text-center text-xs font-medium">{label}</span>
+            <Button variant="ghost" size="icon-sm" aria-label={unit === 'week' ? 'Next week' : 'Next month'} title={unit === 'week' ? 'Next week' : 'Next month'} onClick={() => setOffset(o => o + 1)}><I.right /></Button>
+          </div>
+          <Select variant="chip" label="Group by" value={group} onChange={setGroup} searchable={false} icon={<I.rows className="size-3.5 shrink-0" />} renderValue={o => <span>By {o.label.toLowerCase()}</span>}
+            options={[{ value: 'task', label: labels.task }, { value: 'bucket', label: labels.bucket }, { value: 'platform', label: labels.platform }, { value: 'person', label: labels.assignee }]} />
+          <DropdownMenu align="end" trigger={p => <Button {...p} variant="outline" size="sm" className="h-8 bg-card shadow-none"><I.download />Export<I.down className="size-3" /></Button>}
             items={[{ label: 'CSV for Excel…', icon: <I.table />, onSelect: () => onExportCsv(exportData) }, { label: 'Print or save as PDF…', icon: <I.file />, onSelect: () => onPrint(exportData) }]} />
         </div>
-      </div>
+      </PageBar>
       <Card className="mt-3 overflow-x-auto">
         <table className="w-full min-w-[720px] border-collapse text-[13px]">
           <thead>
@@ -3458,7 +3624,7 @@ function ProjectsView({ list, tasks, onNew, onEdit, onDelete, onOpen }) {
     );
   };
   return (
-    <div className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <div className="mt-6 grid grid-cols-[repeat(auto-fill,minmax(min(100%,19rem),1fr))] gap-4">
       {list.map(p => <ProjectCard key={p.name} p={p} st={stats(p.name)} editable />)}
       {unassigned.total > 0 && <ProjectCard p={{ name: 'none', label: 'No project', color: 'slate' }} st={unassigned} />}
       <button type="button" onClick={onNew}
@@ -3475,7 +3641,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const {
     tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
     buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
-    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, undo, redo,
+    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
   } = useTasks(ws);
   const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
   const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
@@ -3635,6 +3801,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     return m;
   }, [bucketList, all]);
   const [bucketFilter, setBucketFilter] = useState('all');
+  const [dueFilter, setDueFilter] = useState('');
   const [cleanUpOpen, setCleanUpOpen] = useState(false);
   const COLS_KEY = 'tasks-cols-' + ws;
   const [cols, setCols] = useState(() => { try { const v = JSON.parse(localStorage.getItem(COLS_KEY)); return { widths: (v && v.widths) || {}, hidden: (v && v.hidden) || [] }; } catch (e) { return { widths: {}, hidden: [] }; } });
@@ -3770,12 +3937,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     // While searching, look through every task (finished ones too, in any project).
     const q = norm(query);
     const base = q ? all.filter(t => [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q)))
-      : scoped.filter(t => filter === 'all' || (filter === 'inbox' ? t.inbox : !t.inbox && (filter === 'open' ? t.status !== 'done' : t.status === filter)));
+      : scoped.filter(t => filter === 'all' || (filter === 'inbox' ? t.inbox : !t.inbox && (filter === 'open' ? t.status !== 'done' : t.status === filter)))
+        .filter(t => !dueFilter || (t.deadline && t.status !== 'done' && (dueFilter === 'overdue' ? dayDiff(t.deadline) < 0 : dayDiff(t.deadline) >= 0 && dayDiff(t.deadline) < 7)));
     return base.sort((a, b) => {
       if (sortBy !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
       return by(a, b);
     });
-  }, [scoped, all, query, filter, sortBy, stages]);
+  }, [scoped, all, query, filter, sortBy, stages, dueFilter]);
 
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
@@ -4107,12 +4275,25 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     updateDocEverywhere(doc.id, x => ({ ...x, ...pickV(v), versions: [...(x.versions || []).filter(y => y.file !== v.file), pickV(x)].sort((a, b) => a.addedAt - b.addedAt) }));
     toast('Version restored', v.name, { undo: true });
   };
-  const newTaskFromDoc = d => {
-    const meta = stripMeta(d); delete meta.inbox; delete meta.source;
-    const auto = automate({ id: newId(), title: d.name.replace(/\.[^.]+$/, ''), status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', files: [meta], createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
-    saveMany([auto.task, ...auto.created]);
-    saveLooseDocs(l => l.filter(x => x.id !== d.id));
-    toast('Task created from document', d.name, { undo: true });
+  const setDocStatus = (d, status) => {
+    if (docStatus(d) === status) return;
+    updateDocEverywhere(d.id, x => ({ ...x, status }));
+    toast(`Marked ${DSt[status].label}`, d.name, { undo: true });
+  };
+  const markDocSeen = d => saveLooseDocs(l => l.map(x => x.id === d.id ? (({ inbox, ...m }) => m)(x) : x));
+  const [mergeFor, setMergeFor] = useState(null);
+  // order: document ids, oldest first. The last becomes the current file; the record keeps the id, status and links of `doc`.
+  const mergeDocs = (doc, order) => {
+    const byId = Object.fromEntries(docs.map(d => [d.id, d]));
+    const list = order.map(id => byId[id]).filter(Boolean);
+    if (list.length < 2) return;
+    const hist = list.flatMap(d => [...(d.versions || []).map(pickV), pickV(d)]);
+    const cur = hist.pop();
+    const me0 = stripMeta(byId[doc.id]); delete me0.inbox;
+    const merged = { ...me0, ...cur, versions: hist, status: docStatus(byId[doc.id]) };
+    replaceDocsEverywhere(order, merged);
+    setMergeFor(null);
+    toast(`Merged into ${hist.length + 1} versions`, merged.name, { undo: true });
   };
   // Watch folders: any file that wasn't in the folder before is new, whatever its date says.
   // This computer remembers which files it has seen per folder, and why it skipped any.
@@ -4290,6 +4471,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         return [auto.task, ...auto.created];
       }));
       toast(metas.length === 1 ? 'Document added as a new task' : `${metas.length} documents added as new tasks`, 'Open a task to add details.');
+    } else if (target === '__none') {
+      saveLooseDocs(l => [...l, ...metas]);
+      toast(metas.length === 1 ? 'Document added' : `${metas.length} documents added`, 'Link them to tasks from Documents.');
     } else attach(target, metas);
     setAddDocs({ open: false, files: [] });
   };
@@ -4454,63 +4638,87 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
           onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       ) : (<>
-      {/* Elevated top bar: workspace, sections as underlined tabs, tools and the main action */}
-      <div className="shrink-0 border-b bg-card">
-        <div className="mx-auto flex h-14 w-full max-w-6xl items-center gap-6 px-4 md:px-6">
-          <div className="flex min-w-0 shrink-0 items-center">
-          <DropdownMenu align="start"
-            trigger={p => (
-              <button {...p} type="button" aria-label="Switch workspace" className="-ml-1.5 flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><I.check className="size-4" /></span>
-                <span className="truncate text-[15px] font-semibold tracking-tight">{wsName}</span>
-                <I.down className="size-4 shrink-0 text-muted-foreground" />
-              </button>
-            )}
-            items={[
-              ...workspaces.map(w => ({ label: w.name, icon: <I.layers />, shortcut: w.id === ws ? '✓' : undefined, onSelect: () => { if (w.id !== ws) onSwitchWorkspace(w.id); } })),
-              'sep',
-              { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
-            ]} />
-          </div>
-          <nav aria-label="Sections" className="flex h-full items-stretch gap-5">
-            {[{ id: 'home', label: 'Home', count: '' }, { id: 'tasks', label: 'Tasks', count: all.length, fresh: inboxCount, freshLabel: 'inbox' }, { id: 'projects', label: plural(labels.bucket), count: bucketList.filter(b => bucketStatus(b) !== 'done').length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
-              <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
-                className={cn('-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
-                  view === v.id ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
-                {v.label}<span className="tnum text-[11px] font-normal text-muted-foreground">{v.count}</span>
-                {v.fresh > 0 && <span className="whitespace-nowrap rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white" title={v.freshLabel ? `${v.fresh} quick ${v.fresh === 1 ? 'capture' : 'captures'} waiting in the Inbox` : `${v.fresh} new in the Inbox`}>{v.fresh} {v.freshLabel || 'new'}</span>}
-              </button>
-            ))}
-          </nav>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-          {running && (
-            <div className="flex min-w-0 items-center gap-2 rounded-full border bg-card py-1 pl-3 pr-1 text-xs" role="status">
-              <span className="relative flex size-2 shrink-0">
-                <span className="anim-ping absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75" />
-                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
-              </span>
-              <button type="button" onClick={() => openTask(running.id)} title={running.title}
-                className="hidden max-w-[12rem] truncate text-muted-foreground hover:text-foreground hover:underline underline-offset-4 min-[1440px]:block">{running.title || 'Untitled'}</button>
-              <span className="tnum font-semibold">{fmt(elapsed(running))}</span>
-              <button type="button" onClick={() => toggleTimer(running.id)} aria-label="Pause timer"
-                className="flex size-6 items-center justify-center rounded-full hover:bg-muted"><I.pause className="size-3" /></button>
-            </div>
+      {/* Icon rail: workspace, pages with badges, running timer, account */}
+      <div className="flex min-h-0 flex-1">
+      <nav aria-label="Pages" className="flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-card px-2 py-2.5">
+        <DropdownMenu align="start"
+          trigger={p => (
+            <button {...p} type="button" aria-label={`Switch workspace (${wsName})`} title={wsName} className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
+              <I.check className="size-4" />
+            </button>
           )}
+          items={[
+            ...workspaces.map(w => ({ label: w.name, icon: <I.layers />, shortcut: w.id === ws ? '✓' : undefined, onSelect: () => { if (w.id !== ws) onSwitchWorkspace(w.id); } })),
+            'sep',
+            { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
+          ]} />
+        {[
+          { id: 'home', label: 'Home', icon: I.home, on: view === 'home', go: () => setView('home') },
+          { id: 'inbox', label: 'Inbox', icon: I.inbox, badge: inboxCount, badgeTitle: `${inboxCount} quick ${inboxCount === 1 ? 'capture' : 'captures'} to sort`, on: view === 'tasks' && filter === 'inbox' && !query, go: () => { setView('tasks'); setFilter('inbox'); setQuery(''); } },
+          { id: 'tasks', label: 'Tasks', icon: I.listCheck, on: view === 'tasks' && (filter !== 'inbox' || !!query), go: () => { setView('tasks'); if (filter === 'inbox') setFilter('open'); } },
+          { id: 'projects', label: plural(labels.bucket), icon: I.layers, on: view === 'projects', go: () => setView('projects') },
+          { id: 'docs', label: 'Docs', icon: I.file, badge: docs.filter(d => d.inbox).length, badgeTitle: 'new documents', on: view === 'docs', go: () => setView('docs') },
+          { id: 'time', label: 'Time', icon: I.timer, on: view === 'time', go: () => setView('time') },
+        ].map(v => (
+          <button key={v.id} type="button" onClick={v.go} aria-current={v.on ? 'page' : undefined} title={v.badge ? `${v.label}, ${v.badge} ${v.badgeTitle}` : v.label}
+            className={cn('relative flex h-14 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-[10.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              v.on ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground')}>
+            <v.icon className="size-[19px]" />
+            <span className="max-w-full truncate px-0.5">{v.label}</span>
+            {v.badge > 0 && <span className="tnum absolute right-2 top-1.5 min-w-4 rounded-full bg-blue-500 px-1 text-center text-[10px] leading-4 text-white">{v.badge}</span>}
+          </button>
+        ))}
+        <div className="flex-1" />
+        {running && (
+          <button type="button" onClick={() => toggleTimer(running.id)} onContextMenu={e => { e.preventDefault(); openTask(running.id); }}
+            aria-label={`Pause timer: ${running.title || 'Untitled'}, ${fmt(elapsed(running))}`} title={`${running.title || 'Untitled'}\n${fmt(elapsed(running))}\nClick to pause, right-click to open`}
+            className="group relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950">
+            <span className="tnum font-mono text-[11px] font-medium group-hover:hidden">{(m => m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`)(Math.floor(elapsed(running) / 60000))}</span>
+            <I.pause className="hidden size-3.5 group-hover:block" />
+          </button>
+        )}
+        <DropdownMenu align="start"
+          trigger={p => (
+            <button {...p} type="button" aria-label="Your account" className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Avatar name={me.name} picture={me.picture} className="h-8 w-8 bg-card ring-1 ring-border" />
+            </button>
+          )}
+          items={[
+            { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
+            'sep',
+            { label: 'Back up data…', icon: <I.download />, onSelect: backup },
+            { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
+            { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
+            'sep',
+            { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
+          ]} />
+      </nav>
+      <div className="flex min-w-0 flex-1 flex-col">
+      <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4 md:px-6">
+        <div className="flex min-w-0 items-center gap-2 text-sm">
+          <span className="truncate text-muted-foreground">{wsName}</span>
+          <span className="text-muted-foreground/50">/</span>
+          <span className="truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
+        </div>
+        <div className="ml-auto flex min-w-0 items-center gap-2">
           {searchOpen || query ? (
             <div className="relative w-56">
               <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <Input ref={searchRef} autoFocus value={query} onChange={e => { setQuery(e.target.value); if (view !== 'tasks') setView('tasks'); }} placeholder="Search all tasks" aria-label="Search all tasks"
-                className="h-9 rounded-full bg-background pl-9 pr-9 shadow-none"
+                className="h-9 rounded-lg bg-card pl-9 pr-9 text-sm shadow-none"
                 onBlur={() => { if (!query) setSearchOpen(false); }}
                 onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setQuery(''); setSearchOpen(false); e.currentTarget.blur(); } }} />
               {query && <button type="button" onClick={() => { setQuery(''); setSearchOpen(false); }} aria-label="Clear search" className="absolute right-3 top-1/2 -translate-y-1/2 rounded-sm opacity-60 hover:opacity-100"><I.x /></button>}
             </div>
           ) : (
-            <Button variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label="Search (/)" title="Search (/)" onClick={() => setSearchOpen(true)}><I.search /></Button>
+            <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search all tasks (/)"
+              className="hidden h-9 w-56 items-center gap-2 rounded-lg border bg-card px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex">
+              <I.search className="size-4" /><span className="flex-1 text-left">Search tasks</span><kbd className="font-mono text-[11px]">/</kbd>
+            </button>
           )}
           <ThemeToggle />
           <DropdownMenu
-            trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label="More tools"><I.more /></Button>}
+            trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-lg bg-card shadow-none" aria-label="More tools"><I.more /></Button>}
             items={[
               { label: 'Automations', icon: <I.zap />, shortcut: `${rules.filter(r => r.enabled).length} on`, onSelect: () => setRulesOpen(true) },
               { label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, onSelect: () => setPlatformsOpen(true) },
@@ -4522,31 +4730,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
               { label: 'Settings', icon: <I.sliders />, onSelect: () => setSettingsOpen(true) },
             ]} />
-          <DropdownMenu
-            trigger={p => (
-              <button {...p} type="button" aria-label="Your account" className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <Avatar name={me.name} picture={me.picture} className="h-9 w-9 bg-card ring-1 ring-border" />
-              </button>
-            )}
-            items={[
-              { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
-              'sep',
-              { label: 'Back up data…', icon: <I.download />, onSelect: backup },
-              { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
-              { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
-              'sep',
-              { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
-            ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
-          </div>
         </div>
-      </div>
+      </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="mx-auto w-full max-w-6xl px-4 pb-10 md:px-6">
+      <div className="w-full px-4 pb-10 md:px-6">
       {view === 'tasks' && (
         <div className="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
           <h1 className="text-lg font-semibold tracking-tight">Tasks</h1>
           <span className="text-sm text-muted-foreground">{query ? `Searching for “${query}”` : `${overview.open} open${viewMode === 'list' ? `, grouped by ${(labels[groupBy === 'project' ? 'platform' : groupBy] || '').toLowerCase()}` : ''}`}</span>
+          {!query && overview.overdue > 0 && <button type="button" aria-pressed={dueFilter === 'overdue'} onClick={() => setDueFilter(d => d === 'overdue' ? '' : 'overdue')} title="Show only overdue tasks"
+            className={cn('rounded-sm text-sm text-red-600 underline-offset-4 hover:underline dark:text-red-400', dueFilter === 'overdue' && 'font-medium underline')}>{overview.overdue} overdue</button>}
+          {!query && overview.week > 0 && <button type="button" aria-pressed={dueFilter === 'week'} onClick={() => setDueFilter(d => d === 'week' ? '' : 'week')} title="Show only tasks due in the next 7 days"
+            className={cn('rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline', dueFilter === 'week' && 'font-medium text-foreground underline')}>{overview.week} due this week</button>}
         </div>
       )}
 
@@ -4589,94 +4785,103 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ) : view === 'docs' ? (
         <DocumentsView onRefresh={() => scanFolders(true)} hasWatch={(settings.watchFolders || []).length > 0} docs={docs} tasks={all} focusId={docFocus} dragOver={dragOver && !sheet.open && !addDocs.open} onAdd={fs => setAddDocs({ open: true, files: fs })} onDownload={downloadFile}
           onRemove={(file, taskId) => unlinkDoc(file, taskId)} onDelete={(f, dismiss) => { if (dismiss) { deleteDocEverywhere(stripMeta(f)); toast('Dismissed', f.name, { undo: true }); } else setDocDelete(f); }} onOpenTask={(id, isArchived) => { if (isArchived) setView('archive'); else openTask(id); }}
-          onAttach={f => setAttachDoc(f)} onNewTask={newTaskFromDoc} onAddVersion={addVersion} onUploadVersion={uploadVersion} onMakeCurrent={makeCurrent} />
+          onAttach={f => setAttachDoc(f)} onSetStatus={setDocStatus} onSeen={markDocSeen} onMerge={d => setMergeFor(d)} onAddVersion={addVersion} onUploadVersion={uploadVersion} onMakeCurrent={makeCurrent} />
       ) : (<>
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
-      {/* Status chips and the view switch; below, filters and a one-line summary */}
-      <div className="mt-3 flex flex-wrap items-center gap-1.5">
-        {[{ id: 'inbox', label: 'Inbox', count: counts.inbox, inbox: true }, { id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }].map(c => (
-          <button key={c.id} type="button" onClick={() => { setFilter(c.id); if (query) setQuery(''); }} aria-pressed={filter === c.id && !query}
-            className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
-              filter === c.id && !query ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
-            {c.dot && <span className={cn('size-1.5 rounded-full', c.dot)} />}{c.inbox && <I.inbox className="size-3.5" />}{c.label}
-            {c.inbox && c.count > 0 ? <span className="tnum rounded-full bg-blue-500 px-1.5 text-[10px] font-medium leading-4 text-white">{c.count}</span> : <span className="tnum opacity-70">{c.count}</span>}
-          </button>
-        ))}
+      {/* One row: status tabs, then Filter, Sort and the view switch. Active filters show in a strip below. */}
+      <div className="mt-3 flex min-h-9 flex-wrap items-center gap-1.5">
+        <FilterTabs label="Task status" value={query ? null : filter} onChange={id => { setFilter(id); if (query) setQuery(''); }}
+          items={[{ id: 'inbox', label: 'Inbox', count: counts.inbox, badge: true, icon: <I.inbox className="size-3.5" /> }, { id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }]} />
         <div className="ml-auto flex items-center gap-1.5">
-          {viewMode === 'table' && (
-            <Popover align="end" className="w-56 p-1"
-              trigger={p => <button {...p} type="button" aria-label="Show or hide columns" title="Columns"
-                className="flex h-7 items-center gap-1.5 rounded-lg px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground"><I.sliders className="size-3.5" />Columns{cols.hidden.length ? <span className="tnum">({cols.hidden.length} hidden)</span> : null}</button>}>
-              <div className="px-2 py-1.5 text-xs text-muted-foreground">Show columns</div>
-              {TABLE_COLS.filter(c => c.key !== 'task').map(c => (
-                <label key={c.key} className="flex h-8 cursor-default items-center gap-2.5 rounded-sm px-2 text-sm hover:bg-accent">
-                  <Checkbox checked={!cols.hidden.includes(c.key)} onChange={v => hideCol(c.key, !v)} label={labels[c.key]} />{labels[c.key]}
-                </label>
-              ))}
-              <div className="mx-1 my-1 h-px bg-border" />
-              <button type="button" onClick={() => setCols({ widths: {}, hidden: [] })} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Show all and reset widths</button>
-            </Popover>
-          )}
-          <div role="group" aria-label="View" className="flex gap-0.5 rounded-lg bg-muted p-0.5">
-          {[['table', 'Table', <I.table />], ['list', 'List', <I.rows />], ['board', 'Board', <I.kanban />]].map(([id, label, icon]) => (
-            <button key={id} type="button" aria-pressed={viewMode === id} aria-label={`${label} view`} title={label} onClick={() => setViewMode(id)}
-              className={cn('flex h-6 w-8 items-center justify-center rounded-md transition-colors [&_svg]:size-3.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+          {(() => {
+            const nOn = (bucketFilter !== 'all') + (projectFilter !== 'all') + !!dueFilter;
+            const Opt = ({ on, onPick, children }) => (
+              <button type="button" role="menuitemradio" aria-checked={on} onClick={onPick}
+                className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', on && 'font-medium')}>
+                <span className="min-w-0 flex-1 truncate">{children}</span>{on && <I.check className="size-3.5 shrink-0" />}
+              </button>
+            );
+            const Head = ({ children }) => <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">{children}</div>;
+            return (<>
+              <Popover align="end" className="w-64 p-1"
+                trigger={p => <button {...p} type="button" title="Filter by bucket, platform or deadline"
+                  className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    nOn ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'bg-card text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                  <I.sliders className="size-3.5" />Filter{nOn ? <span className="tnum">· {nOn}</span> : null}</button>}>
+                <div role="menu" aria-label="Filters" className="max-h-[70vh] overflow-y-auto">
+                  <Head>{labels.bucket}</Head>
+                  <Opt on={bucketFilter === 'all'} onPick={() => setBucketFilter('all')}>Any {labels.bucket.toLowerCase()}</Opt>
+                  {bucketNames.map(b => <Opt key={b} on={bucketFilter === b} onPick={() => setBucketFilter(b)}>{b}</Opt>)}
+                  <Opt on={bucketFilter === 'none'} onPick={() => setBucketFilter('none')}><span className="text-muted-foreground">No {labels.bucket.toLowerCase()}</span></Opt>
+                  <div className="-mx-1 my-1 h-px bg-border" />
+                  <Head>{labels.platform}</Head>
+                  <Opt on={projectFilter === 'all'} onPick={() => setProjectFilter('all')}>Any {labels.platform.toLowerCase()}</Opt>
+                  {projects.map(x => <Opt key={x} on={projectFilter === x} onPick={() => setProjectFilter(x)}>{x}</Opt>)}
+                  <Opt on={projectFilter === 'none'} onPick={() => setProjectFilter('none')}><span className="text-muted-foreground">No {labels.platform.toLowerCase()}</span></Opt>
+                  <div className="-mx-1 my-1 h-px bg-border" />
+                  <Head>{labels.deadline}</Head>
+                  <Opt on={!dueFilter} onPick={() => setDueFilter('')}>Any time</Opt>
+                  <Opt on={dueFilter === 'overdue'} onPick={() => setDueFilter('overdue')}>Overdue</Opt>
+                  <Opt on={dueFilter === 'week'} onPick={() => setDueFilter('week')}>Due in the next 7 days</Opt>
+                  {nOn > 0 && <><div className="-mx-1 my-1 h-px bg-border" />
+                  <button type="button" onClick={() => { setBucketFilter('all'); setProjectFilter('all'); setDueFilter(''); }} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Clear all filters</button></>}
+                </div>
+              </Popover>
+              <Popover align="end" className="w-60 p-1"
+                trigger={p => <button {...p} type="button" aria-label={`Sort and display. Sorted by ${(({ deadline: labels.deadline, priority: labels.priority, created: 'Newest', status: labels.status, bucket: labels.bucket, assignee: labels.assignee, project: labels.platform })[sortBy] || '').toLowerCase()}`}
+                  title="Sort and display"
+                  className="inline-flex size-9 items-center justify-center rounded-lg border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><I.updown className="size-4" /></button>}>
+                <div role="menu" aria-label="Sort and display" className="max-h-[70vh] overflow-y-auto">
+                  <Head>Sort by</Head>
+                  {[['deadline', labels.deadline], ['priority', labels.priority], ['created', 'Newest'], ['status', labels.status], ['bucket', labels.bucket], ['assignee', labels.assignee], ['project', labels.platform]].map(([v, l]) => <Opt key={v} on={sortBy === v} onPick={() => setSortBy(v)}>{l}</Opt>)}
+                  {viewMode === 'list' && <><div className="-mx-1 my-1 h-px bg-border" /><Head>Group by</Head>
+                    {GROUP_OPTIONS.map(k => <Opt key={k} on={groupBy === k} onPick={() => setGroupBy(k)}>{labels[k === 'project' ? 'platform' : k]}</Opt>)}</>}
+                  {viewMode === 'table' && <><div className="-mx-1 my-1 h-px bg-border" /><Head>Columns</Head>
+                    {TABLE_COLS.filter(c => c.key !== 'task').map(c => (
+                      <label key={c.key} className="flex h-8 cursor-default items-center gap-2.5 rounded-sm px-2 text-sm hover:bg-accent">
+                        <Checkbox checked={!cols.hidden.includes(c.key)} onChange={v => hideCol(c.key, !v)} label={labels[c.key]} />{labels[c.key]}
+                      </label>
+                    ))}
+                    <button type="button" onClick={() => setCols({ widths: {}, hidden: [] })} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Show all and reset widths</button></>}
+                </div>
+              </Popover>
+            </>);
+          })()}
+          <div role="group" aria-label="View" className="flex h-9 items-center gap-0.5 rounded-lg bg-muted p-1">
+          {[['table', 'Table', <I.table />], ['list', 'Grouped', <I.rows />], ['board', 'Board', <I.kanban />]].map(([id, label, icon]) => (
+            <button key={id} type="button" aria-pressed={viewMode === id} aria-label={`${id === 'list' ? 'List' : label} view`} title={label} onClick={() => setViewMode(id)}
+              className={cn('flex h-7 w-8 items-center justify-center rounded-md transition-colors [&_svg]:size-3.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                 viewMode === id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{icon}</button>
           ))}
-        </div>
+          </div>
         </div>
       </div>
-      <div className="mt-2 flex flex-wrap items-center gap-1.5">
-        <Select variant="chip" label={`Filter by ${labels.bucket.toLowerCase()}`} value={bucketFilter} onChange={setBucketFilter}
-          className={bucketFilter !== 'all' ? 'border-foreground/25 font-medium text-foreground' : ''}
-          icon={<I.layers className="size-3.5 shrink-0" />}
-          options={[
-            { value: 'all', label: `All ${plural(labels.bucket).toLowerCase()}` },
-            ...bucketNames.map(b => ({ value: b, label: b, icon: <I.layers className="size-3.5 text-muted-foreground" /> })),
-            { value: 'none', label: `No ${labels.bucket.toLowerCase()}`, divider: true, node: <span className="text-muted-foreground">No {labels.bucket.toLowerCase()}</span> },
-          ]}
-          footer={close => (
-            <button type="button" onClick={() => { close(); setView('projects'); }}
-              className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
-              <I.sliders className="size-3.5" />Manage {plural(labels.bucket).toLowerCase()}
-            </button>
-          )} />
-        <Select variant="chip" label={`Filter by ${labels.platform.toLowerCase()}`} value={projectFilter} onChange={setProjectFilter}
-          className={projectFilter !== 'all' ? 'border-foreground/25 font-medium text-foreground' : ''}
-          icon={<I.folder className="size-3.5 shrink-0" />}
-          options={[
-            { value: 'all', label: `All ${plural(labels.platform).toLowerCase()}` },
-            ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" />, divider: false })),
-            { value: 'none', label: `No ${labels.platform.toLowerCase()}`, divider: true, node: <span className="text-muted-foreground">No {labels.platform.toLowerCase()}</span> },
-          ]}
-          footer={close => (
-            <button type="button" onClick={() => { close(); setPlatformsOpen(true); }}
-              className="flex h-8 w-full items-center gap-2 rounded-sm px-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground">
-              <I.sliders className="size-3.5" />Manage {plural(labels.platform).toLowerCase()}
-            </button>
-          )} />
-        <Select variant="chip" label="Sort by" value={sortBy} onChange={setSortBy} searchable={false}
-          icon={<I.updown className="size-3.5 shrink-0" />}
-          renderValue={o => <span className="truncate">Sort: {o.label}</span>}
-          options={[['deadline', labels.deadline], ['priority', labels.priority], ['created', 'Newest'], ['status', labels.status], ['bucket', labels.bucket], ['assignee', labels.assignee], ['project', labels.platform]].map(([value, label]) => ({ value, label }))} />
-        {viewMode === 'list' && (
-          <Select variant="chip" label="Group by" value={groupBy} onChange={setGroupBy} searchable={false}
-            icon={<I.rows className="size-3.5 shrink-0" />}
-            renderValue={o => <span className="truncate">Group: {o.label}</span>}
-            options={GROUP_OPTIONS.map(k => ({ value: k, label: labels[k === 'project' ? 'platform' : k] }))} />
-        )}
-        <span className="ml-auto text-xs text-muted-foreground">
-          {query ? (
-            <span className="inline-flex flex-wrap items-center gap-3">
-              <span>{shown.length} found</span>
-              <label className="inline-flex items-center gap-1.5"><Checkbox checked={incArchived} onChange={setIncArchived} label="Include archived" />Include archived</label>
-              {workspaces.length > 1 && <label className="inline-flex items-center gap-1.5"><Checkbox checked={allWs} onChange={setAllWs} label="All workspaces" />All workspaces</label>}
-            </span>
-          ) : <>{overview.week} due this week</>}
-          {!query && overview.overdue > 0 && <>, <span className="font-medium text-red-600 dark:text-red-400">{overview.overdue} overdue</span></>}
-        </span>
-      </div>
+      {(query || bucketFilter !== 'all' || projectFilter !== 'all' || dueFilter) && (() => {
+        const Chip = ({ children, onRemove, label }) => (
+          <span className="inline-flex h-6 items-center gap-1 rounded-md border bg-card pl-2 pr-0.5 text-xs">
+            {children}<button type="button" onClick={onRemove} aria-label={`Remove ${label} filter`} className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3" /></button>
+          </span>
+        );
+        const nm = (v, noun) => v === 'none' ? `No ${noun.toLowerCase()}` : v;
+        return (
+          <div className="mt-2 flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border border-dashed px-3 py-1.5 text-xs text-muted-foreground">
+            {query ? (
+              <span className="inline-flex flex-wrap items-center gap-3">
+                <span className="font-medium text-foreground">{shown.length} found</span>
+                <label className="inline-flex items-center gap-1.5"><Checkbox checked={incArchived} onChange={setIncArchived} label="Include archived" />Include archived</label>
+                {workspaces.length > 1 && <label className="inline-flex items-center gap-1.5"><Checkbox checked={allWs} onChange={setAllWs} label="All workspaces" />All workspaces</label>}
+              </span>
+            ) : <>
+              <span className="mr-0.5">Filtered:</span>
+              {bucketFilter !== 'all' && <Chip label={labels.bucket.toLowerCase()} onRemove={() => setBucketFilter('all')}>{labels.bucket}: <span className="font-medium text-foreground">{nm(bucketFilter, labels.bucket)}</span></Chip>}
+              {projectFilter !== 'all' && <Chip label={labels.platform.toLowerCase()} onRemove={() => setProjectFilter('all')}>{labels.platform}: <span className="font-medium text-foreground">{nm(projectFilter, labels.platform)}</span></Chip>}
+              {dueFilter && <Chip label="deadline" onRemove={() => setDueFilter('')}><span className="font-medium text-foreground">{dueFilter === 'overdue' ? 'Overdue' : 'Due in the next 7 days'}</span></Chip>}
+              <button type="button" onClick={() => { setBucketFilter('all'); setProjectFilter('all'); setDueFilter(''); }} className="ml-1 rounded-sm px-1 hover:text-foreground hover:underline underline-offset-4">Clear</button>
+            </>}
+          </div>
+        );
+      })()}
 
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
@@ -4869,6 +5074,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
       </div>
       </div>
+      </div>
+      </div>
       </>)}
 
       <TaskSheet onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
@@ -4939,6 +5146,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           </form>
         </Dialog>
       )}
+      <MergeDocsDialog doc={mergeFor} docs={docs} onClose={() => setMergeFor(null)} onMerge={mergeDocs} />
       <AddDocsDialog library={docs} open={addDocs.open} files={addDocs.files} setFiles={fn => setAddDocs(a => ({ ...a, files: typeof fn === 'function' ? fn(a.files) : fn }))} tasks={all} projects={projects} busy={busy}
         onClose={() => setAddDocs({ open: false, files: [] })} onSubmit={submitDocs} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />

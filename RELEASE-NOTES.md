@@ -1,4 +1,12 @@
-A new Home built around one box, and a quicker Create task.
-- Home is now a command center. Type in the box (press / or Q) to find tasks, buckets and documents. Enter opens the highlighted one, Shift+Enter starts its timer, and Tab captures what you typed to the Inbox. Below the box are three tiles: what's overdue, your Inbox and time tracked today.
-- Create task (or N) fills in the status, bucket and platform from where you are, or the last platform you used. Everything still saves as you type.
-- In the task panel, Alt+S, B, F, L, P or A jumps to Status, Bucket, Platform, Deadline, Priority or Assignee.
+A new look across the app: a side rail, one bar per page, full-width responsive layouts, and better Documents.
+- Navigation moved to a slim rail on the left with Home, Inbox, Tasks, Buckets, Docs and Time, each with a count badge. The running timer sits at the bottom of the rail: click to pause, right-click to open the task.
+- Tasks, Buckets, Documents and Timesheet share the same header: the page title with a short summary, then one bar with filter tabs on the left and the page's search and controls on the right.
+- Tasks: Filter (bucket, platform, deadline) and Sort and display sit beside the status tabs. The overdue and due-this-week links next to the title filter the list, and active filters show in a strip you can clear.
+- The Grouped view shows each task's full title on the first line and its status, platform, bucket and priority on the second.
+- The app now uses the full width of the window. Grouped cards, Board columns, the Buckets panel and the Documents list adapt to the window size.
+- Documents: every document has a status (Draft, In review, Approved or Outdated). Change it from the picker next to the name or press 1 to 4, and filter by it with the Status chip.
+- Documents: merge several files into one document with versions (⋯ menu or Shift+U). Similar names are suggested; drag them into order, oldest at the top. Task links move over and you can undo it.
+- Documents: double-clicking a document shows it in the app instead of opening it in Windows, and clicking a new document clears its "new" mark.
+- Documents no longer create tasks. Add documents on their own, then link them to tasks.
+- Home is a command center: type in the box (press / or Q) to find tasks, buckets and documents. Enter opens, Shift+Enter starts the timer, Tab captures to the Inbox.
+- Create task (or N) fills in the status, bucket and platform from where you are, and everything saves as you type. In the task panel, Alt+S, B, F, L, P or A jumps to a field.
