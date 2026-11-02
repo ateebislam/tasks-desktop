@@ -1,6 +1,6 @@
-Watch folders that pick up every file, a refresh button, and your own quick capture shortcut.
-- New files in a watch folder now reach the Inbox however they got there, even when they keep an older date.
-- When you add a folder, you can bring in the files already in it. Folders you added earlier offer the files they missed.
-- Watch folders can include subfolders, and Settings shows when each was last checked and what was skipped.
-- A refresh button on the Documents page checks your watch folders right away.
-- Record any quick capture shortcut you like in Settings.
+Buckets get a description and a status, and can hand off their work automatically.
+- Give each bucket an optional description. Hover a bucket in the bucket picker to see it, with the bucket's status and open tasks.
+- Buckets have a status: Planned, In design, Ready for dev or Done. Buckets you already have start as In design.
+- The Buckets page is now a compact list with status tabs and search. Click a bucket to see its next deadline, people, open tasks and done tasks.
+- When you finish the last open task in a bucket, the app offers to move the bucket to Ready for dev.
+- New bucket automations: when a bucket moves to a status, create a task for it, for example "Help article: {bucket}" in Kaufes Help. It runs once per bucket.

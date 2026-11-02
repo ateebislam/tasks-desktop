@@ -676,10 +676,26 @@ const targetText = r => {
   return r.target;
 };
 const describeRule = r => {
+  if (r.scope === 'bucket') return `When a bucket moves to ${(BS[r.status] || BS.ready).label}, create “${r.title || '{bucket}'}”${r.target ? ` in ${r.target}` : ''}`;
   const a = ACT[r.action] || {};
   const tail = a.target === 'none' || (a.optional && !r.target) ? '' : ` ${targetText(r) || '…'}`;
   return `${r.project ? `In ${r.project}, when` : 'When'} a task ${(TRIG[r.trigger] || {}).label}, ${a.label}${tail}`;
 };
+
+/* Buckets have a status that says where their work stands. Buckets from before 0.12 start as In design. */
+const BUCKET_STATUSES = [
+  { id: 'planned', label: 'Planned', dot: 'bg-slate-400' },
+  { id: 'design', label: 'In design', dot: 'bg-violet-500' },
+  { id: 'ready', label: 'Ready for dev', dot: 'bg-sky-500' },
+  { id: 'done', label: 'Done', dot: 'bg-emerald-500' },
+];
+const BS = Object.fromEntries(BUCKET_STATUSES.map(s => [s.id, s]));
+const bucketStatus = b => (b && BS[b.status] ? b.status : 'design');
+const BucketStatusPill = ({ status, className }) => (
+  <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}><span className={cn('size-2 shrink-0 rounded-full', BS[status].dot)} /><span className="truncate">{BS[status].label}</span></span>
+);
+// A bucket automation creates one task when a bucket moves to a status. {bucket} in the title becomes the bucket's name.
+const fillBucket = (text, b) => (text || '{bucket}').replace(/\{bucket\}/gi, b.name);
 
 /* Local storage: everything is written as JSON files in the app's data folder on this computer. */
 const writers = {};
@@ -1769,7 +1785,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
     placeholder = `Search or create a ${L.toLowerCase()}…`;
     items = [
       { key: '', text: `No ${L.toLowerCase()}`, node: <span className="text-muted-foreground">No {L.toLowerCase()}</span>, on: !task.bucket, pick: () => set({ bucket: '' }) },
-      ...ctx.buckets.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><I.layers className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.bucket) === norm(n), pick: () => set({ bucket: n }) })),
+      ...ctx.buckets.map(n => ({ key: n, text: n, info: (ctx.bucketInfo || {})[norm(n)], node: <span className="flex min-w-0 items-center gap-1.5"><I.layers className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.bucket) === norm(n), pick: () => set({ bucket: n }) })),
     ];
     creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create {L.toLowerCase()}</span><span className="truncate font-medium">{name}</span></span>,
       pick: () => { ctx.ensureBucket(name); set({ bucket: name }); } }];
@@ -1803,8 +1819,24 @@ function CellEditor({ edit, task, ctx, onClose }) {
   };
   // Start with the current value highlighted.
   useEffect(() => { const i = list.findIndex(x => x.on); if (i > 0) setHi(i); }, []);
+  // In the bucket picker, the highlighted bucket shows its description and status beside the menu.
+  const tip = edit.field === 'bucket' && list[hi] && list[hi].info;
+  const [tipPos, setTipPos] = useState(null);
+  useLayoutEffect(() => {
+    if (!tip || !p.current) { setTipPos(null); return; }
+    const r = p.current.getBoundingClientRect(), o = p.current.querySelector(`[data-ci="${hi}"]`), or = o ? o.getBoundingClientRect() : r, w = 272;
+    setTipPos({ top: Math.max(8, Math.min(or.top - 8, window.innerHeight - 180)), left: r.right + 8 + w <= window.innerWidth - 8 ? r.right + 8 : Math.max(8, r.left - 8 - w) });
+  }, [hi, tip && tip.name, q]);
   let lastSection = null;
   return (
+    <>
+    {tip && tipPos && createPortal(
+      <div role="tooltip" style={{ position: 'fixed', top: tipPos.top, left: tipPos.left, width: 272 }}
+        className="pointer-events-none z-[81] rounded-md border bg-popover p-4 text-popover-foreground shadow-md anim-pop">
+        <div className="flex items-start gap-2"><I.layers className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 break-words text-sm font-semibold">{tip.name}</span></div>
+        <p className={cn('mt-1.5 line-clamp-5 whitespace-pre-wrap text-sm', !tip.description && 'text-muted-foreground')}>{tip.description || 'No description yet.'}</p>
+        <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground"><BucketStatusPill status={tip.status} /><span className="tnum">{tip.open} open {tip.open === 1 ? 'task' : 'tasks'}</span></div>
+      </div>, document.body)}
     <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-80')}>
       {edit.field === 'deadline' ? (
         <div>
@@ -1836,7 +1868,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
                 <React.Fragment key={it.key + i}>
                   {head && i > 0 && <div className="mx-1 my-1 h-px bg-border" />}
                   {head && edit.field === 'status' && <div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{head}</div>}
-                  <div role="option" aria-selected={!!it.on} onMouseEnter={() => setHi(i)} onMouseDown={e => e.preventDefault()} onClick={it.pick}
+                  <div role="option" data-ci={i} aria-selected={!!it.on} onMouseEnter={() => setHi(i)} onMouseDown={e => e.preventDefault()} onClick={it.pick}
                     className={cn('group/opt flex h-8 cursor-default items-center gap-2 rounded-sm px-2 text-sm', i === hi && 'bg-accent')}>
                     <span className="flex min-w-0 flex-1 items-center">{it.node}</span>
                     {check(it.on)}
@@ -1863,6 +1895,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
         </div>
       )}
     </Floating>
+    </>
   );
 }
 
@@ -2331,18 +2364,21 @@ function ShortcutsDialog({ open, onClose }) {
   );
 }
 
-function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave }) {
+function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave, bucketNoun = 'Bucket' }) {
   const [draft, setDraft] = useState(rules);
   useEffect(() => { if (open) setDraft(rules); }, [open]);
   const upd = (id, patch) => setDraft(d => d.map(r => r.id === id ? { ...r, ...patch } : r));
   const problem = r => {
+    if (r.scope === 'bucket') return (r.title || '').trim() ? null : 'Type a title for the task.';
     const a = ACT[r.action] || {};
     if (a.target !== 'none' && !a.optional && (!r.target || !String(r.target).trim())) return a.target === 'text' ? 'Type the checklist items.' : 'Choose what to set.';
     if ((r.action === 'copy' || r.action === 'move') && r.project && norm(r.project) === norm(r.target)) return 'Pick a different project than the one the task is in.';
     return null;
   };
   const valid = draft.every(r => !problem(r));
+  const helpPlatform = projects.find(p => /help/i.test(p)) || '';
   const ideas = [
+    { title: `Hand off when ${bucketNoun.toLowerCase()} is ready`, text: `Create a task for the ${bucketNoun.toLowerCase()} when it moves to Ready for dev.`, rule: { scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' } },
     { title: 'Finish tasks automatically', text: 'Mark a task done when its checklist is finished.', rule: { trigger: 'checklist', action: 'status', target: 'done' } },
     { title: 'Flag overdue work', text: 'Make a task High priority when it becomes overdue.', rule: { trigger: 'overdue', action: 'priority', target: 'high' } },
     { title: 'Assign new tasks to me', text: 'Every new task starts assigned to you.', rule: { trigger: 'created', action: 'assign', target: me } },
@@ -2354,7 +2390,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
     { title: 'Give new tasks a deadline', text: 'New tasks without a date are due in a week.', rule: { trigger: 'created', action: 'deadline', target: '7' } },
     { title: 'Start with a checklist', text: 'Add Brief, Design and Review to every new task.', rule: { trigger: 'created', action: 'checklist', target: 'Brief, Design, Review' } },
     { title: 'Reopened work goes to the top', text: 'Make a task High priority when it’s reopened.', rule: { trigger: 'reopened', action: 'priority', target: 'high' } },
-  ].filter(i => !draft.some(r => !r.project && r.trigger === i.rule.trigger && r.action === i.rule.action && r.target === i.rule.target));
+  ].filter(i => !draft.some(r => !r.project && r.trigger === i.rule.trigger && r.action === i.rule.action && (i.rule.scope === 'bucket' ? r.status === i.rule.status : r.target === i.rule.target)));
   const add = (rule = {}) => setDraft(d => [...d, { id: 'r-' + newId(), enabled: true, project: '', trigger: 'done', action: 'copy', target: '', ...rule }]);
   const targetField = r => {
     const kind = (ACT[r.action] || ACT.copy).target;
@@ -2382,6 +2418,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
         {draft.length === 0 && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No automations yet. Add one, or start from an idea below.</p>}
         {draft.map(r => {
           const err = problem(r);
+          const bucketRule = r.scope === 'bucket';
           return (
             <Card key={r.id} className={cn('p-4 shadow-none', !r.enabled && 'opacity-60')}>
               <div className="mb-3 flex items-center gap-3">
@@ -2389,6 +2426,28 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
                 <p className="min-w-0 flex-1 truncate text-sm font-medium" title={describeRule(r)}>{describeRule(r)}</p>
                 <Button variant="ghost" size="icon-sm" aria-label="Delete automation" onClick={() => setDraft(d => d.filter(x => x.id !== r.id))}><I.trash /></Button>
               </div>
+              {bucketRule ? (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+                  <Field className="lg:col-span-2" label={`When a ${bucketNoun.toLowerCase()} moves to`} htmlFor={`bs-${r.id}`}>
+                    <Select id={`bs-${r.id}`} value={r.status} onChange={v => upd(r.id, { status: v })} searchable={false}
+                      options={BUCKET_STATUSES.map(x => ({ value: x.id, label: x.label, node: <BucketStatusPill status={x.id} /> }))} />
+                  </Field>
+                  <Field className="sm:col-span-1 lg:col-span-4" label="Create a task called" htmlFor={`bt-${r.id}`}>
+                    <Input id={`bt-${r.id}`} value={r.title || ''} onChange={e => upd(r.id, { title: e.target.value })} placeholder="{bucket}" />
+                  </Field>
+                  <Field className="lg:col-span-2" label="In" htmlFor={`bp-${r.id}`}>
+                    <Select id={`bp-${r.id}`} value={r.target || ''} onChange={v => upd(r.id, { target: v })} options={[
+                      { value: '', label: 'No platform' },
+                      ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+                    ]} />
+                  </Field>
+                  <Field className="lg:col-span-2" label="Assign to" htmlFor={`ba-${r.id}`}><Combobox id={`ba-${r.id}`} value={r.assignee || ''} onChange={v => upd(r.id, { assignee: v })} options={people} placeholder="Nobody" /></Field>
+                  <Field className="lg:col-span-2" label="Due" htmlFor={`bd-${r.id}`}>
+                    <Select id={`bd-${r.id}`} value={r.days || 'none'} onChange={v => upd(r.id, { days: v })} searchable={false}
+                      options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l[0].toUpperCase() + l.slice(1) }))} />
+                  </Field>
+                </div>
+              ) : (
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <Field label="For tasks in" htmlFor={`p-${r.id}`}>
                   <Select id={`p-${r.id}`} value={r.project} onChange={v => upd(r.id, { project: v })} options={[
@@ -2406,11 +2465,16 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave 
                 </Field>
                 <div className="grid gap-2"><Label>&nbsp;</Label>{targetField(r)}</div>
               </div>
+              )}
+              {bucketRule && <p className="mt-2 text-xs text-muted-foreground">{'{bucket}'} becomes the {bucketNoun.toLowerCase()}’s name. The task gets the {bucketNoun.toLowerCase()}’s description, starts in To do, and is created once per {bucketNoun.toLowerCase()}.</p>}
               {err && <p className="mt-2 text-[0.8rem] text-destructive">{err}</p>}
             </Card>
           );
         })}
-        <Button variant="outline" className="justify-start border-dashed" onClick={() => add()}><I.plus />Add automation</Button>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <Button variant="outline" className="justify-start border-dashed" onClick={() => add()}><I.plus />Add task automation</Button>
+          <Button variant="outline" className="justify-start border-dashed" onClick={() => add({ scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' })}><I.layers />Add {bucketNoun.toLowerCase()} automation</Button>
+        </div>
         {ideas.length > 0 && (
           <div className="mt-2">
             <div className="mb-2 text-sm font-medium text-muted-foreground">Ideas</div>
@@ -2501,57 +2565,200 @@ function PlatformsDialog({ open, onClose, list, tasks, noun, onNew, onEdit, onDe
   );
 }
 
-/* Buckets page: one card per bucket with its progress. */
-function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen }) {
+/* Create or edit a bucket: name, an optional description, and its status. */
+function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', handoffs = () => 0 }) {
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [status, setStatus] = useState('planned');
+  useEffect(() => {
+    if (!open) return;
+    setName(bucket ? bucket.name : ''); setDescription(bucket ? bucket.description || '' : ''); setStatus(bucket ? bucketStatus(bucket) : 'planned');
+  }, [open]);
+  const clash = names.some(n => norm(n) === norm(name) && (!bucket || norm(n) !== norm(bucket.name)));
+  const ok = name.trim() && !clash;
+  const lower = noun.toLowerCase();
+  const n = bucket && bucketStatus(bucket) === status ? 0 : handoffs(status);
+  const save = () => { if (ok) onSave({ name: name.trim(), description: description.trim(), status }); };
+  return (
+    <Dialog open={open} onClose={onClose} title={bucket ? `Edit ${lower}` : `New ${lower}`} className="max-w-md"
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={!ok} onClick={save}>{bucket ? 'Save' : `Create ${lower}`}</Button>
+      </>}>
+      <form className="grid gap-4" onSubmit={e => { e.preventDefault(); save(); }}>
+        <Field label="Name" htmlFor="bk-name" hint={clash ? `A ${lower} with this name already exists.` : bucket && norm(bucket.name) !== norm(name) ? 'Renaming updates every task in it.' : undefined}>
+          <Input id="bk-name" value={name} onChange={e => setName(e.target.value)} autoFocus />
+        </Field>
+        <div className="grid gap-2">
+          <Label htmlFor="bk-desc">Description <span className="font-normal text-muted-foreground">(optional)</span></Label>
+          <Textarea id="bk-desc" value={description} onChange={e => setDescription(e.target.value)} rows={3} placeholder={`What this ${lower} covers`}
+            onKeyDown={e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); save(); } }} />
+        </div>
+        <Field label="Status" htmlFor="bk-status" hint={n ? `Saving creates ${n} ${n === 1 ? 'task' : 'tasks'} from your ${lower} automations.` : undefined}>
+          <Select id="bk-status" value={status} onChange={setStatus} searchable={false}
+            options={BUCKET_STATUSES.map(x => ({ value: x.id, label: x.label, node: <BucketStatusPill status={x.id} /> }))} />
+        </Field>
+      </form>
+    </Dialog>
+  );
+}
+
+/* Buckets page: a compact list (name and description, status, progress). Click a bucket for its details. */
+function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onOpenTask, onAddTask }) {
+  const [tab, setTab] = useState('active');
+  const [q, setQ] = useState('');
+  const [sel, setSel] = useState(null);
+  const [showDone, setShowDone] = useState(false);
+  const lower = noun.toLowerCase();
   const stats = name => {
     const ts = tasks.filter(t => (name === null ? !t.bucket : norm(t.bucket) === norm(name)));
-    const done = ts.filter(t => t.status === 'done').length;
     const open = ts.filter(t => t.status !== 'done');
     const next = open.filter(t => t.deadline).sort((a, b) => a.deadline.localeCompare(b.deadline))[0];
     const people = [...new Set(ts.map(t => t.assignee).filter(Boolean))];
-    return { total: ts.length, done, open: open.length, next, people, time: ts.reduce((x, t) => x + elapsed(t), 0) };
+    return { ts, total: ts.length, done: ts.length - open.length, open, next, people };
   };
-  const card = (b, st, editable) => {
+  const count = id => list.filter(b => (id === 'active' ? bucketStatus(b) !== 'done' : bucketStatus(b) === id)).length;
+  const nq = norm(q);
+  const rows = list
+    .filter(b => (tab === 'active' ? bucketStatus(b) !== 'done' : bucketStatus(b) === tab))
+    .filter(b => !nq || norm(b.name).includes(nq) || norm(b.description).includes(nq))
+    .map(b => ({ b, st: stats(b.name) }));
+  const none = stats(null);
+  const showNone = tab === 'active' && none.total > 0 && (!nq || norm(`No ${lower}`).includes(nq));
+  const cur = sel && (sel === 'none' ? (showNone ? { b: { name: 'none', label: `No ${lower}` }, st: none, none: true } : null) : rows.find(r => r.b.name === sel));
+  useEffect(() => {
+    if (!cur) return;
+    const k = e => { if (e.key === 'Escape' && !e.defaultPrevented) setSel(null); };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, [!!cur]);
+  const statusMenu = b => (
+    <DropdownMenu align="start" trigger={pp => (
+      <button {...pp} type="button" aria-label={`Status of ${b.name}: ${BS[bucketStatus(b)].label}. Change`}
+        className="inline-flex h-7 max-w-full items-center gap-1 rounded-md px-1.5 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <BucketStatusPill status={bucketStatus(b)} /><I.down className="size-3.5 shrink-0 opacity-50" />
+      </button>
+    )} items={BUCKET_STATUSES.map(x => ({ label: x.label, icon: <span className={cn('ml-0.5 mr-0.5 size-2 rounded-full', x.dot)} />, shortcut: x.id === bucketStatus(b) ? '✓' : undefined, onSelect: () => onStatus(b.name, x.id) }))} />
+  );
+  const progress = (st, wide) => {
     const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
     return (
-      <Card key={b.name} className="flex flex-col gap-4 p-5">
-        <div className="flex items-start gap-3">
-          <span className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-muted text-sm font-semibold">{(b.label || b.name).trim().charAt(0).toUpperCase() || '?'}</span>
-          <div className="min-w-0 flex-1">
-            <button type="button" onClick={() => onOpen(b.name)} className="block max-w-full truncate text-left font-semibold hover:underline underline-offset-4">{b.label || b.name}</button>
-            <div className="text-xs text-muted-foreground">{st.total} {st.total === 1 ? 'task' : 'tasks'}{st.time ? `, ${fmtShort(st.time)} tracked` : ''}</div>
+      <div className={cn('flex items-center gap-3', wide && 'w-full')}>
+        <div className={cn('h-1.5 rounded-full bg-muted', wide ? 'flex-1' : 'w-20 shrink-0')}><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} /></div>
+        <span className="tnum whitespace-nowrap text-xs text-muted-foreground">{st.total ? `${st.open.length} of ${st.total} open` : 'No tasks'}</span>
+      </div>
+    );
+  };
+  const row = ({ b, st }, isNone) => {
+    const on = cur && cur.b.name === b.name;
+    return (
+      <div key={b.name} role="row" tabIndex={0} aria-selected={on} onClick={() => setSel(on ? null : b.name)}
+        onKeyDown={e => { if (e.key === 'Enter' && e.target === e.currentTarget) setSel(on ? null : b.name); }}
+        className={cn('grid cursor-default grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-1 border-b px-4 py-3 last:border-b-0 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none md:grid-cols-[minmax(0,1fr)_9.5rem_13rem_2rem]', on && 'bg-muted/60')}>
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold">{isNone ? '–' : (b.name.trim().charAt(0).toUpperCase() || '?')}</span>
+          <div className="min-w-0">
+            <div className={cn('truncate text-sm font-medium', isNone && 'text-muted-foreground')}>{b.label || b.name}</div>
+            {b.description ? <div className="truncate text-xs text-muted-foreground" title={b.description}>{b.description}</div>
+              : !isNone && <div className="text-xs text-muted-foreground/60">No description</div>}
           </div>
-          {editable && (
+        </div>
+        <div className="hidden md:block" onClick={e => e.stopPropagation()}>{isNone ? null : statusMenu(b)}</div>
+        <div className="col-span-2 md:col-span-1">{progress(st)}</div>
+        <div className="row-start-1 col-start-2 md:col-start-4" onClick={e => e.stopPropagation()}>
+          {!isNone && (
             <DropdownMenu trigger={pp => <Button {...pp} variant="ghost" size="icon-sm" aria-label={`Options for ${b.name}`}><I.more /></Button>}
-              items={[{ label: 'Rename', icon: <I.pencil />, onSelect: () => onEdit(b) }, 'sep', { label: `Delete ${noun.toLowerCase()}`, icon: <I.trash />, destructive: true, onSelect: () => onDelete(b) }]} />
+              items={[{ label: `Edit ${lower}`, icon: <I.pencil />, onSelect: () => onEdit(b) }, { label: 'Show its tasks', icon: <I.listCheck />, onSelect: () => onOpen(b.name) }, 'sep', { label: `Delete ${lower}`, icon: <I.trash />, destructive: true, onSelect: () => onDelete(b) }]} />
           )}
         </div>
-        <div>
-          <div className="flex items-baseline gap-1.5"><span className="tnum text-2xl font-semibold leading-none">{pct}%</span><span className="text-xs text-muted-foreground">complete</span></div>
-          <div className="mt-2 h-1.5 rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} /></div>
+      </div>
+    );
+  };
+  const panel = () => {
+    const { b, st } = cur;
+    const doneList = st.ts.filter(t => t.status === 'done');
+    const created = b.createdAt ? new Date(b.createdAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : null;
+    const prop = (label, children) => (
+      <div className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-center gap-2 py-1 text-sm"><span className="text-muted-foreground">{label}</span><div className="min-w-0">{children}</div></div>
+    );
+    const taskRow = t => (
+      <button key={t.id} type="button" onClick={() => onOpenTask(t.id)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-muted">
+        <span className="min-w-0 flex-1 truncate">{t.title || 'Untitled'}</span>
+        {t.deadline && <span className={cn('shrink-0 text-xs', dueCls[due(t).tone])}>{due(t).text}</span>}
+      </button>
+    );
+    return (
+      <Card className="w-full shrink-0 self-start p-4 lg:sticky lg:top-4 lg:w-80" aria-label={`${b.label || b.name} details`}>
+        <div className="flex items-start gap-2">
+          <h3 className="min-w-0 flex-1 break-words text-base font-semibold">{b.label || b.name}</h3>
+          <Button variant="ghost" size="icon-sm" aria-label="Close details (Esc)" title="Close  Esc" onClick={() => setSel(null)}><I.x /></Button>
         </div>
-        <div className="mt-auto flex items-center gap-2 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate">{st.open} open{st.next ? `, next due ${due(st.next).text}` : ''}</span>
-          <span className="flex -space-x-1.5">{st.people.slice(0, 3).map(n => <Avatar key={n} name={n} className="h-6 w-6 ring-2 ring-card [&_span]:text-[9px]" />)}</span>
+        {b.description && <p className="mt-1 whitespace-pre-wrap text-sm text-muted-foreground">{b.description}</p>}
+        <div className="mt-3 grid">
+          {!cur.none && prop('Status', statusMenu(b))}
+          {prop('Next due', st.next ? <button type="button" onClick={() => onOpenTask(st.next.id)} className="flex min-w-0 max-w-full items-center gap-1.5 text-left hover:underline underline-offset-4"><span className={cn('shrink-0', dueCls[due(st.next).tone])}>{due(st.next).text}</span><span className="truncate text-muted-foreground">{st.next.title}</span></button> : <span className="text-muted-foreground">Nothing scheduled</span>)}
+          {prop('People', st.people.length ? <div className="flex flex-wrap gap-x-3 gap-y-1">{st.people.map(n => <span key={n} className="flex min-w-0 items-center gap-1.5"><Avatar name={n} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{n}</span></span>)}</div> : <span className="text-muted-foreground">Nobody yet</span>)}
+          {prop('Progress', progress(st, true))}
+          {created && prop('Created', created)}
         </div>
+        <div className="mt-4">
+          <div className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground"><span>Open tasks · {st.open.length}</span>{!cur.none && <button type="button" className="hover:text-foreground" onClick={() => onOpen(b.name)}>Show in Tasks</button>}</div>
+          {st.open.length ? <div className="grid max-h-72 overflow-y-auto">{st.open.slice().sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999')).map(taskRow)}</div>
+            : <p className="px-2 py-1.5 text-sm text-muted-foreground">No open tasks.</p>}
+          {doneList.length > 0 && (
+            <>
+              <button type="button" onClick={() => setShowDone(v => !v)} aria-expanded={showDone} className="mt-2 flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground">
+                <I.right className={cn('size-3.5 transition-transform', showDone && 'rotate-90')} />Done · {doneList.length}
+              </button>
+              {showDone && <div className="mt-1 grid opacity-70">{doneList.map(taskRow)}</div>}
+            </>
+          )}
+        </div>
+        {!cur.none && (
+          <div className="mt-4 flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => onEdit(b)}><I.pencil className="size-3.5" />Edit {lower}</Button>
+            <Button variant="outline" size="sm" onClick={() => onAddTask(b.name)}><I.plus className="size-3.5" />Add task</Button>
+          </div>
+        )}
       </Card>
     );
   };
-  const none = stats(null);
+  const tabs = [['active', 'Active'], ...BUCKET_STATUSES.map(x => [x.id, x.label])];
   return (
     <div className="mt-6">
-      <div className="mb-4 flex items-center gap-3">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <h2 className="text-base font-semibold">{plural(noun)}</h2>
-        <span className="text-sm text-muted-foreground">{list.length} active</span>
+        <span className="text-sm text-muted-foreground">{count('active')} active{count('done') ? `, ${count('done')} done` : ''}</span>
       </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {list.map(b => card(b, stats(b.name), true))}
-        {none.total > 0 && card({ name: 'none', label: `No ${noun.toLowerCase()}` }, none, false)}
-        <button type="button" onClick={onNew}
-          className="flex min-h-[11rem] flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed text-muted-foreground transition-colors hover:border-foreground/20 hover:bg-card hover:text-foreground">
-          <span className="flex size-9 items-center justify-center rounded-full bg-muted"><I.plus /></span>
-          <span className="text-sm font-medium">New {noun.toLowerCase()}</span>
-        </button>
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <div role="tablist" aria-label={`${noun} status`} className="inline-flex h-9 items-center rounded-lg bg-muted p-1 text-muted-foreground">
+          {tabs.map(([id, label]) => (
+            <button key={id} role="tab" type="button" aria-selected={tab === id} onClick={() => { setTab(id); setSel(null); }}
+              className={cn('inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-sm font-medium transition-colors', tab === id ? 'bg-background text-foreground shadow' : 'hover:text-foreground')}>
+              {id !== 'active' && <span className={cn('size-2 rounded-full', BS[id].dot)} />}{label}<span className="tnum text-xs font-normal opacity-70">{count(id)}</span>
+            </button>
+          ))}
+        </div>
+        <div className="relative ml-auto w-full sm:w-56">
+          <I.search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input value={q} onChange={e => setQ(e.target.value)} placeholder={`Search ${plural(lower)}`} aria-label={`Search ${plural(lower)}`} className="pl-8" />
+        </div>
+      </div>
+      <div className="flex flex-col items-start gap-4 lg:flex-row">
+        <Card className="w-full min-w-0 flex-1 overflow-hidden" role="grid" aria-label={plural(noun)}>
+          <div role="row" className="hidden grid-cols-[minmax(0,1fr)_9.5rem_13rem_2rem] gap-x-4 border-b px-4 py-2 text-xs font-medium text-muted-foreground md:grid">
+            <span>{noun}</span><span>Status</span><span>Progress</span><span />
+          </div>
+          {rows.map(r => row(r, false))}
+          {showNone && row({ b: { name: 'none', label: `No ${lower}` }, st: none }, true)}
+          {!rows.length && !showNone && (
+            <div className="px-4 py-10 text-center text-sm text-muted-foreground">
+              {nq ? `No ${plural(lower)} match “${q}”.` : tab === 'active' ? `No active ${plural(lower)}.` : `No ${plural(lower)} are ${BS[tab].label}.`}
+            </div>
+          )}
+          <button type="button" onClick={onNew} className="flex h-11 w-full items-center gap-2 border-t px-4 text-left text-sm text-muted-foreground hover:bg-muted/40 hover:text-foreground"><I.plus className="size-4" />New {lower}</button>
+        </Card>
+        {cur && panel()}
       </div>
     </div>
   );
@@ -3212,7 +3419,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       if (moved.length) saveMany(moved);
       saveRules(rules.map(r => ({ ...r,
         project: norm(r.project) === norm(old.name) ? name : r.project,
-        target: (r.action === 'copy' || r.action === 'move') && norm(r.target) === norm(old.name) ? name : r.target })));
+        target: (r.action === 'copy' || r.action === 'move' || r.action === 'create') && norm(r.target) === norm(old.name) ? name : r.target })));
       if (projectFilter === old.name) setProjectFilter(name);
     }
     setProjectEdit(null);
@@ -3223,7 +3430,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const n = norm(p.name);
     const moved = Object.values(tasksRef.current).filter(t => norm(t.project) === n).map(t => ({ ...t, project: '' }));
     if (moved.length) saveMany(moved);
-    saveRules(rules.filter(r => norm(r.project) !== n && !((r.action === 'copy' || r.action === 'move') && norm(r.target) === n)));
+    saveRules(rules.filter(r => norm(r.project) !== n && !((r.action === 'copy' || r.action === 'move') && norm(r.target) === n))
+      .map(r => (r.action === 'create' && norm(r.target) === n ? { ...r, target: '' } : r)));
     saveProjects(projectList.filter(x => norm(x.name) !== n));
     if (projectFilter === p.name) setProjectFilter('all');
     toast(`${labels.platform} deleted`, p.name, { undo: true });
@@ -3257,6 +3465,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     return list.sort((a, b) => a.name.localeCompare(b.name));
   }, [storedBuckets, all]);
   const bucketNames = useMemo(() => bucketList.map(b => b.name), [bucketList]);
+  const bucketInfo = useMemo(() => {
+    const m = {};
+    bucketList.forEach(b => { m[norm(b.name)] = { name: b.name, description: b.description || '', status: bucketStatus(b), open: 0 }; });
+    all.forEach(t => { const x = m[norm(t.bucket)]; if (x && t.status !== 'done') x.open++; });
+    return m;
+  }, [bucketList, all]);
   const [bucketFilter, setBucketFilter] = useState('all');
   const [cleanUpOpen, setCleanUpOpen] = useState(false);
   const COLS_KEY = 'tasks-cols-' + ws;
@@ -3293,21 +3507,65 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [wsRename, setWsRename] = useState(false);
   const ensureBucket = name => {
     if (!name || bucketList.some(b => norm(b.name) === norm(name))) return;
-    saveBuckets([...bucketList, { id: 'b-' + newId(), name }]);
+    saveBuckets([...bucketList, { id: 'b-' + newId(), name, description: '', status: 'planned', createdAt: Date.now() }]);
     toast(`${labels.bucket} created`, name);
   };
-  const saveBucket = ({ name }) => {
+  // Bucket automations whose status a bucket has just reached, and that haven't run for it yet.
+  const pendingHandoffs = (b, status) => rules.filter(r => r.enabled && r.scope === 'bucket' && r.status === status && !(b.fired || {})[r.id]);
+  // Moving a bucket to a status runs its bucket automations: each creates one task in the bucket, once.
+  const handoff = (b, status) => {
+    const fired = { ...(b.fired || {}) }, made = [];
+    pendingHandoffs(b, status).forEach(r => {
+      let deadline = '';
+      if (r.days && r.days !== 'none') { const d = new Date(); d.setDate(d.getDate() + Number(r.days)); deadline = toISO(d); }
+      const auto = automate({
+        id: newId(), title: fillBucket(r.title, b), description: b.description || '', status: 'todo', assignee: r.assignee || '', deadline, priority: 'normal', checklist: [],
+        project: r.target || '', bucket: b.name, createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, generatedBy: r.id,
+      }, null);
+      made.push(auto.task, ...auto.created); fired[r.id] = auto.task.id;
+    });
+    return { fired, made };
+  };
+  const bucketRecord = (old, patch) => ({ ...(old || {}), ...patch, id: old && !String(old.id).startsWith('auto-') ? old.id : 'b-' + newId() });
+  const setBucketStatus = (name, status) => {
+    const b = bucketList.find(x => norm(x.name) === norm(name)); if (!b || bucketStatus(b) === status) return;
+    const { fired, made } = handoff(b, status);
+    saveBuckets([...bucketList.filter(x => x !== b), bucketRecord(b, { status, fired })]);
+    if (made.length) saveMany(made);
+    toast(`${b.name}: ${BS[status].label}`, made.length ? `${made.length === 1 ? `“${made[0].title}” was` : `${made.length} tasks were`} created.` : undefined, { undo: true });
+  };
+  const saveBucket = ({ name, description, status }) => {
     const old = bucketEdit && bucketEdit.bucket;
     const list = bucketList.filter(b => !old || norm(b.name) !== norm(old.name));
-    saveBuckets([...list, { id: old ? old.id : 'b-' + newId(), name }]);
+    const base = old ? { ...old, name, description } : { name, description, createdAt: Date.now() };
+    const moving = !old || bucketStatus(old) !== status;
+    const { fired, made } = moving ? handoff(base, status) : { fired: base.fired, made: [] };
+    saveBuckets([...list, bucketRecord(old, { ...base, status, ...(fired ? { fired } : {}) })]);
     if (old && old.name !== name) {
       const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(old.name)).map(t => ({ ...t, bucket: name }));
       if (moved.length) saveMany(moved);
       if (bucketFilter === old.name) setBucketFilter(name);
     }
+    if (made.length) saveMany(made);
     setBucketEdit(null);
-    toast(old ? `${labels.bucket} renamed` : `${labels.bucket} created`, name);
+    toast(old ? `${labels.bucket} saved` : `${labels.bucket} created`, made.length ? `${name}. ${made.length} ${made.length === 1 ? 'task' : 'tasks'} created.` : name);
   };
+  // When the last open task in a bucket is finished, offer to move the bucket to Ready for dev.
+  const [readyAsk, setReadyAsk] = useState(null);
+  const bucketCounts = useRef(null);
+  useEffect(() => {
+    if (!loaded || standaloneId) return;
+    const counts = {};
+    all.forEach(t => { const k = norm(t.bucket); if (!k) return; const c = counts[k] || (counts[k] = { open: 0, total: 0 }); c.total++; if (t.status !== 'done') c.open++; });
+    const prev = bucketCounts.current; bucketCounts.current = counts;
+    if (!prev) return;
+    const hit = bucketList.find(b => {
+      const c = counts[norm(b.name)], p = prev[norm(b.name)];
+      // Only when a task was finished, not when the last open one was deleted.
+      return c && p && c.open === 0 && p.open > 0 && c.total >= p.total && (bucketStatus(b) === 'planned' || bucketStatus(b) === 'design');
+    });
+    if (hit) setReadyAsk({ name: hit.name, total: counts[norm(hit.name)].total, handoffs: pendingHandoffs(hit, 'ready').length });
+  }, [all, loaded]);
   const deleteBucket = () => {
     const b = bucketDelete; setBucketDelete(null);
     const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(b.name)).map(t => ({ ...t, bucket: '' }));
@@ -3365,7 +3623,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     toast(list.length === 1 ? `“${list[0].title}” is now blocked` : `${list.length} tasks are now blocked`, `Blocked by “${by.title}”`);
   };
   // Automations. Each rule: for tasks in [project], when the task [trigger], [action] [target].
-  const ruleMatches = (r, t) => r.enabled && (!r.project || norm(r.project) === norm(t.project));
+  const ruleMatches = (r, t) => r.enabled && r.scope !== 'bucket' && (!r.project || norm(r.project) === norm(t.project));
   const triggered = (trigger, next, prev) => {
     if (trigger === 'created') return !prev;
     if (trigger === 'started') return next.status === 'doing' && (!prev || prev.status !== 'doing');
@@ -4035,7 +4293,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             ]} />
           </div>
           <nav aria-label="Sections" className="flex h-full items-stretch gap-5">
-            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
+            {[{ id: 'tasks', label: 'Tasks', count: all.length }, { id: 'projects', label: plural(labels.bucket), count: bucketList.filter(b => bucketStatus(b) !== 'done').length }, { id: 'docs', label: 'Documents', count: docs.length, fresh: docs.filter(d => d.inbox).length }, { id: 'time', label: 'Timesheet', count: '' }].map(v => (
               <button key={v.id} type="button" onClick={() => setView(v.id)} aria-current={view === v.id ? 'page' : undefined}
                 className={cn('-mb-px inline-flex items-center gap-1.5 border-b-2 px-0.5 text-sm transition-colors focus-visible:outline-none focus-visible:text-foreground',
                   view === v.id ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground')}>
@@ -4114,7 +4372,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
-          onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} />
+          onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} onStatus={setBucketStatus}
+          onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} />
       ) : view === 'time' ? (
         <TimesheetView tasks={[...all, ...Object.values(archived)]} stages={stages} labels={labels} onOpenTask={id => openTask(id)} onAddTime={init => setAddTime(init)}
           onDeleteSession={(t, x) => {
@@ -4429,12 +4688,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         confirmLabel="Move to Trash" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
       {cellEdit && tasks[cellEdit.id] && (
         <CellEditor key={cellEdit.id + cellEdit.field} edit={cellEdit} task={{ ...tasks[cellEdit.id], status: S[tasks[cellEdit.id].status] ? tasks[cellEdit.id].status : 'todo' }}
-          ctx={{ update: updateTask, people, projects, buckets: bucketNames, ensureBucket, labels, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
+          ctx={{ update: updateTask, people, projects, buckets: bucketNames, bucketInfo, ensureBucket, labels, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
       )}
       <StatusesDialog open={statusesOpen} stages={stages} tasks={all} onClose={() => setStatusesOpen(false)}
         onSave={list => { saveStages(list); setStatusesOpen(false); toast('Statuses saved'); }} />
       <ProjectDialog open={!!projectEdit} noun={labels.platform} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
-      <ProjectDialog open={!!bucketEdit} noun={labels.bucket} project={bucketEdit && bucketEdit.bucket} names={bucketNames} onClose={() => setBucketEdit(null)} onSave={saveBucket} />
+      <BucketDialog open={!!bucketEdit} noun={labels.bucket} bucket={bucketEdit && bucketEdit.bucket} names={bucketNames} onClose={() => setBucketEdit(null)} onSave={saveBucket}
+        handoffs={st => pendingHandoffs(bucketEdit && bucketEdit.bucket ? bucketEdit.bucket : {}, st).length} />
+      <AlertDialog open={!!readyAsk} destructive={false} cancelLabel="Not now" confirmLabel="Move to Ready for dev"
+        title={readyAsk ? `All ${readyAsk.total} ${readyAsk.total === 1 ? 'task' : 'tasks'} in ${readyAsk.name} are done` : ''}
+        description={readyAsk ? `Move ${readyAsk.name} to Ready for dev?${readyAsk.handoffs ? ` That creates its ${readyAsk.handoffs} handoff ${readyAsk.handoffs === 1 ? 'task' : 'tasks'}.` : ''}` : ''}
+        onConfirm={() => { const n = readyAsk.name; setReadyAsk(null); setBucketStatus(n, 'ready'); }} onCancel={() => setReadyAsk(null)} />
       <AlertDialog open={!!bucketDelete} title={`Delete “${bucketDelete ? bucketDelete.name : ''}”?`}
         description={`The tasks stay; they just won’t have a ${labels.bucket.toLowerCase()} anymore.`}
         confirmLabel={`Delete ${labels.bucket.toLowerCase()}`} onConfirm={deleteBucket} onCancel={() => setBucketDelete(null)} />
@@ -4459,7 +4723,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No ${labels.platform.toLowerCase()}”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this project will be removed.` : ''}`;
         })() : ''}
         confirmLabel="Delete project" onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
-      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} rules={rules} projects={projects} people={people} me={me.name}
+      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket}
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
