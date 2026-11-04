@@ -688,21 +688,44 @@ const targetText = r => {
   return r.target;
 };
 const describeRule = r => {
-  if (r.scope === 'bucket') return `When a bucket moves to ${(BS[r.status] || BS.ready).label}, create “${r.title || '{bucket}'}”${r.target ? ` in ${r.target}` : ''}`;
+  if (r.scope === 'bucket') return `When a bucket moves to ${(BS[r.status] || { label: 'a deleted status' }).label}, create “${r.title || '{bucket}'}”${r.target ? ` in ${r.target}` : ''}`;
   const a = ACT[r.action] || {};
   const tail = a.target === 'none' || (a.optional && !r.target) ? '' : ` ${targetText(r) || '…'}`;
   return `${r.project ? `In ${r.project}, when` : 'When'} a task ${(TRIG[r.trigger] || {}).label}, ${a.label}${tail}`;
 };
 
-/* Buckets have a status that says where their work stands. Buckets from before 0.12 start as In design. */
-const BUCKET_STATUSES = [
-  { id: 'planned', label: 'Planned', dot: 'bg-slate-400' },
-  { id: 'design', label: 'In design', dot: 'bg-violet-500' },
-  { id: 'ready', label: 'Ready for dev', dot: 'bg-sky-500' },
-  { id: 'done', label: 'Done', dot: 'bg-emerald-500' },
+/* Buckets have a status that says where their work stands. Buckets from before 0.12 start as In design.
+   Since 0.17 the list can be edited (rename, recolor, reorder, add, delete) and is kept in the
+   workspace's settings as bucketStatuses. Done always exists: it decides what counts as finished. */
+const BUCKET_COLORS = {
+  slate: { dot: 'bg-slate-400', bar: 'border-slate-400/60 bg-slate-500/25' },
+  gray: { dot: 'bg-zinc-400', bar: 'border-zinc-400/60 bg-zinc-500/25' },
+  brown: { dot: 'bg-amber-700', bar: 'border-amber-700/70 bg-amber-700/25' },
+  orange: { dot: 'bg-orange-500', bar: 'border-orange-500/70 bg-orange-500/25' },
+  yellow: { dot: 'bg-yellow-500', bar: 'border-yellow-500/70 bg-yellow-500/25' },
+  green: { dot: 'bg-emerald-500', bar: 'border-emerald-500/60 bg-emerald-500/20' },
+  sky: { dot: 'bg-sky-500', bar: 'border-sky-500/70 bg-sky-500/25' },
+  blue: { dot: 'bg-blue-500', bar: 'border-blue-500/70 bg-blue-500/25' },
+  purple: { dot: 'bg-violet-500', bar: 'border-violet-500/70 bg-violet-500/25' },
+  pink: { dot: 'bg-pink-500', bar: 'border-pink-500/70 bg-pink-500/25' },
+  red: { dot: 'bg-red-500', bar: 'border-red-500/70 bg-red-500/25' },
+};
+const DEFAULT_BUCKET_STATUSES = [
+  { id: 'planned', label: 'Planned', color: 'slate' },
+  { id: 'design', label: 'In design', color: 'purple' },
+  { id: 'ready', label: 'Ready for dev', color: 'sky' },
+  { id: 'done', label: 'Done', color: 'green' },
 ];
-const BS = Object.fromEntries(BUCKET_STATUSES.map(s => [s.id, s]));
-const bucketStatus = b => (b && BS[b.status] ? b.status : 'design');
+let BUCKET_STATUSES = [], BS = {};
+const applyBucketStatuses = list => {
+  const src = Array.isArray(list) && list.length ? list : DEFAULT_BUCKET_STATUSES;
+  const withDone = src.some(x => x.id === 'done') ? src : [...src, DEFAULT_BUCKET_STATUSES[3]];
+  BUCKET_STATUSES = withDone.map(x => { const c = BUCKET_COLORS[x.color] || BUCKET_COLORS.gray; return { ...x, dot: c.dot, bar: c.bar }; });
+  BS = Object.fromEntries(BUCKET_STATUSES.map(s => [s.id, s]));
+};
+applyBucketStatuses(null);
+// A bucket whose status was deleted shows the first status (normally Planned).
+const bucketStatus = b => (b && BS[b.status] ? b.status : b && !b.status && BS.design ? 'design' : BUCKET_STATUSES[0].id);
 const BucketStatusPill = ({ status, className }) => (
   <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}><span className={cn('size-2 shrink-0 rounded-full', BS[status].dot)} /><span className="truncate">{BS[status].label}</span></span>
 );
@@ -2090,6 +2113,17 @@ function TimerButton({ task, onToggle }) {
 /* ---------- Inline cell editing ---------- */
 // Opens under a table cell. Lists show values exactly as they appear in the row,
 // and typing a name that doesn't exist yet offers to create it.
+/* A task in a bucket with a timeline takes the timeline's end as its deadline and can't change it. */
+const lockText = (lock, noun) => `Set by the ${lock.name} timeline. It moves when the ${noun.toLowerCase()}'s dates change.`;
+function LockedDeadline({ lock, noun = 'Bucket', onUnlink }) {
+  return (
+    <div className="w-72 p-2" data-locked-deadline="">
+      <div className="flex items-center gap-2 text-sm font-medium"><I.lock className="size-3.5 text-muted-foreground" />Due {fromISO(lock.end).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
+      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{lockText(lock, noun)} To pick another date, change the timeline or take the task out of {lock.name}.</p>
+      {onUnlink && <Button size="sm" variant="outline" className="mt-2.5 w-full" onClick={onUnlink}>Remove from {lock.name}</Button>}
+    </div>
+  );
+}
 function CellEditor({ edit, task, ctx, onClose }) {
   const a = useRef(edit.el), p = useRef(null), inp = useRef(null);
   a.current = edit.el;
@@ -2169,7 +2203,9 @@ function CellEditor({ edit, task, ctx, onClose }) {
         <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground"><BucketStatusPill status={tip.status} /><span className="tnum">{tip.open} open {tip.open === 1 ? 'task' : 'tasks'}</span></div>
       </div>, document.body)}
     <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-80')}>
-      {edit.field === 'deadline' ? (
+      {edit.field === 'deadline' && ctx.deadlineLock && ctx.deadlineLock(task) ? (
+        <LockedDeadline lock={ctx.deadlineLock(task)} noun={ctx.labels.bucket} onUnlink={() => set({ bucket: '' })} />
+      ) : edit.field === 'deadline' ? (
         <div>
           <Calendar selected={task.deadline} onSelect={v => set({ deadline: v })} />
           <div className="flex gap-1 border-t p-1">
@@ -2362,7 +2398,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -2525,9 +2561,17 @@ function TaskSheet({ oneAtATime, onPick, onAccept, onLinkExisting, labels = LABE
                 createLabel={v => `Use “${v}”`} icon={() => <I.folder className="text-muted-foreground" />} />
             </PropRow>
             <PropRow label={labels.deadline} htmlFor="t-deadline">
+              {bucketEnds[norm(form.bucket)] ? (
+                <div className="flex h-8 items-center gap-1.5 px-2 text-sm" id="t-deadline" tabIndex={0} title={lockText(bucketEnds[norm(form.bucket)], labels.bucket)}>
+                  <span className={cn(overdue && 'text-red-600 dark:text-red-400 font-medium')}>{fromISO(bucketEnds[norm(form.bucket)].end).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
+                  <I.lock className="size-3 text-muted-foreground" />
+                  <span className="truncate text-xs text-muted-foreground">from {form.bucket} timeline</span>
+                </div>
+              ) : (
               <DatePicker id="t-deadline" value={form.deadline} onChange={set('deadline')} variant="ghost" icon={false} placeholder="Add deadline"
                 format={{ weekday: 'short', month: 'short', day: 'numeric' }}
                 className={cn('h-8 px-2 hover:bg-muted', overdue && 'text-red-600 dark:text-red-400 font-medium')} />
+              )}
             </PropRow>
             {task && (
               <PropRow label={labels.time}>
@@ -2725,7 +2769,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   const valid = draft.every(r => !problem(r));
   const helpPlatform = projects.find(p => /help/i.test(p)) || '';
   const ideas = [
-    { title: `Hand off when ${bucketNoun.toLowerCase()} is ready`, text: `Create a task for the ${bucketNoun.toLowerCase()} when it moves to Ready for dev.`, rule: { scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' } },
+    { title: `Hand off when ${bucketNoun.toLowerCase()} is ready`, text: `Create a task for the ${bucketNoun.toLowerCase()} when it moves to ${BS.ready ? BS.ready.label : 'Ready for dev'}.`, rule: { scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' } },
     { title: 'Finish tasks automatically', text: 'Mark a task done when its checklist is finished.', rule: { trigger: 'checklist', action: 'status', target: 'done' } },
     { title: 'Flag overdue work', text: 'Make a task High priority when it becomes overdue.', rule: { trigger: 'overdue', action: 'priority', target: 'high' } },
     { title: 'Assign new tasks to me', text: 'Every new task starts assigned to you.', rule: { trigger: 'created', action: 'assign', target: me } },
@@ -3049,12 +3093,12 @@ function HomeView({ tasks, archived, buckets, docs, onOpenTask, onToggle, onCapt
 function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', handoffs = () => 0 }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [status, setStatus] = useState('planned');
+  const [status, setStatus] = useState(BUCKET_STATUSES[0].id);
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
   useEffect(() => {
     if (!open) return;
-    setName(bucket ? bucket.name : ''); setDescription(bucket ? bucket.description || '' : ''); setStatus(bucket ? bucketStatus(bucket) : 'planned');
+    setName(bucket ? bucket.name : ''); setDescription(bucket ? bucket.description || '' : ''); setStatus(bucket ? bucketStatus(bucket) : BUCKET_STATUSES[0].id);
     setStart(bucket && bucket.start || ''); setEnd(bucket && bucket.end || '');
   }, [open]);
   // Picking a start fills in a two week plan; an end before the start moves the start back.
@@ -3086,12 +3130,78 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
         </Field>
         <div className="grid gap-2">
           <Label htmlFor="bk-start">Planned <span className="font-normal text-muted-foreground">(sets its place on the timeline)</span></Label>
+          {end && <p className="-mt-1 text-xs text-muted-foreground">Tasks in this {lower} are due on the end date. Their deadline is locked to it.</p>}
           <div className="grid grid-cols-2 gap-2">
             <DatePicker id="bk-start" value={start} onChange={pickStart} placeholder="Start" format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
             <DatePicker id="bk-end" value={end} onChange={pickEnd} placeholder="End" format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
           </div>
         </div>
       </form>
+    </Dialog>
+  );
+}
+
+/* ---------- Edit bucket statuses (0.17) ---------- */
+function BucketStatusesDialog({ open, buckets, noun = 'Bucket', onClose, onSave }) {
+  const [draft, setDraft] = useState([]);
+  useEffect(() => { if (open) setDraft(BUCKET_STATUSES.map(({ id, label, color }) => ({ id, label, color }))); }, [open]);
+  const upd = (id, patch) => setDraft(d => d.map(x => x.id === id ? { ...x, ...patch } : x));
+  const move = (id, dir) => setDraft(d => {
+    const i = d.findIndex(x => x.id === id), j = i + dir;
+    if (j < 0 || j >= d.length) return d;
+    const n = [...d]; [n[i], n[j]] = [n[j], n[i]]; return n;
+  });
+  const lower = noun.toLowerCase();
+  const used = x => buckets.filter(b => bucketStatus(b) === x.id).length;
+  const fallback = draft.find(x => x.id !== 'done') || draft[0];
+  const dupes = new Set(draft.map(x => norm(x.label)).filter((n, i, a) => n && a.indexOf(n) !== i));
+  const valid = draft.length > 1 && draft.every(x => x.label.trim() && !dupes.has(norm(x.label)));
+  return (
+    <Dialog open={open} onClose={onClose} title={`Edit ${lower} statuses`} className="max-w-lg"
+      description={`Rename, recolor and reorder the statuses a ${lower} can have, or add your own. The order is the order of the tabs and menus. Done always stays: it marks a ${lower} as finished.`}
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button disabled={!valid} onClick={() => onSave(draft.map(x => ({ ...x, label: x.label.trim() })))}>Save</Button>
+      </>}>
+      <div className="grid gap-1" data-bucket-statuses="">
+        {draft.map((x, i) => {
+          const n = used(x), clash = dupes.has(norm(x.label)), c = BUCKET_COLORS[x.color] || BUCKET_COLORS.gray;
+          return (
+            <div key={x.id} className="group/row flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-muted/50">
+              <Popover className="p-2"
+                trigger={p => <button {...p} type="button" aria-label={`Color of ${x.label || 'status'}`} className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"><span className={cn('size-2.5 rounded-full', c.dot)} /></button>}>
+                <div className="grid grid-cols-3 gap-1">
+                  {Object.keys(BUCKET_COLORS).map(k => (
+                    <button key={k} type="button" onClick={() => upd(x.id, { color: k })}
+                      className={cn('flex h-7 items-center gap-2 rounded px-2 text-xs capitalize hover:bg-accent', x.color === k && 'bg-accent font-medium')}>
+                      <span className={cn('size-2.5 rounded-full', BUCKET_COLORS[k].dot)} />{k}
+                    </button>
+                  ))}
+                </div>
+              </Popover>
+              <Input value={x.label} onChange={e => upd(x.id, { label: e.target.value })} placeholder="Status name" aria-label="Status name" autoFocus={!x.label}
+                className={cn('h-8 flex-1 border-transparent bg-transparent shadow-none hover:border-input focus-visible:border-input', clash && 'border-destructive')} />
+              <span className="w-20 shrink-0 text-right text-xs text-muted-foreground tnum">{n ? `${n} ${n === 1 ? lower : plural(lower)}` : ''}</span>
+              <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(x.id, -1)}
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.up className="size-3.5" /></button>
+              <button type="button" aria-label="Move down" disabled={i === draft.length - 1} onClick={() => move(x.id, 1)}
+                className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.down className="size-3.5" /></button>
+              {x.id === 'done'
+                ? <span title={`Done always stays. You can rename and recolor it.`} className="flex size-7 items-center justify-center text-muted-foreground/50"><I.lock className="size-3.5" /></span>
+                : <button type="button" aria-label={`Delete ${x.label || 'status'}`}
+                    title={n ? `Its ${n} ${n === 1 ? lower + ' moves' : plural(lower) + ' move'} to ${((draft.find(y => y.id !== x.id && y.id !== 'done') || {}).label) || 'the first status'}` : 'Delete'}
+                    disabled={draft.length <= 2}
+                    onClick={() => setDraft(d => d.filter(y => y.id !== x.id))}
+                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-30"><I.trash className="size-3.5" /></button>}
+            </div>
+          );
+        })}
+        <button type="button" onClick={() => setDraft(d => { const at = Math.max(0, d.findIndex(y => y.id === 'done')); return [...d.slice(0, at), { id: 'bs-' + newId(), label: '', color: 'blue' }, ...d.slice(at)]; })}
+          className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground">
+          <I.plus className="size-3.5" />Add a status
+        </button>
+        {dupes.size > 0 && <p className="mt-2 text-[0.8rem] text-destructive">Two statuses can’t have the same name.</p>}
+      </div>
     </Dialog>
   );
 }
@@ -3132,12 +3242,6 @@ const PageSearch = ({ value, onChange, placeholder }) => (
 
 /* Buckets timeline: one row per bucket in planned order, a bar from its planned start to end.
    Drag a bar to move it, drag an edge to change its length; click an empty lane to plan a bucket. */
-const BAR_TONE = {
-  planned: 'border-slate-400/60 bg-slate-500/25',
-  design: 'border-violet-500/70 bg-violet-500/25',
-  ready: 'border-sky-500/70 bg-sky-500/25',
-  done: 'border-emerald-500/60 bg-emerald-500/20',
-};
 const DAY = 86400000;
 const mondayOf = d => { const x = startOfDay(d); return addDays(x, -((x.getDay() + 6) % 7)); };
 const daysBetween = (a, b) => Math.round((startOfDay(b) - startOfDay(a)) / DAY);
@@ -3230,7 +3334,7 @@ function BucketTimeline({ rows, sel, onSelect, onPlan, lower, progress }) {
                 </button>
                 <div data-lane="" className={cn('relative flex-1', !has && 'cursor-copy')} onPointerDown={e => planAt(e, r)}>
                   {has ? (
-                    <div className={cn('absolute top-3 flex h-8 select-none items-center rounded-md border text-xs font-medium shadow-sm', BAR_TONE[st], dragging ? 'z-30 ring-2 ring-primary/60' : 'z-10')}
+                    <div className={cn('absolute top-3 flex h-8 select-none items-center rounded-md border text-xs font-medium shadow-sm', BS[st].bar, dragging ? 'z-30 ring-2 ring-primary/60' : 'z-10')}
                       style={{ left: `calc(${pct(s0)} + 2px)`, width: `calc(${pct(len)} - 4px)` }}>
                       <span onPointerDown={e => begin(e, r, 'start')} className="absolute inset-y-0 left-0 w-2 cursor-ew-resize rounded-l-md hover:bg-foreground/20" />
                       <button type="button" onPointerDown={e => begin(e, r, 'move')} onKeyDown={e => keys(e, r)}
@@ -3255,8 +3359,9 @@ function BucketTimeline({ rows, sel, onSelect, onPlan, lower, progress }) {
   );
 }
 
-function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus }) {
-  const [tab, setTab] = useState('active');
+function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus, onEditStatuses }) {
+  const [tab0, setTab] = useState('active');
+  const tab = tab0 === 'active' || BS[tab0] ? tab0 : 'active';
   const [mode, setModeRaw] = useState(() => { try { return localStorage.getItem('tasks-buckets-view') || 'list'; } catch (e) { return 'list'; } });
   const setMode = m => { setModeRaw(m); try { localStorage.setItem('tasks-buckets-view', m); } catch (e) {} };
   const [q, setQ] = useState('');
@@ -3292,7 +3397,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
         className="inline-flex h-7 max-w-full items-center gap-1 rounded-md px-1.5 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
         <BucketStatusPill status={bucketStatus(b)} /><I.down className="size-3.5 shrink-0 opacity-50" />
       </button>
-    )} items={BUCKET_STATUSES.map(x => ({ label: x.label, icon: <span className={cn('ml-0.5 mr-0.5 size-2 rounded-full', x.dot)} />, shortcut: x.id === bucketStatus(b) ? '✓' : undefined, onSelect: () => onStatus(b.name, x.id) }))} />
+    )} items={BUCKET_STATUSES.map(x => ({ label: x.label, icon: <span className={cn('ml-0.5 mr-0.5 size-2 rounded-full', x.dot)} />, shortcut: x.id === bucketStatus(b) ? '✓' : undefined, onSelect: () => onStatus(b.name, x.id) })).concat(onEditStatuses ? ['sep', { label: 'Edit statuses…', icon: <I.sliders className="size-3.5" />, onSelect: onEditStatuses }] : [])} />
   );
   const progress = (st, wide) => {
     const pct = st.total ? Math.round(st.done / st.total * 100) : 0;
@@ -3385,6 +3490,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
       <PageBar className="mb-3">
         <FilterTabs label={`${noun} status`} value={tab} onChange={id => { setTab(id); setSel(null); }}
           items={tabs.map(([id, label]) => ({ id, label, count: count(id), dot: id !== 'active' ? BS[id].dot : null }))} />
+        {onEditStatuses && <Button variant="ghost" size="sm" className="h-9 px-2 text-muted-foreground" onClick={onEditStatuses} title={`Edit ${lower} statuses`} aria-label={`Edit ${lower} statuses`}><I.sliders className="size-4" /></Button>}
         <div className="ml-auto flex w-full items-center gap-1.5 sm:w-auto">
           <FilterTabs label="Layout" value={mode} onChange={setMode}
             items={[{ id: 'list', label: 'List', icon: <I.listCheck className="size-3.5" /> }, { id: 'timeline', label: 'Timeline', icon: <I.calendar className="size-3.5" /> }]} />
@@ -3984,6 +4090,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
     archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
   } = useTasks(ws);
+  applyBucketStatuses(settings.bucketStatuses);
   const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
   const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
   undoHook.current = undo;
@@ -4178,7 +4285,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [wsRename, setWsRename] = useState(false);
   const ensureBucket = name => {
     if (!name || bucketList.some(b => norm(b.name) === norm(name))) return;
-    saveBuckets([...bucketList, { id: 'b-' + newId(), name, description: '', status: 'planned', createdAt: Date.now() }]);
+    saveBuckets([...bucketList, { id: 'b-' + newId(), name, description: '', status: BUCKET_STATUSES[0].id, createdAt: Date.now() }]);
     toast(`${labels.bucket} created`, name);
   };
   // Bucket automations whose status a bucket has just reached, and that haven't run for it yet.
@@ -4238,7 +4345,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const hit = bucketList.find(b => {
       const c = counts[norm(b.name)], p = prev[norm(b.name)];
       // Only when a task was finished, not when the last open one was deleted.
-      return c && p && c.open === 0 && p.open > 0 && c.total >= p.total && (bucketStatus(b) === 'planned' || bucketStatus(b) === 'design');
+      return c && p && c.open === 0 && p.open > 0 && c.total >= p.total && BS.ready && BUCKET_STATUSES.indexOf(BS[bucketStatus(b)]) < BUCKET_STATUSES.indexOf(BS.ready);
     });
     if (hit) setReadyAsk({ name: hit.name, total: counts[norm(hit.name)].total, handoffs: pendingHandoffs(hit, 'ready').length });
   }, [all, loaded]);
@@ -4251,6 +4358,30 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     toast(`${labels.bucket} deleted`, b.name, { undo: true });
   };
   const openBucket = name => { setBucketFilter(name); setFilter('all'); setView('tasks'); };
+  // Bucket statuses can be edited. Buckets whose status is deleted move to the first one left.
+  const [bucketStatusesOpen, setBucketStatusesOpen] = useState(false);
+  const saveBucketStatuses = list => {
+    const ids = new Set(list.map(x => x.id)), first = (list.find(x => x.id !== 'done') || list[0]).id;
+    const moved = bucketList.filter(b => !ids.has(bucketStatus(b)));
+    saveSettings(x => ({ ...x, bucketStatuses: list }));
+    if (moved.length) saveBuckets(bucketList.map(b => moved.includes(b) ? bucketRecord(b, { status: first }) : b));
+    setBucketStatusesOpen(false);
+    toast(`${labels.bucket} statuses saved`, moved.length ? `${moved.length} ${moved.length === 1 ? labels.bucket.toLowerCase() + ' moved' : plural(labels.bucket.toLowerCase()) + ' moved'} to ${list.find(x => x.id === first).label}.` : undefined, { undo: true });
+  };
+  // A bucket with a timeline sets the deadline of every task in it to the timeline's end date.
+  // While the task stays in that bucket the deadline is locked; it moves with the timeline.
+  const bucketEnds = useMemo(() => {
+    const m = {};
+    bucketList.forEach(b => { if (b.start && b.end) m[norm(b.name)] = { name: b.name, end: b.end }; });
+    return m;
+  }, [bucketList]);
+  const deadlineLock = t => (t && t.bucket && bucketEnds[norm(t.bucket)]) || null;
+  useEffect(() => {
+    if (!loaded || standaloneId) return;
+    const fix = Object.values(tasks).filter(t => { const l = deadlineLock(t); return l && t.deadline !== l.end; })
+      .map(t => ({ ...t, deadline: bucketEnds[norm(t.bucket)].end, autoFired: {} }));
+    if (fix.length) saveMany(fix);
+  }, [bucketEnds, tasks, loaded]);
   const scoped = useMemo(() => {
     const q = norm(query);
     return all.filter(t => (projectFilter === 'all' || (projectFilter === 'none' ? !t.project : t.project === projectFilter))
@@ -4962,7 +5093,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -4983,7 +5114,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSelect={setActiveTab} onNew={() => createTask({ tab: true })}
         onClose={id => { if (id === tabs.active && tabClose.current) tabClose.current(); else closeTab(id); }} />
       {tabs.active !== 'home' && tabTask ? (
-        <TaskSheet oneAtATime={!!prefs.oneAtATime} onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
+        <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
           onHome={() => setActiveTab('home')} onClose={() => closeTab(tabTask.id)}
           onPopOut={() => { const t = tabTask; closeTab(t.id); openTaskWindow(t.id, t.title || 'Untitled', ws); }}
           people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
@@ -5119,7 +5250,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} onStatus={setBucketStatus} onPlan={planBucket}
-          onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} focus={bucketFocus} />
+          onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} focus={bucketFocus} onEditStatuses={() => setBucketStatusesOpen(true)} />
       ) : view === 'home' ? (
         <HomeView tasks={all} archived={Object.values(archived)} buckets={bucketList} docs={docs} onOpenTask={id => openTask(id)} onToggle={toggleTimer}
           onCapture={title => captureRef.current(title)} onGo={(v, f) => { setView(v); if (f) { setFilter(f); setQuery(''); } }}
@@ -5377,7 +5508,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                         ['assignee', t.assignee
                           ? <span className="flex min-w-0 items-center gap-1.5"><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{t.assignee}</span></span>
                           : <span className="text-muted-foreground/60">Empty</span>],
-                        ['deadline', t.deadline ? <span className={cn('whitespace-nowrap', dueCls[d.tone])}>{d.text}</span> : <span className="text-muted-foreground/60">Empty</span>],
+                        ['deadline', t.deadline ? <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', dueCls[d.tone])} title={deadlineLock(t) ? lockText(deadlineLock(t), labels.bucket) : undefined}>{d.text}{deadlineLock(t) && <I.lock className="size-3 shrink-0 opacity-50" aria-label="Locked to the timeline" />}</span> : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
                       ].filter(([field]) => !cols.hidden.includes(field)).map(([field, content]) => {
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
@@ -5448,7 +5579,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </>)}
 
-      <TaskSheet oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -5457,16 +5588,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         confirmLabel="Move to Trash" onConfirm={doDelete} onCancel={() => setConfirmId(null)} />
       {cellEdit && tasks[cellEdit.id] && (
         <CellEditor key={cellEdit.id + cellEdit.field} edit={cellEdit} task={{ ...tasks[cellEdit.id], status: S[tasks[cellEdit.id].status] ? tasks[cellEdit.id].status : 'todo' }}
-          ctx={{ update: updateTask, people, projects, buckets: bucketNames, bucketInfo, ensureBucket, labels, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
+          ctx={{ update: updateTask, deadlineLock, people, projects, buckets: bucketNames, bucketInfo, ensureBucket, labels, stages, ensureProject, addStage, deleteStage, editStatuses: () => setStatusesOpen(true) }} onClose={() => setCellEdit(null)} />
       )}
+      <BucketStatusesDialog open={bucketStatusesOpen} buckets={bucketList} noun={labels.bucket} onClose={() => setBucketStatusesOpen(false)} onSave={saveBucketStatuses} />
       <StatusesDialog open={statusesOpen} stages={stages} tasks={all} onClose={() => setStatusesOpen(false)}
         onSave={list => { saveStages(list); setStatusesOpen(false); toast('Statuses saved'); }} />
       <ProjectDialog open={!!projectEdit} noun={labels.platform} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
       <BucketDialog open={!!bucketEdit} noun={labels.bucket} bucket={bucketEdit && bucketEdit.bucket} names={bucketNames} onClose={() => setBucketEdit(null)} onSave={saveBucket}
         handoffs={st => pendingHandoffs(bucketEdit && bucketEdit.bucket ? bucketEdit.bucket : {}, st).length} />
-      <AlertDialog open={!!readyAsk} destructive={false} cancelLabel="Not now" confirmLabel="Move to Ready for dev"
+      <AlertDialog open={!!readyAsk} destructive={false} cancelLabel="Not now" confirmLabel={`Move to ${BS.ready ? BS.ready.label : 'Ready for dev'}`}
         title={readyAsk ? `All ${readyAsk.total} ${readyAsk.total === 1 ? 'task' : 'tasks'} in ${readyAsk.name} are done` : ''}
-        description={readyAsk ? `Move ${readyAsk.name} to Ready for dev?${readyAsk.handoffs ? ` That creates its ${readyAsk.handoffs} handoff ${readyAsk.handoffs === 1 ? 'task' : 'tasks'}.` : ''}` : ''}
+        description={readyAsk ? `Move ${readyAsk.name} to ${BS.ready ? BS.ready.label : 'Ready for dev'}?${readyAsk.handoffs ? ` That creates its ${readyAsk.handoffs} handoff ${readyAsk.handoffs === 1 ? 'task' : 'tasks'}.` : ''}` : ''}
         onConfirm={() => { const n = readyAsk.name; setReadyAsk(null); setBucketStatus(n, 'ready'); }} onCancel={() => setReadyAsk(null)} />
       <AlertDialog open={!!bucketDelete} title={`Delete “${bucketDelete ? bucketDelete.name : ''}”?`}
         description={`The tasks stay; they just won’t have a ${labels.bucket.toLowerCase()} anymore.`}

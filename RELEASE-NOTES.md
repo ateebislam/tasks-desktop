@@ -1,3 +1,7 @@
+Edit bucket statuses, and let a bucket's timeline set its tasks' deadlines.
+- Buckets: rename, recolor, reorder, add and delete bucket statuses. Open it with the sliders button next to the status tabs, or "Edit statuses…" in any bucket's status menu. Done always stays (you can rename and recolor it). Buckets in a deleted status move to the first one left, and you can undo it.
+- Deadlines: when a bucket has a timeline, every task in it is due on the timeline's end date. The deadline shows a lock and can't be edited. It moves when you move or resize the bucket on the timeline. Remove the task from the bucket (there's a button for it when you click the deadline) to pick your own date again.
+
 Plan buckets on a timeline, search inside documents, and run timers on several tasks at once.
 - Buckets: a new Timeline view (switch between List and Timeline beside the search) shows each bucket as a bar from its planned start to its end, in work order. Drag a bar to move it, drag its edges to change the dates, or click an empty row to plan two weeks. The arrow keys also move the selected bar. Edit bucket now has Planned start and end dates, and both views sort by planned start.
 - Documents: search now looks inside PDF, Word, HTML and text files too. Results split into Names and Inside documents and show the matching lines (with the page for PDFs). Click a line to open the document at that match. Ctrl+F finds text in the open document.
