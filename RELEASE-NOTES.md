@@ -1,3 +1,8 @@
+Timers stop when Tasks closes, and bucket deadlines can be set earlier.
+- Timers: closing Tasks (the window's X, Quit in the tray, or installing an update) stops every running timer and saves the time up to then. Next time you open Tasks, it lists the tasks whose timers were paused, with Resume for each one, Resume all, or Keep paused.
+- Timers: if the PC shuts down or Tasks doesn't close normally, the timers stop at the last moment Tasks was known to be running (it checks in every 30 seconds), and you get the same list.
+- Deadlines: a task in a bucket with a timeline is due on the bucket's end date by default, and follows it when the timeline moves. You can now pick an earlier date from the table or the task panel. Days after the bucket ends are crossed out, and "Bucket end" puts the deadline back on the end date. If the timeline moves earlier than a date you picked, the deadline moves back to the new end.
+
 Edit bucket statuses, and let a bucket's timeline set its tasks' deadlines.
 - Buckets: rename, recolor, reorder, add and delete bucket statuses. Open it with the sliders button next to the status tabs, or "Edit statuses…" in any bucket's status menu. Done always stays (you can rename and recolor it). Buckets in a deleted status move to the first one left, and you can undo it.
 - Deadlines: when a bucket has a timeline, every task in it is due on the timeline's end date. The deadline shows a lock and can't be edited. It moves when you move or resize the bucket on the timeline. Remove the task from the bucket (there's a button for it when you click the deadline) to pick your own date again.

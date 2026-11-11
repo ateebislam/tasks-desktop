@@ -51,7 +51,7 @@ fn safe_name(name: &str) -> Res<&str> {
 /// The app's own data files. Each workspace has its tasks in `data[-<workspace>]` and
 /// its archive and trash in `archive[-<workspace>]`; `profile` and `workspaces` are shared.
 fn is_store_name(name: &str) -> bool {
-    if name == "profile" || name == "workspaces" { return true; }
+    if name == "profile" || name == "workspaces" || name == "session" { return true; }
     for base in ["data", "archive"] {
         if name == base { return true; }
         if let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('-')) {
@@ -72,7 +72,8 @@ fn store_files(dir: &Path) -> Vec<String> {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
             if let Some(stem) = n.strip_suffix(".json") {
-                if is_store_name(stem) && e.path().is_file() { out.push(n); }
+                // The session file (heartbeat, paused timers) belongs to this computer's last run, not a backup.
+                if stem != "session" && is_store_name(stem) && e.path().is_file() { out.push(n); }
             }
         }
     }
@@ -507,6 +508,10 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/// Quits Tasks after the window has stopped the running timers (see the tray's Quit).
+#[tauri::command]
+fn quit_app(app: AppHandle) { app.exit(0); }
+
 /* --------------------------------------------------------------- */
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -533,7 +538,13 @@ pub fn run() {
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "open" => show_main(app),
                     "capture" => { let _ = app.emit("tray-capture", ()); }
-                    "quit" => app.exit(0),
+                    // The window stops running timers first, then calls quit_app. If it can't (no window), quit anyway.
+                    "quit" => {
+                        if app.get_webview_window("main").is_none() { app.exit(0); return; }
+                        let _ = app.emit_to("main", "app-quit", ());
+                        let h = app.clone();
+                        std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(4)); h.exit(0); });
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -560,7 +571,8 @@ pub fn run() {
             open_data_folder,
             backup,
             restore,
-            google_sign_in
+            google_sign_in,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running Tasks");

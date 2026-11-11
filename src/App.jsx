@@ -385,7 +385,8 @@ const pad = n => String(n).padStart(2, '0');
 const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const fromISO = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
 
-function Calendar({ selected, onSelect }) {
+// max (an ISO date) greys out the days after it, and marks that day: a task can't be due after its bucket ends.
+function Calendar({ selected, onSelect, max }) {
   const base = selected ? fromISO(selected) : new Date();
   const [month, setMonth] = useState(new Date(base.getFullYear(), base.getMonth(), 1));
   const start = new Date(month); start.setDate(1 - month.getDay());
@@ -403,12 +404,15 @@ function Calendar({ selected, onSelect }) {
         {['Su','Mo','Tu','We','Th','Fr','Sa'].map(d => <div key={d} className="w-8 text-center text-[0.8rem] font-normal text-muted-foreground pb-1">{d}</div>)}
         {days.map(d => {
           const iso = toISO(d), outside = d.getMonth() !== month.getMonth(), sel = iso === selected, isToday = iso === today;
+          const late = !!max && iso > max, isMax = !!max && iso === max;
           return (
-            <button key={iso} type="button" onClick={() => onSelect(iso)}
-              className={cn('h-8 w-8 p-0 text-sm rounded-md font-normal tnum transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+            <button key={iso} type="button" onClick={() => !late && onSelect(iso)} disabled={late} title={isMax ? 'Last possible day' : late ? 'After the last possible day' : undefined}
+              className={cn('relative h-8 w-8 p-0 text-sm rounded-md font-normal tnum transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
                 isToday && !sel && 'bg-accent text-accent-foreground',
                 sel && 'bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground',
-                outside && !sel && 'text-muted-foreground opacity-50')}>
+                outside && !sel && 'text-muted-foreground opacity-50',
+                late && 'cursor-not-allowed text-muted-foreground/40 line-through hover:bg-transparent hover:text-muted-foreground/40',
+                isMax && !sel && 'ring-1 ring-inset ring-amber-500/70')}>
               {d.getDate()}
             </button>
           );
@@ -417,7 +421,7 @@ function Calendar({ selected, onSelect }) {
     </div>
   );
 }
-function DatePicker({ id, value, onChange, className, placeholder = 'Pick a date', format = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }, variant = 'outline', icon = true }) {
+function DatePicker({ id, value, onChange, className, placeholder = 'Pick a date', format = { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }, variant = 'outline', icon = true, max, note, resetLabel, onReset }) {
   const [open, setOpen] = useState(false);
   const a = useRef(null), p = useRef(null);
   useDismiss(open, setOpen, [a, p]);
@@ -428,10 +432,13 @@ function DatePicker({ id, value, onChange, className, placeholder = 'Pick a date
         {value ? fromISO(value).toLocaleDateString(undefined, format) : placeholder}
       </Button>
       <Floating anchorRef={a} panelRef={p} open={open} className="w-auto p-0">
-        <Calendar selected={value} onSelect={v => { onChange(v); setOpen(false); }} />
+        {note && <div className="max-w-[17rem] border-b px-3 py-2 text-xs leading-relaxed text-muted-foreground">{note}</div>}
+        <Calendar selected={value} max={max} onSelect={v => { onChange(v); setOpen(false); }} />
         <div className="flex gap-2 border-t p-2">
-          <Button size="sm" variant="ghost" className="flex-1" onClick={() => { onChange(toISO(new Date())); setOpen(false); }}>Today</Button>
-          <Button size="sm" variant="ghost" className="flex-1" onClick={() => { onChange(''); setOpen(false); }} disabled={!value}>Clear</Button>
+          <Button size="sm" variant="ghost" className="flex-1" disabled={!!max && toISO(new Date()) > max} onClick={() => { onChange(toISO(new Date())); setOpen(false); }}>Today</Button>
+          {onReset
+            ? <Button size="sm" variant="ghost" className="flex-1" onClick={() => { onReset(); setOpen(false); }} disabled={value === max}>{resetLabel}</Button>
+            : <Button size="sm" variant="ghost" className="flex-1" onClick={() => { onChange(''); setOpen(false); }} disabled={!value}>Clear</Button>}
         </div>
       </Floating>
     </>
@@ -751,6 +758,20 @@ function persist(name, obj) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function flushAll() { while (Object.values(writers).some(w => w.busy)) await sleep(30); }
 
+/* Timers never keep running while Tasks is closed. The main window writes a heartbeat to the
+   `session` file every 30 seconds, so after a crash or a hard shutdown the timers that were
+   still marked running stop at the last moment Tasks was known to be open. */
+const SESSION_START = Date.now();
+let sessionData = null, lastHeartbeat = 0; // lastHeartbeat: from before this launch
+let sessionLoad = null;
+const loadSession = () => sessionLoad || (sessionLoad = invoke('read_store', { name: 'session' })
+  .then(raw => { sessionData = { version: 1, ...(raw ? JSON.parse(raw) : {}) }; lastHeartbeat = sessionData.heartbeat || 0; return sessionData; })
+  .catch(() => (sessionData = { version: 1 })));
+const saveSession = patch => { sessionData = { ...(sessionData || { version: 1 }), ...patch }; persist('session', sessionData); };
+const checkedWs = new Set(); // workspaces already checked for timers left running, this launch
+// Set by the main window: stops all timers and remembers them before Tasks quits (also before an update installs).
+let beforeQuit = async () => {};
+
 /* Several windows can be open (the main one and tasks popped out on their own).
    Whenever one saves, it tells the others, which take over the new data. */
 const WINDOW_LABEL = (() => { try { return getCurrentWindow().label; } catch (e) { return 'main'; } })();
@@ -1016,6 +1037,7 @@ function useUpdater() {
   const install = async () => {
     if (!update) return;
     try {
+      await beforeQuit();
       await flushAll();
       let total = 0, got = 0;
       setProgress(-1);
@@ -1250,6 +1272,46 @@ function IdleDialog({ idle, onKeep, onRemove, onRemoveStop }) {
   );
 }
 
+/* Shown when Tasks opens again after closing (or the PC shutting down) with timers running. */
+function PausedTimersDialog({ note, tasks, oneAtATime, onResume, onClose }) {
+  const [resumed, setResumed] = useState([]);
+  if (!note) return null;
+  const list = note.ids.map(id => tasks[id]).filter(Boolean);
+  if (!list.length) return null;
+  const many = list.length > 1;
+  const at = new Date(note.at), today = new Date().toDateString() === at.toDateString();
+  const when = `${today ? 'today' : at.toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'short' })} at ${at.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}`;
+  const left = list.filter(t => !resumed.includes(t.id) && !t.timerStartedAt);
+  const resume = ids => { onResume(ids); const all = [...resumed, ...ids]; setResumed(all); if (list.every(t => all.includes(t.id))) onClose(); };
+  return (
+    <Dialog open onClose={onClose} className="max-w-md"
+      title={many ? `Timers on ${list.length} tasks were paused` : 'A timer was paused'}
+      description={`${note.crash ? 'Tasks didn’t close normally (the PC may have shut down)' : 'Tasks was closed'}, so ${many ? 'these timers were' : 'this timer was'} stopped ${when}. Time up to then is saved. Do you want to resume?`}
+      footer={<>
+        <Button variant="outline" onClick={onClose}>{resumed.length ? 'Done' : 'Keep paused'}</Button>
+        {left.length > 0 && !(oneAtATime && left.length > 1) && <Button onClick={() => resume(left.map(t => t.id))}><I.play className="size-3.5" />{left.length > 1 ? `Resume all ${left.length}` : 'Resume'}</Button>}
+      </>}>
+      <ul className="divide-y rounded-md border" data-testid="paused-list">
+        {list.map(t => {
+          const on = resumed.includes(t.id) || !!t.timerStartedAt;
+          return (
+            <li key={t.id} className="flex items-center gap-3 px-3 py-2.5">
+              <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-full', on ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground')}>{on ? <I.play className="size-3.5 translate-x-px" /> : <I.pause className="size-3.5" />}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium">{t.title || 'Untitled'}</span>
+                <span className="tnum block text-xs text-muted-foreground">{fmt(elapsed(t))} tracked{t.bucket ? ` · ${t.bucket}` : ''}</span>
+              </span>
+              {on ? <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Running</span>
+                : <Button variant="outline" size="sm" onClick={() => resume([t.id])} aria-label={`Resume timer for ${t.title || 'Untitled'}`}>Resume</Button>}
+            </li>
+          );
+        })}
+      </ul>
+      {oneAtATime && left.length > 1 && <p className="-mt-2 text-xs text-muted-foreground">“One task at a time” is on, so you can resume one of them.</p>}
+    </Dialog>
+  );
+}
+
 async function openTaskWindow(id, title, ws = 'product') {
   const label = 'task-' + String(id).replace(/[^a-zA-Z0-9_-]/g, '');
   try {
@@ -1277,6 +1339,12 @@ const stopT = t => t.timerStartedAt
   ? { ...t, timeSpent: elapsed(t), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e: Date.now() }].slice(-300) }
   : t;
 const overlap = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
+// Stops a timer at a given moment (when Tasks closed, or the last heartbeat after a hard shutdown).
+const stopAt = (t, end) => {
+  if (!t.timerStartedAt) return t;
+  const e = Math.max(t.timerStartedAt, Math.min(end, Date.now()));
+  return { ...t, timeSpent: (t.timeSpent || 0) + (e - t.timerStartedAt), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e }].slice(-300) };
+};
 const trackedIn = (t, a, b) => (t.sessions || []).reduce((x, ss) => x + overlap(ss.s, ss.e, a, b), 0) + (t.timerStartedAt ? overlap(t.timerStartedAt, Date.now(), a, b) : 0);
 const fmtShort = ms => { const m = Math.floor(ms / 60000), h = Math.floor(m / 60); return h ? `${h}h ${m % 60}m` : `${m}m`; };
 const fmt = ms => { const s = Math.floor(ms / 1000); return `${Math.floor(s / 3600)}:${pad(Math.floor(s % 3600 / 60))}:${pad(s % 60)}`; };
@@ -2113,14 +2181,24 @@ function TimerButton({ task, onToggle }) {
 /* ---------- Inline cell editing ---------- */
 // Opens under a table cell. Lists show values exactly as they appear in the row,
 // and typing a name that doesn't exist yet offers to create it.
-/* A task in a bucket with a timeline takes the timeline's end as its deadline and can't change it. */
-const lockText = (lock, noun) => `Set by the ${lock.name} timeline. It moves when the ${noun.toLowerCase()}'s dates change.`;
-function LockedDeadline({ lock, noun = 'Bucket', onUnlink }) {
+/* A task in a bucket with a timeline is due when the timeline ends, by default. You can pick an earlier
+   date, never a later one. A task that follows the bucket moves with the timeline. */
+const dueDate = iso => fromISO(iso).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+const lockText = (lock, noun, own) => own
+  ? `Earlier than the ${lock.name} end (${dueDate(lock.end)}). It can't be later than that.`
+  : `From the ${lock.name} timeline. It moves when the ${noun.toLowerCase()}'s dates change. You can pick an earlier date.`;
+const lockNote = (lock, noun) => `${lock.name} ends ${dueDate(lock.end)}. Pick that day or earlier. Later days are greyed out.`;
+function BucketDeadline({ task, lock, noun = 'Bucket', onSet }) {
+  const today = toISO(new Date()), tmr = (() => { const d = new Date(); d.setDate(d.getDate() + 1); return toISO(d); })();
   return (
-    <div className="w-72 p-2" data-locked-deadline="">
-      <div className="flex items-center gap-2 text-sm font-medium"><I.lock className="size-3.5 text-muted-foreground" />Due {fromISO(lock.end).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</div>
-      <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{lockText(lock, noun)} To pick another date, change the timeline or take the task out of {lock.name}.</p>
-      {onUnlink && <Button size="sm" variant="outline" className="mt-2.5 w-full" onClick={onUnlink}>Remove from {lock.name}</Button>}
+    <div data-bucket-deadline="">
+      <div className="max-w-[17rem] border-b px-3 py-2 text-xs leading-relaxed text-muted-foreground"><span className="font-medium text-foreground">{lock.name} ends {dueDate(lock.end)}.</span> Pick that day or earlier. Later days are greyed out.</div>
+      <Calendar selected={task.deadline} max={lock.end} onSelect={v => onSet(v)} />
+      <div className="flex gap-1 border-t p-1">
+        <Button size="sm" variant="ghost" className="flex-1" disabled={today > lock.end} onClick={() => onSet(today)}>Today</Button>
+        <Button size="sm" variant="ghost" className="flex-1" disabled={tmr > lock.end} onClick={() => onSet(tmr)}>Tomorrow</Button>
+        <Button size="sm" variant="ghost" className="flex-1" disabled={task.deadline === lock.end} onClick={() => onSet('')}>{noun} end</Button>
+      </div>
     </div>
   );
 }
@@ -2204,7 +2282,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
       </div>, document.body)}
     <Floating anchorRef={a} panelRef={p} open className={cn('p-1', edit.field === 'deadline' ? 'w-auto' : 'w-80')}>
       {edit.field === 'deadline' && ctx.deadlineLock && ctx.deadlineLock(task) ? (
-        <LockedDeadline lock={ctx.deadlineLock(task)} noun={ctx.labels.bucket} onUnlink={() => set({ bucket: '' })} />
+        <BucketDeadline task={task} lock={ctx.deadlineLock(task)} noun={ctx.labels.bucket} onSet={v => set({ deadline: v })} />
       ) : edit.field === 'deadline' ? (
         <div>
           <Calendar selected={task.deadline} onSelect={v => set({ deadline: v })} />
@@ -2561,13 +2639,18 @@ function TaskSheet({ bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisti
                 createLabel={v => `Use “${v}”`} icon={() => <I.folder className="text-muted-foreground" />} />
             </PropRow>
             <PropRow label={labels.deadline} htmlFor="t-deadline">
-              {bucketEnds[norm(form.bucket)] ? (
-                <div className="flex h-8 items-center gap-1.5 px-2 text-sm" id="t-deadline" tabIndex={0} title={lockText(bucketEnds[norm(form.bucket)], labels.bucket)}>
-                  <span className={cn(overdue && 'text-red-600 dark:text-red-400 font-medium')}>{fromISO(bucketEnds[norm(form.bucket)].end).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })}</span>
-                  <I.lock className="size-3 text-muted-foreground" />
-                  <span className="truncate text-xs text-muted-foreground">from {form.bucket} timeline</span>
-                </div>
-              ) : (
+              {bucketEnds[norm(form.bucket)] ? (() => {
+                const lock = bucketEnds[norm(form.bucket)], val = form.deadline && form.deadline <= lock.end ? form.deadline : lock.end, own = val !== lock.end;
+                return (
+                  <div className="flex min-w-0 items-center gap-1" title={lockText(lock, labels.bucket, own)}>
+                    <DatePicker id="t-deadline" value={val} onChange={set('deadline')} variant="ghost" icon={false} max={lock.end}
+                      note={lockNote(lock, labels.bucket)} resetLabel={`${labels.bucket} end`} onReset={() => set('deadline')('')}
+                      format={{ weekday: 'short', month: 'short', day: 'numeric' }}
+                      className={cn('h-8 !w-auto shrink-0 px-2 hover:bg-muted', overdue && 'text-red-600 dark:text-red-400 font-medium')} />
+                    <span className="truncate text-xs text-muted-foreground">{own ? `before ${form.bucket} ends ${dueDate(lock.end)}` : `${form.bucket} end`}</span>
+                  </div>
+                );
+              })() : (
               <DatePicker id="t-deadline" value={form.deadline} onChange={set('deadline')} variant="ghost" icon={false} placeholder="Add deadline"
                 format={{ weekday: 'short', month: 'short', day: 'numeric' }}
                 className={cn('h-8 px-2 hover:bg-muted', overdue && 'text-red-600 dark:text-red-400 font-medium')} />
@@ -3130,7 +3213,7 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
         </Field>
         <div className="grid gap-2">
           <Label htmlFor="bk-start">Planned <span className="font-normal text-muted-foreground">(sets its place on the timeline)</span></Label>
-          {end && <p className="-mt-1 text-xs text-muted-foreground">Tasks in this {lower} are due on the end date. Their deadline is locked to it.</p>}
+          {end && <p className="-mt-1 text-xs text-muted-foreground">Tasks in this {lower} are due on the end date by default. A task can be due earlier, but not later.</p>}
           <div className="grid grid-cols-2 gap-2">
             <DatePicker id="bk-start" value={start} onChange={pickStart} placeholder="Start" format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
             <DatePicker id="bk-end" value={end} onChange={pickEnd} placeholder="End" format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
@@ -4376,10 +4459,21 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     return m;
   }, [bucketList]);
   const deadlineLock = t => (t && t.bucket && bucketEnds[norm(t.bucket)]) || null;
+  // A task follows the bucket's end unless you picked an earlier date while it was in this bucket
+  // (deadlineCustom holds that bucket). A date after the end is pulled back to the end.
+  const bucketDeadline = (t, l) => (t.deadlineCustom === norm(t.bucket) && t.deadline && t.deadline < l.end ? t.deadline : l.end);
+  const fitDeadline = (t, v) => {
+    const l = deadlineLock(t); if (!l) return { deadline: v };
+    return !v || v >= l.end ? { deadline: l.end, deadlineCustom: null } : { deadline: v, deadlineCustom: norm(t.bucket) };
+  };
   useEffect(() => {
     if (!loaded || standaloneId) return;
-    const fix = Object.values(tasks).filter(t => { const l = deadlineLock(t); return l && t.deadline !== l.end; })
-      .map(t => ({ ...t, deadline: bucketEnds[norm(t.bucket)].end, autoFired: {} }));
+    const fix = Object.values(tasks).map(t => {
+      const l = deadlineLock(t); if (!l) return null;
+      const want = bucketDeadline(t, l), custom = want === l.end ? null : norm(t.bucket);
+      if (t.deadline === want && (t.deadlineCustom || null) === custom) return null;
+      return { ...t, deadline: want, deadlineCustom: custom, ...(t.deadline !== want ? { autoFired: {} } : {}) };
+    }).filter(Boolean);
     if (fix.length) saveMany(fix);
   }, [bucketEnds, tasks, loaded]);
   const scoped = useMemo(() => {
@@ -4544,6 +4638,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const updateTask = (id, p) => {
     const t = tasksRef.current[id]; if (!t) return;
     let next = { ...t, ...p };
+    if ('deadline' in p && deadlineLock(next)) next = { ...next, ...fitDeadline(next, p.deadline) };
     if ('status' in p && p.status !== t.status) {
       if (next.status !== 'blocked') next.blockedBy = null;
       if ((next.status === 'done' || next.status === 'blocked') && next.timerStartedAt) next = stopT(next);
@@ -4618,14 +4713,73 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [tasks, loaded]);
   // Closing the window keeps Tasks running in the tray (unless turned off in Settings).
   const prefsRef = useRef(prefs); prefsRef.current = prefs;
+  // Closing Tasks (the window, Quit in the tray, or an update) always stops every running timer, and
+  // remembers which ones so it can offer to resume them next time.
+  const [pausedNote, setPausedNote] = useState(null);
+  const pauseForClose = async () => {
+    const list = Object.values(tasksRef.current).filter(t => t.timerStartedAt);
+    if (!list.length) return;
+    const now = Date.now();
+    saveMany(list.map(t => stopAt(t, now)));
+    await loadSession();
+    const prev = ((sessionData.paused || {})[ws] || {}).ids || [];
+    const note = { at: now, ids: [...new Set([...prev, ...list.map(t => t.id)])] };
+    saveSession({ heartbeat: now, paused: { ...(sessionData.paused || {}), [ws]: note } });
+    setPausedNote(note); // shows when the window is opened again from the tray
+    await sleep(150); await flushAll();
+  };
+  const pauseRef = useRef(pauseForClose); pauseRef.current = pauseForClose;
   useEffect(() => {
     if (standaloneId) return;
-    let un = null;
+    let un = null, un2 = null, dead = false;
+    beforeQuit = () => pauseRef.current();
     getCurrentWindow().onCloseRequested(async e => {
-      if (prefsRef.current.keepInTray) { e.preventDefault(); await flushAll(); getCurrentWindow().hide().catch(() => {}); }
-    }).then(f => { un = f; }).catch(() => {});
-    return () => { try { un && un(); } catch (e) {} };
+      if (prefsRef.current.keepInTray) e.preventDefault();
+      await pauseRef.current(); await flushAll();
+      if (prefsRef.current.keepInTray) getCurrentWindow().hide().catch(() => {});
+    }).then(f => { if (dead) f(); else un = f; }).catch(() => {});
+    // Quit in the tray asks the window to stop the timers first.
+    listen('app-quit', async () => { try { await pauseRef.current(); await flushAll(); } finally { invoke('quit_app').catch(() => {}); } })
+      .then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
+    return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
   }, []);
+  // Heartbeat: the last moment Tasks was known to be open.
+  useEffect(() => {
+    if (standaloneId) return;
+    const beat = () => loadSession().then(() => saveSession({ heartbeat: Date.now() }));
+    const i = setInterval(beat, 30000);
+    return () => clearInterval(i);
+  }, []);
+  // On launch: timers still marked running were left over from a crash or a hard shutdown.
+  // Stop them at the last heartbeat and show them together with the ones paused on a normal close.
+  useEffect(() => {
+    if (standaloneId || !loaded || checkedWs.has(ws)) return;
+    checkedWs.add(ws);
+    loadSession().then(s => {
+      const cur = tasksRef.current, hb = lastHeartbeat;
+      const stale = Object.values(cur).filter(t => t.timerStartedAt && t.timerStartedAt < SESSION_START);
+      const ends = stale.map(t => (hb > t.timerStartedAt ? hb : Math.max(t.timerStartedAt, t.updatedAt || 0)));
+      if (stale.length) saveMany(stale.map((t, i) => stopAt(t, ends[i])));
+      const prev = (s.paused || {})[ws];
+      const ids = [...new Set([...(prev ? prev.ids : []), ...stale.map(t => t.id)])].filter(id => cur[id]);
+      saveSession({ heartbeat: Date.now() });
+      if (!ids.length) return;
+      const note = { ids, at: stale.length ? Math.max(...ends) : prev.at, crash: stale.length > 0 };
+      saveSession({ paused: { ...(s.paused || {}), [ws]: note } });
+      setPausedNote(note);
+    });
+  }, [loaded]);
+  const closePausedNote = () => {
+    setPausedNote(null);
+    loadSession().then(s => { const paused = { ...(s.paused || {}) }; delete paused[ws]; saveSession({ paused }); });
+  };
+  const resumeTimers = ids => {
+    if (prefsRef.current.oneAtATime) { const t = tasksRef.current[ids[0]]; if (t && !t.timerStartedAt) toggleTimer(t.id); return; }
+    const now = Date.now();
+    const list = ids.map(id => tasksRef.current[id]).filter(t => t && !t.timerStartedAt)
+      .map(t => ({ ...t, status: t.status === 'todo' || t.status === 'done' ? 'doing' : t.status, timerStartedAt: now }));
+    if (list.length) saveMany(list);
+  };
   // The global quick capture shortcut, and tasks typed into the quick capture window.
   useEffect(() => {
     if (standaloneId || prefs.captureKey === 'Off') return;
@@ -5508,7 +5662,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                         ['assignee', t.assignee
                           ? <span className="flex min-w-0 items-center gap-1.5"><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{t.assignee}</span></span>
                           : <span className="text-muted-foreground/60">Empty</span>],
-                        ['deadline', t.deadline ? <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', dueCls[d.tone])} title={deadlineLock(t) ? lockText(deadlineLock(t), labels.bucket) : undefined}>{d.text}{deadlineLock(t) && <I.lock className="size-3 shrink-0 opacity-50" aria-label="Locked to the timeline" />}</span> : <span className="text-muted-foreground/60">Empty</span>],
+                        ['deadline', t.deadline ? <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', dueCls[d.tone])} title={deadlineLock(t) ? lockText(deadlineLock(t), labels.bucket, t.deadline !== deadlineLock(t).end) : undefined}>{d.text}{deadlineLock(t) && t.deadline === deadlineLock(t).end && <I.layers className="size-3 shrink-0 opacity-50" aria-label={`${labels.bucket} end date`} />}</span> : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
                       ].filter(([field]) => !cols.hidden.includes(field)).map(([field, content]) => {
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
@@ -5640,6 +5794,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           saveMany([{ ...t, sessions: [...(t.sessions || []), { s: s0, e: e0, manual: true }].sort((a, b) => a.s - b.s), timeSpent: (t.timeSpent || 0) + (e0 - s0) }]);
           setAddTime(null); toast('Time added', `${fmtShort(e0 - s0)} to “${t.title || 'Untitled'}”`, { undo: true });
         }} />
+      {!idle && <PausedTimersDialog note={pausedNote} tasks={tasks} oneAtATime={prefs.oneAtATime} onResume={resumeTimers} onClose={closePausedNote} />}
       <IdleDialog idle={idle} onKeep={() => resolveIdle('keep')} onRemove={() => resolveIdle('remove')} onRemoveStop={() => resolveIdle('stop')} />
       {quickAdd && (
         <Dialog open onClose={() => setQuickAdd(false)} title="Quick add" className="max-w-md">
