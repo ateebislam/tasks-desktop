@@ -14,7 +14,17 @@
    - Realtime pushes other PCs' changes here; a pull on connect catches up on anything missed.
    - Documents (files imported into the app's folder) are uploaded to the private `documents`
      bucket under <user id>/<file>, and downloaded on PCs that don't have them yet.
-   Only the main window runs sync. Other windows get changes through the usual tasks-data events. */
+   Only the main window runs sync. Other windows get changes through the usual tasks-data events.
+
+   Since 0.19.4 lists and settings sync item by item too, so two PCs changing different buckets,
+   rules, statuses, platforms or settings at once never lose either change:
+   - each bucket, rule, status, platform, loose document and workspace is its own row ("l/<list>/<id>"),
+     and each setting and column name too ("f/<settings|labels>/<name>");
+   - these rows live in a companion store "<store>:items" (for example "data:items"), which
+     versions before 0.19.4 ignore, so a PC that hasn't updated yet can never delete them;
+   - the whole-list rows ("m/buckets", …) are still written for PCs that haven't updated yet.
+     A whole-list row from such a PC is compared with the last one, and only the items it
+     changed are taken. Whole-list rows from updated PCs are ignored. Nothing in Supabase changes. */
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { CLOUD_URL, CLOUD_PUBLISHABLE_KEY } from './cloud-config.js';
@@ -30,6 +40,16 @@ export const DEVICE_ID = (() => { let id = ls.get('tasks-device-id'); if (!id) {
 const TABLE = 'records', BUCKET = 'documents';
 const META = ['rules', 'projects', 'stages', 'buckets', 'labels', 'settings', 'looseDocs'];
 const STORE_RE = /^(?:(?:data|archive)(?:-[a-z0-9_]{1,32})?|workspaces)$/;
+const ITEMS = ':items'; // companion cloud store for list items and settings fields (0.19.4)
+const CLOUD_STORE_RE = /^(?:(?:data|archive)(?:-[a-z0-9_]{1,32})?|workspaces)(?::items)?$/;
+// Lists synced item by item. Ordered lists keep their order (each row carries its place).
+const DATA_LISTS = { rules: 'ordered', stages: 'ordered', projects: 'set', buckets: 'set', looseDocs: 'set' };
+const DATA_OBJS = ['settings', 'labels'];
+const listsOf = name => (isData(name) ? DATA_LISTS : name === 'workspaces' ? { list: 'ordered' } : {});
+const objsOf = name => (isData(name) ? DATA_OBJS : []);
+const isSplitKey = k => k.startsWith('l/') || k.startsWith('f/');
+const cloudStoreOf = (name, key) => (isSplitKey(key) ? name + ITEMS : name);
+const enc = s => encodeURIComponent(String(s));
 const DOC_RE = /^[a-z0-9]{20}(?:\.[a-z0-9]{1,8})?$/;
 const isData = n => n === 'data' || n.startsWith('data-');
 const isArch = n => n === 'archive' || n.startsWith('archive-');
@@ -39,26 +59,41 @@ const J = v => (v === undefined || v === null ? null : JSON.stringify(v));
 /* ---------- Stores <-> rows ---------- */
 // Watch folders are paths on this PC, so they stay local.
 const localOnly = s => { if (!s || typeof s !== 'object') return s; const { watchFolders, ...rest } = s; return rest; };
+// The rows of one list or settings object: { key: value }.
+function fieldRows(name, field, v) {
+  const out = {}, kind = listsOf(name)[field];
+  if (kind && Array.isArray(v)) v.forEach((x, i) => { out[`l/${field}/${enc(itemKey(x))}`] = kind === 'ordered' ? { v: x, p: i } : { v: x }; });
+  else if (objsOf(name).includes(field) && v && typeof v === 'object') Object.entries(field === 'settings' ? localOnly(v) : v).forEach(([k, x]) => { if (x !== undefined && x !== null) out[`f/${field}/${enc(k)}`] = x; });
+  return out;
+}
+// The whole-list row kept for PCs before 0.19.4. Lists whose order doesn't matter are sorted, so every
+// updated PC writes exactly the same value and none of them has to send it again.
+const compat = (name, field, v) => {
+  if (field === 'settings') return localOnly(v);
+  return listsOf(name)[field] === 'set' && Array.isArray(v) ? v.slice().sort((a, b) => (String(itemKey(a)) < String(itemKey(b)) ? -1 : String(itemKey(a)) > String(itemKey(b)) ? 1 : 0)) : v;
+};
 function split(name, c) {
   const out = {};
   if (!c) return out;
   if (isData(name)) {
     Object.entries(c.tasks || {}).forEach(([id, t]) => { out['t/' + id] = t; });
-    META.forEach(k => { if (c[k] !== undefined && c[k] !== null) out['m/' + k] = k === 'settings' ? localOnly(c[k]) : c[k]; });
+    META.forEach(k => { if (c[k] !== undefined && c[k] !== null) { out['m/' + k] = compat(name, k, c[k]); Object.assign(out, fieldRows(name, k, c[k])); } });
   } else if (isArch(name)) {
     Object.entries(c.archived || {}).forEach(([id, t]) => { out['a/' + id] = t; });
     Object.entries(c.trash || {}).forEach(([id, t]) => { out['x/' + id] = t; });
   } else if (name === 'workspaces') {
-    if (Array.isArray(c.list)) out['m/list'] = c.list;
+    if (Array.isArray(c.list)) { out['m/list'] = c.list; Object.assign(out, fieldRows(name, 'list', c.list)); }
   }
   return out;
 }
+const fieldOf = key => (isSplitKey(key) ? key.split('/')[1] : key.slice(2));
 function getRow(name, c, key) {
   if (!c) return undefined;
   const [p, id] = [key.slice(0, 2), key.slice(2)];
+  if (isSplitKey(key)) { const f = fieldOf(key); return fieldRows(name, f, c[f])[key]; }
   if (isData(name)) {
     if (p === 't/') return (c.tasks || {})[id];
-    if (p === 'm/') { const v = c[id]; return id === 'settings' ? localOnly(v) : v === null ? undefined : v; }
+    if (p === 'm/') { const v = c[id]; return v === null || v === undefined ? undefined : compat(name, id, v); }
   } else if (isArch(name)) {
     if (p === 'a/') return (c.archived || {})[id];
     if (p === 'x/') return (c.trash || {})[id];
@@ -69,7 +104,28 @@ function getRow(name, c, key) {
 export function applyRows(name, c, patch) {
   const n = { ...(c || {}) };
   const setIn = (field, id, v) => { const m = { ...(n[field] || {}) }; if (v === null) delete m[id]; else m[id] = v; n[field] = m; };
+  // Items of lists and fields of settings, one at a time.
+  const byField = {};
+  Object.entries(patch).forEach(([key, v]) => { if (isSplitKey(key)) (byField[fieldOf(key)] || (byField[fieldOf(key)] = {}))[key] = v; });
+  Object.entries(byField).forEach(([field, rows]) => {
+    if (isData(name) && !n.version) n.version = 4;
+    if (name === 'workspaces') n.version = 1;
+    if (listsOf(name)[field]) {
+      const ordered = listsOf(name)[field] === 'ordered';
+      const cur = (Array.isArray(n[field]) ? n[field] : []).map((x, i) => ({ k: `l/${field}/${enc(itemKey(x))}`, x, p: i, i }));
+      const have = new Set(cur.map(e => e.k));
+      let list = cur.filter(e => rows[e.k] !== null).map(e => (rows[e.k] ? { ...e, x: rows[e.k].v, p: ordered && typeof rows[e.k].p === 'number' ? rows[e.k].p : e.p } : e));
+      Object.entries(rows).forEach(([k, w], j) => { if (w && !have.has(k)) list.push({ k, x: w.v, p: ordered && typeof w.p === 'number' ? w.p : 1e9, i: 1e6 + j }); });
+      if (ordered) list = list.sort((a, b) => a.p - b.p || a.i - b.i);
+      n[field] = list.map(e => e.x);
+    } else {
+      const o = { ...(n[field] || {}) };
+      Object.entries(rows).forEach(([k, v]) => { const f = decodeURIComponent(k.split('/').slice(2).join('/')); if (v === null) delete o[f]; else o[f] = v; });
+      n[field] = o;
+    }
+  });
   Object.entries(patch).forEach(([key, v]) => {
+    if (isSplitKey(key)) return;
     const p = key.slice(0, 2), id = key.slice(2);
     if (isData(name)) {
       if (!n.version) n.version = 4;
@@ -91,9 +147,19 @@ function mergeLists(remote, local) {
   if (remote && local && typeof remote === 'object' && typeof local === 'object' && !Array.isArray(remote) && !Array.isArray(local)) return { ...local, ...remote };
   return remote;
 }
-const isItem = key => /^[tax]\//.test(key);
+const isItem = key => /^[taxl]\//.test(key);
+const unwrap = (key, v) => (key && key.startsWith('l/') && v && typeof v === 'object' ? v.v : v);
 const itemTime = v => (v && typeof v === 'object' ? v.updatedAt || v.archivedAt || v.deletedAt || 0 : 0);
-const rowTitle = v => (v && typeof v === 'object' && typeof v.title === 'string' ? v.title : '');
+const rowTitle = v => (v && typeof v === 'object' ? (typeof v.title === 'string' ? v.title : typeof v.name === 'string' ? v.name : '') : '');
+// For the open window: list items and settings fields become the whole list or object it already knows.
+function livePatch(name, next, patch) {
+  const out = {};
+  Object.entries(patch).forEach(([k, v]) => {
+    if (/^[tax]\//.test(k)) out[k] = v;
+    else { const f = fieldOf(k); out['m/' + f] = next && next[f] !== undefined ? next[f] : null; }
+  });
+  return out;
+}
 function docRefs(v, out) {
   if (!v || typeof v !== 'object') return;
   if (Array.isArray(v)) { v.forEach(x => docRefs(x, out)); return; }
@@ -127,7 +193,7 @@ async function saveState() {
 }
 let saveT = null;
 const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(saveState, 400); };
-const sstore = name => (st.stores[name] || (st.stores[name] = { shadow: {}, dirtyAt: {} }));
+const sstore = name => { const s = st.stores[name] || (st.stores[name] = { shadow: {}, dirtyAt: {} }); if (!s.itemAt) s.itemAt = {}; if (!s.legacySeen) s.legacySeen = {}; return s; };
 const pendingCount = () => Object.values(st.stores).reduce((n, s) => n + Object.keys(s.dirtyAt || {}).length, 0);
 
 async function content(name) {
@@ -165,7 +231,7 @@ export function cloudLive(name, fn, loaded) {
     const a = split(name, loaded), b = split(name, cache[name]), patch = {};
     Object.keys(b).forEach(k => { if (J(a[k]) !== J(b[k])) patch[k] = b[k]; });
     Object.keys(a).forEach(k => { if (!(k in b)) patch[k] = null; });
-    if (Object.keys(patch).length) fn(patch);
+    if (Object.keys(patch).length) fn(livePatch(name, cache[name], patch));
   }
   return () => { if (live[name] === fn) delete live[name]; };
 }
@@ -191,15 +257,16 @@ async function pushAll() {
   let sent = 0;
   for (const name of names) {
     if (cache[name] === undefined) await content(name);
-    const changes = diff(name);
+    // Items go before the whole-list rows, so a PC that reads both always sees the items first.
+    const changes = diff(name).sort((a, b) => (a.key.startsWith('m/') ? 1 : 0) - (b.key.startsWith('m/') ? 1 : 0));
     const s = sstore(name);
     for (let i = 0; i < changes.length; i += 200) {
       const part = changes.slice(i, i + 200);
       const { error } = await client.from(TABLE).upsert(part.map(c => ({
-        user_id: uid, store: name, key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || Date.now(), device: DEVICE_ID,
+        user_id: uid, store: cloudStoreOf(name, c.key), key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || Date.now(), device: DEVICE_ID,
       })), { onConflict: 'user_id,store,key' });
       if (error) { dirty.add(name); throw error; }
-      part.forEach(c => { s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; });
+      part.forEach(c => { if (isSplitKey(c.key)) s.itemAt[c.key] = s.dirtyAt[c.key] || Date.now(); s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; });
       sent += part.length;
     }
   }
@@ -208,9 +275,19 @@ async function pushAll() {
 }
 
 /* ---------- Taking in cloud changes ---------- */
-async function receive(rows, policy = 'normal') {
+// Rows are taken in one at a time, in the order they arrive, so two batches never work from the same old copy.
+let recvQ = Promise.resolve();
+function receive(rows, policy) { const p = recvQ.then(() => receiveNow(rows, policy)); recvQ = p.catch(() => {}); return p; }
+async function receiveNow(rows, policy = 'normal') {
   const byStore = {};
-  rows.forEach(r => { if (r && STORE_RE.test(r.store) && typeof r.key === 'string') (byStore[r.store] || (byStore[r.store] = [])).push(r); });
+  rows.forEach(r => {
+    if (!r || typeof r.key !== 'string' || !CLOUD_STORE_RE.test(r.store || '')) return;
+    const items = r.store.endsWith(ITEMS), base = items ? r.store.slice(0, -ITEMS.length) : r.store;
+    if (items !== isSplitKey(r.key)) return; // a row in the wrong place is never taken
+    // A PC that writes item rows is on 0.19.4 or later: its whole-list rows are only for older PCs.
+    if (items && r.device && !st.v2.includes(r.device)) { st.v2.push(r.device); saveSoon(); }
+    (byStore[base] || (byStore[base] = [])).push(r);
+  });
   // Workspaces first, so new workspaces exist before their tasks arrive.
   const names = Object.keys(byStore).sort((a, b) => (a === 'workspaces' ? -1 : b === 'workspaces' ? 1 : 0));
   for (const name of names) {
@@ -218,9 +295,35 @@ async function receive(rows, policy = 'normal') {
     for (const r of byStore[name]) {
       if (policy === 'normal' && r.device === DEVICE_ID) continue; // our own change coming back
       const j = r.deleted ? null : J(r.value), sj = s.shadow[r.key] ?? null;
+      const field = r.key.slice(2);
+      if (r.key.startsWith('m/') && (listsOf(name)[field] || objsOf(name).includes(field))) {
+        // A whole list or settings object. From an updated PC (or this one) it only repeats its item rows.
+        if (r.device === DEVICE_ID || st.v2.includes(r.device)) { s.shadow[r.key] = j; continue; }
+        if (policy === 'normal' && j === sj) continue;
+        if (r.updated_at && s.legacySeen[r.key] === r.updated_at) { s.shadow[r.key] = j; continue; } // seen already
+        if (r.updated_at) s.legacySeen[r.key] = r.updated_at;
+        // From a PC before 0.19.4: take just the items it changed compared with the cloud's list,
+        // and only where its edit is newer than the last change to that item.
+        const was = sj === null ? {} : fieldRows(name, field, JSON.parse(sj)), now = r.deleted ? {} : fieldRows(name, field, r.value);
+        s.shadow[r.key] = j;
+        const at = r.edited_at || 0, newer = k => at > (s.itemAt[k] || 0);
+        const keep = sj !== null || policy === 'replace' ? null : 'add'; // with nothing to compare against, only add
+        Object.entries(now).forEach(([k, v]) => {
+          if (J(was[k]) === J(v) || !newer(k)) return;
+          const lv = k in patch ? patch[k] : getRow(name, c, k);
+          if (J(lv) === J(v)) return;
+          // Changed here too since the last sync: the newer edit wins.
+          if (lv !== undefined && J(lv) !== (s.shadow[k] ?? null) && (s.dirtyAt[k] || 0) > at) return;
+          if (keep === 'add' && lv !== undefined && policy !== 'combine') return;
+          patch[k] = v; s.itemAt[k] = at;
+        });
+        if (!keep) Object.keys(was).forEach(k => { if (!(k in now) && newer(k) && getRow(name, c, k) !== undefined) { patch[k] = null; s.itemAt[k] = at; } });
+        dirty.add(name); // the items it changed go up as item rows
+        continue;
+      }
       if (policy === 'normal' && j === sj) continue;
       const lv = getRow(name, c, r.key), lj = J(lv);
-      if (lj === j) { s.shadow[r.key] = j; delete s.dirtyAt[r.key]; continue; }
+      if (lj === j) { s.shadow[r.key] = j; delete s.dirtyAt[r.key]; if (isSplitKey(r.key)) s.itemAt[r.key] = Math.max(s.itemAt[r.key] || 0, r.edited_at || 0); continue; }
       let take;
       if (policy === 'replace') take = true;
       else if (policy === 'combine' && !isItem(r.key) && lv !== undefined && r.value) {
@@ -235,12 +338,23 @@ async function receive(rows, policy = 'normal') {
       else {
         // Changed on both PCs: the newer edit wins.
         take = (r.edited_at || 0) >= (s.dirtyAt[r.key] || itemTime(lv) || 0);
-        if (isItem(r.key)) notice({ kind: 'conflict', title: (take ? rowTitle(r.value) : rowTitle(lv)) || 'A task', kept: take ? 'other' : 'here' });
+        if (isItem(r.key)) notice({ kind: 'conflict', title: (take ? rowTitle(unwrap(r.key, r.value)) : rowTitle(unwrap(r.key, lv))) || 'A task', kept: take ? 'other' : 'here' });
       }
       s.shadow[r.key] = j;
+      if (isSplitKey(r.key)) s.itemAt[r.key] = Math.max(s.itemAt[r.key] || 0, r.edited_at || 0);
       if (take) { patch[r.key] = j === null ? null : r.value; delete s.dirtyAt[r.key]; }
       else dirty.add(name);
     }
+    // Ordered lists (statuses, rules, workspaces): items that didn't change take their place from
+    // the cloud too, so a reorder that arrives one row at a time still ends in the right order.
+    Object.entries(listsOf(name)).forEach(([f, kind]) => {
+      if (kind !== 'ordered' || !Object.keys(patch).some(k => k.startsWith(`l/${f}/`))) return;
+      Object.entries(fieldRows(name, f, c && c[f])).forEach(([k, w]) => {
+        if (k in patch || !s.shadow[k]) return;
+        const sp = JSON.parse(s.shadow[k]).p;
+        if (typeof sp === 'number' && sp !== w.p) patch[k] = { v: w.v, p: sp };
+      });
+    });
     if (Object.keys(patch).length) await applyPatch(name, c, patch);
   }
   saveSoon();
@@ -248,7 +362,7 @@ async function receive(rows, policy = 'normal') {
 async function applyPatch(name, c, patch) {
   const next = applyRows(name, c, patch);
   cache[name] = next;
-  if (live[name]) { live[name](patch); return; }
+  if (live[name]) { live[name](livePatch(name, next, patch)); return; }
   // Not open in this window: write the file, and tell any task windows showing it.
   try { await invoke('write_store', { name, content: JSON.stringify(next) }); } catch (e) {}
   const ws = name.includes('-') ? name.slice(name.indexOf('-') + 1) : 'product';
@@ -359,7 +473,7 @@ function connect() {
 }
 
 /* ---------- Setup, sign-in, first sync ---------- */
-const DEFAULT_STATE = () => ({ version: 1, stores: {}, docsUp: [] });
+const DEFAULT_STATE = () => ({ version: 1, stores: {}, docsUp: [], v2: [] });
 async function makeClient() {
   const { createClient } = await import('@supabase/supabase-js');
   client = createClient(st.url, st.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth' }, realtime: { params: { eventsPerSecond: 20 } } });
@@ -444,7 +558,10 @@ export async function cloudFirstSync(mode) {
         // Tasks that only exist on this PC are dropped (they're in the backup).
         for (const name of await localStores()) {
           const s = sstore(name), c = await content(name), patch = {};
-          Object.keys(split(name, c)).forEach(k => { if (isItem(k) && s.shadow[k] === undefined) patch[k] = null; });
+          // List items that only an older PC's whole-list row has (no item rows in the cloud yet) are kept.
+          const legacy = {};
+          Object.keys(s.shadow).forEach(k => { if (k.startsWith('m/') && s.shadow[k] !== null) Object.assign(legacy, fieldRows(name, k.slice(2), JSON.parse(s.shadow[k]))); });
+          Object.keys(split(name, c)).forEach(k => { if (isItem(k) && s.shadow[k] === undefined && !(k.startsWith('l/') && k in legacy)) patch[k] = null; });
           if (Object.keys(patch).length) await applyPatch(name, c, patch);
         }
       }

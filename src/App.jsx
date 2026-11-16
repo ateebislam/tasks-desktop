@@ -8,7 +8,7 @@ import { check as checkForUpdate } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import { emit, listen } from '@tauri-apps/api/event';
-import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
@@ -51,6 +51,8 @@ const I = {
   chart: p => <Icon {...p}><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></Icon>,
   inbox: p => <Icon {...p}><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></Icon>,
   listCheck: p => <Icon {...p}><path d="M11 18H3"/><path d="m15 18 2 2 4-4"/><path d="M16 12H3"/><path d="M16 6H3"/></Icon>,
+  alert: p => <Icon {...p}><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></Icon>,
+  trendUp: p => <Icon {...p}><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></Icon>,
   flag: p => <Icon {...p}><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" x2="4" y1="22" y2="15"/></Icon>,
   paperclip: p => <Icon {...p}><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></Icon>,
   upload: p => <Icon {...p}><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></Icon>,
@@ -565,7 +567,8 @@ function Dialog({ open, onClose, title, description, children, footer, className
   useLockScroll(open);
   useEffect(() => {
     if (!open) return;
-    const k = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose(); } };
+    // An open @/# list inside the dialog takes Esc first.
+    const k = e => { if (e.key === 'Escape') { if (e.target && e.target.closest && e.target.closest('[data-picking="1"]')) return; e.stopPropagation(); onClose(); } };
     document.addEventListener('keydown', k, true);
     return () => document.removeEventListener('keydown', k, true);
   }, [open, onClose]);
@@ -739,6 +742,48 @@ const BucketStatusPill = ({ status, className }) => (
 );
 // A bucket automation creates one task when a bucket moves to a status. {bucket} in the title becomes the bucket's name.
 const fillBucket = (text, b) => (text || '{bucket}').replace(/\{bucket\}/gi, b.name);
+
+/* Scope tracking (0.19.3): why buckets keep growing.
+   A task "joins" a bucket when it's created in it or moved into it (task.bucketJoin = { name, at }).
+   Tasks that join after the bucket's planned start day are "added later". Each can carry a reason
+   (task.addedReason): bug, change request, missed requirement or other; "planned" says it was part
+   of the plan after all and stops it counting. When a bucket starts, its end date is kept as the
+   original end (bucket.baseEnd), and every later change of the end is logged in bucket.moves. */
+const ADD_REASONS = [
+  { id: 'bug', label: 'Bug', short: 'bug', dot: 'bg-red-500', pill: 'bg-red-100 text-red-700 dark:bg-red-950/70 dark:text-red-300' },
+  { id: 'change', label: 'Change request', short: 'change request', dot: 'bg-amber-500', pill: 'bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300' },
+  { id: 'missed', label: 'Missed requirement', short: 'missed requirement', dot: 'bg-violet-500', pill: 'bg-violet-100 text-violet-700 dark:bg-violet-950/70 dark:text-violet-300' },
+  { id: 'other', label: 'Other', short: 'other', dot: 'bg-slate-400', pill: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300' },
+];
+const AR = Object.fromEntries(ADD_REASONS.map(r => [r.id, r]));
+const NO_REASON = { id: 'none', label: 'No reason yet', short: 'no reason', dot: 'bg-zinc-500/50', pill: 'bg-muted text-muted-foreground' };
+const reasonOf = t => AR[t.addedReason] || NO_REASON;
+// Tasks that join on the start day still count as planned: that's usually the planning itself.
+const scopeFrom = b => (b && b.start ? +addDays(fromISO(b.start), 1) : null);
+const joinedAt = t => (t.bucketJoin && t.bucketJoin.name === norm(t.bucket) ? t.bucketJoin.at : t.createdAt || 0);
+// Tasks made by a bucket automation are part of the bucket's process, never added scope.
+const joinedLate = (t, b) => { const s = scopeFrom(b); return s != null && !t.inbox && !(t.generatedBy && !t.generatedFrom) && joinedAt(t) >= s; };
+const isAddedLater = (t, b) => joinedLate(t, b) && t.addedReason !== 'planned';
+const nDays = n => `${n} ${n === 1 ? 'day' : 'days'}`;
+const nTasks = n => `${n} ${n === 1 ? 'task' : 'tasks'}`;
+function bucketScope(b, tasks) {
+  if (!b || !b.start) return null;
+  const todayISO = toISO(new Date());
+  const ts = tasks.filter(t => !t.inbox && norm(t.bucket) === norm(b.name));
+  const added = ts.filter(t => isAddedLater(t, b)).sort((x, y) => joinedAt(y) - joinedAt(x));
+  const reasons = [...ADD_REASONS, NO_REASON].map(r => ({ ...r, n: added.filter(t => reasonOf(t).id === r.id).length, time: added.filter(t => reasonOf(t).id === r.id).reduce((n, t) => n + elapsed(t), 0) })).filter(r => r.n);
+  const open = ts.filter(t => t.status !== 'done'), openAdded = added.filter(t => t.status !== 'done');
+  const started = b.start <= todayISO;
+  const slip = b.baseEnd && b.end ? daysBetween(fromISO(b.baseEnd), fromISO(b.end)) : 0;
+  const late = bucketStatus(b) !== 'done' && !!b.end && b.end < todayISO && open.length > 0;
+  const time = added.reduce((n, t) => n + elapsed(t), 0), total = ts.reduce((n, t) => n + elapsed(t), 0);
+  const moves = (b.moves || []).filter(m => m.from !== m.to);
+  // The warning: tasks added after the start, and the bucket now ends later than planned or is past its end.
+  let warn = '';
+  if (added.length && slip > 0) warn = `Ends ${nDays(slip)} later than planned. ${nTasks(added.length)} ${added.length === 1 ? 'was' : 'were'} added after it started.`;
+  else if (added.length && late) warn = `Past its end date with ${nTasks(open.length)} open, ${openAdded.length} of them added after it started.`;
+  return { ts, added, planned: ts.length - added.length, reasons, open, openAdded, started, slip, late, time, total, moves, warn };
+}
 
 /* Local storage: everything is written as JSON files in the app's data folder on this computer.
    With cloud sync on, the main window also sends each change to Supabase (see cloud.js). */
@@ -924,6 +969,14 @@ function useTasks(ws = 'product') {
         let doneAt = null;
         if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
         const x = { ...t, updatedAt: now, doneAt };
+        // Remember when the task joined its bucket, so tasks added after a bucket starts can be told apart.
+        // Clearing the bucket keeps the record, so picking the same bucket again doesn't count as new.
+        const bk = norm(x.bucket), j = x.bucketJoin;
+        if (bk && (!j || j.name !== bk) && !(!j && prev && norm(prev.bucket) === bk)) {
+          x.bucketJoin = { name: bk, at: now };
+          const was = j ? j.name : norm(prev && prev.bucket);
+          if (was && x.addedReason && x.addedReason === (prev && prev.addedReason)) delete x.addedReason; // the reason was for the old bucket
+        }
         // Remember which PC runs a timer, so closing one PC never stops a timer running on another.
         if (x.timerStartedAt && (!prev || prev.timerStartedAt !== x.timerStartedAt)) x.timerDevice = DEVICE_ID;
         else if (!x.timerStartedAt) delete x.timerDevice;
@@ -1164,34 +1217,156 @@ async function openCaptureWindow() {
   try {
     const existing = await WebviewWindow.getByLabel('capture');
     if (existing) { await existing.show(); await existing.setFocus(); return; }
-    new WebviewWindow('capture', { url: 'index.html#capture=1', title: 'Quick capture', width: 560, height: 132, center: true, resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, focus: true });
+    new WebviewWindow('capture', { url: 'index.html#capture=1', title: 'Quick capture', width: CAPTURE_W, height: 82, center: true, resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, focus: true });
   } catch (e) { toast('Couldn’t open quick capture', String(e)); }
 }
 
-function QuickCaptureWindow() {
+// The main window keeps a short copy of the bucket and platform lists here, so the quick capture window can offer them.
+const captureListsKey = ws => 'tasks-capture-lists-' + (ws || 'product');
+const readCaptureLists = ws => {
+  try { const v = JSON.parse(localStorage.getItem(captureListsKey(ws))); if (v && Array.isArray(v.buckets)) return v; } catch (e) {}
+  return { buckets: [], platforms: [], labels: { bucket: LABEL_DEFAULTS.bucket, platform: LABEL_DEFAULTS.platform } };
+};
+// "@" or "#" at the start of a word, up to the caret, opens a picker.
+const captureToken = (text, caret) => {
+  const m = /(^|\s)([@#])([^@#\n]{0,40})$/.exec(text.slice(0, caret));
+  return m ? { kind: m[2] === '@' ? 'bucket' : 'platform', start: caret - m[3].length - 1, query: m[3] } : null;
+};
+
+// Quick capture box, used by the floating window and by Quick add in the app.
+// The text box grows as you type, up to maxHeight, then scrolls. @ picks a bucket and # picks a platform.
+function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) {
   const [v, setV] = useState('');
-  const ref = useRef(null);
+  const [bucket, setBucket] = useState('');
+  const [platform, setPlatform] = useState('');
+  const [tok, setTok] = useState(null);
+  const [hi, setHi] = useState(0);
+  const skip = useRef(-1);
+  const ta = useRef(null);
+  const labels = lists.labels || {};
+  const L = { bucket: labels.bucket || LABEL_DEFAULTS.bucket, platform: labels.platform || LABEL_DEFAULTS.platform };
+  const options = useMemo(() => {
+    if (!tok) return [];
+    const q = norm(tok.query);
+    const src = (tok.kind === 'bucket' ? lists.buckets : lists.platforms) || [];
+    return src.filter(x => !q || norm(x.name).includes(q))
+      .sort((a, b) => (norm(b.name).startsWith(q) - norm(a.name).startsWith(q)) || ((a.done ? 1 : 0) - (b.done ? 1 : 0)))
+      .slice(0, 8);
+  }, [tok, lists]);
+  // A query with a space and no match is just text, so the picker steps aside.
+  const picking = !!tok && (options.length > 0 || !/\s/.test(tok.query));
+  useEffect(() => { onPicking && onPicking(picking); }, [picking]);
+  useLayoutEffect(() => {
+    const el = ta.current; if (!el) return;
+    el.style.height = 'auto';
+    const h = el.scrollHeight;
+    el.style.height = Math.min(h, maxHeight) + 'px';
+    el.style.overflowY = h > maxHeight ? 'auto' : 'hidden';
+  }, [v, maxHeight]);
+  useEffect(() => { const t = setTimeout(() => ta.current && ta.current.focus(), 50); return () => clearTimeout(t); }, []);
+  const look = (text, caret) => {
+    const t = captureToken(text, caret);
+    if (t && t.start === skip.current) { setTok(null); return; }
+    if (!t) skip.current = -1;
+    setTok(t); setHi(0);
+  };
+  const pick = o => {
+    const el = ta.current; const caret = el ? el.selectionStart : v.length;
+    const left = v.slice(0, tok.start), right = v.slice(caret);
+    const nv = /\s$/.test(left) && /^\s/.test(right) ? left + right.slice(1) : left + right;
+    if (tok.kind === 'bucket') setBucket(o.name); else setPlatform(o.name);
+    setV(nv); setTok(null); skip.current = -1;
+    requestAnimationFrame(() => { if (ta.current) { ta.current.focus(); ta.current.setSelectionRange(tok.start, tok.start); } });
+  };
+  const save = () => onSave({ title: v.replace(/\s+/g, ' ').trim(), bucket, project: platform });
+  const onKey = e => {
+    if (picking && options.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setHi(h => (h + (e.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length); return; }
+    if (picking && options.length && (e.key === 'Enter' || e.key === 'Tab')) { e.preventDefault(); pick(options[Math.min(hi, options.length - 1)]); return; }
+    if (picking && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); skip.current = tok.start; setTok(null); return; }
+    if (e.key === 'Enter') { e.preventDefault(); save(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel(); }
+  };
+  const chip = (kind, name, dot, clear) => (
+    <span key={kind} className="inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border bg-muted/60 pl-2 pr-1 text-xs">
+      <span className="text-muted-foreground">{kind === 'bucket' ? '@' : '#'}</span>
+      {dot && <span className={cn('size-2 shrink-0 rounded-full', dot)} />}
+      <span className="truncate font-medium">{name}</span>
+      <button type="button" onMouseDown={e => e.preventDefault()} onClick={clear} aria-label={`Remove ${L[kind].toLowerCase()} ${name}`}
+        className="flex size-4 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3" /></button>
+    </span>
+  );
+  const dotOf = (kind, name) => (((kind === 'bucket' ? lists.buckets : lists.platforms) || []).find(x => norm(x.name) === norm(name)) || {}).dot;
+  return (
+    <div className="grid gap-2">
+      <div className="flex items-start gap-3">
+        {!compact && <span className="mt-[3px] flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><I.plus className="size-4" /></span>}
+        <textarea ref={ta} rows={1} value={v} aria-label="New task" spellCheck data-picking={picking ? '1' : undefined}
+          placeholder={`New task… @ for ${L.bucket.toLowerCase()}, # for ${L.platform.toLowerCase()}`}
+          onChange={e => { const t = e.target.value.replace(/\r?\n/g, ' '); setV(t); look(t, e.target.selectionStart); }}
+          onSelect={e => look(e.target.value, e.target.selectionStart)}
+          onKeyDown={onKey}
+          className={cn('min-w-0 flex-1 resize-none bg-transparent py-[5px] text-base leading-6 placeholder:text-muted-foreground focus-visible:outline-none', compact && 'rounded-md border border-input px-3 shadow-sm focus-visible:ring-1 focus-visible:ring-ring')} />
+        {!compact && <Kbd className="mt-[7px]">Enter ↵</Kbd>}
+      </div>
+      {(bucket || platform) && (
+        <div className={cn('flex flex-wrap gap-1.5', !compact && 'pl-10')}>
+          {bucket && chip('bucket', bucket, dotOf('bucket', bucket), () => setBucket(''))}
+          {platform && chip('platform', platform, dotOf('platform', platform), () => setPlatform(''))}
+        </div>
+      )}
+      {picking && (
+        <div role="listbox" aria-label={L[tok.kind]} className={cn('rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm anim-pop', !compact && 'ml-10')}>
+          <div className="px-2 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{plural(L[tok.kind])}</div>
+          {options.length ? options.map((o, i) => (
+            <div key={o.name} role="option" aria-selected={i === hi} onMouseDown={e => e.preventDefault()} onMouseEnter={() => setHi(i)} onClick={() => pick(o)}
+              className={cn('flex h-8 cursor-pointer items-center gap-2 rounded-md px-2 text-sm', i === hi && 'bg-muted')}>
+              <span className={cn('size-2 shrink-0 rounded-full', o.dot || 'bg-zinc-400')} />
+              <span className={cn('min-w-0 flex-1 truncate', o.done && 'text-muted-foreground')}>{o.name}</span>
+              {o.note && <span className="shrink-0 text-xs text-muted-foreground">{o.note}</span>}
+              {i === hi && <Kbd>Enter</Kbd>}
+            </div>
+          )) : <div className="px-2 py-1.5 text-sm text-muted-foreground">{tok.query ? `No ${L[tok.kind].toLowerCase()} matches “${tok.query}”` : `No ${plural(L[tok.kind]).toLowerCase()} yet`}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const CAPTURE_W = 720;
+function QuickCaptureWindow() {
+  const [lists, setLists] = useState(() => { let ws = 'product'; try { ws = localStorage.getItem('tasks-ws') || 'product'; } catch (e) {} return readCaptureLists(ws); });
+  const [maxH, setMaxH] = useState(() => Math.max(72, Math.round(((window.screen && window.screen.availHeight) || 900) * 0.3)));
+  const box = useRef(null);
   const close = () => getCurrentWindow().close().catch(() => {});
   useEffect(() => {
-    setTimeout(() => ref.current && ref.current.focus(), 50);
     let un = null;
     getCurrentWindow().onFocusChanged(({ payload }) => { if (!payload) close(); }).then(f => { un = f; }).catch(() => {});
-    return () => { try { un && un(); } catch (e) {} };
+    const onStore = () => { let ws = 'product'; try { ws = localStorage.getItem('tasks-ws') || 'product'; } catch (e) {} setLists(readCaptureLists(ws)); setMaxH(Math.max(72, Math.round(((window.screen && window.screen.availHeight) || 900) * 0.3))); };
+    window.addEventListener('storage', onStore); window.addEventListener('focus', onStore);
+    return () => { try { un && un(); } catch (e) {} window.removeEventListener('storage', onStore); window.removeEventListener('focus', onStore); };
   }, []);
-  const save = async () => {
-    const title = v.trim(); if (!title) return close();
+  // The window follows the box: taller as the text wraps or a list opens.
+  useEffect(() => {
+    const el = box.current; if (!el || typeof ResizeObserver === 'undefined') return;
+    let last = 0;
+    const ro = new ResizeObserver(() => {
+      const h = Math.ceil(el.getBoundingClientRect().height) + 24;
+      if (h === last) return; last = h;
+      getCurrentWindow().setSize(new LogicalSize(CAPTURE_W, h)).catch(() => {});
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const save = async ({ title, bucket, project }) => {
+    if (!title) return close();
     let ws = 'product'; try { ws = localStorage.getItem('tasks-ws') || 'product'; } catch (e) {}
-    await emit('capture-task', { title, ws }).catch(() => {});
+    await emit('capture-task', { title, ws, bucket, project }).catch(() => {});
     close();
   };
   return (
-    <div className="flex h-screen items-center bg-background p-3">
-      <div className="flex w-full items-center gap-3 rounded-xl border bg-card px-4 py-3 shadow-sm">
-        <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground"><I.plus className="size-4" /></span>
-        <input ref={ref} value={v} onChange={e => setV(e.target.value)} placeholder="New task… press Enter to save, Esc to cancel" aria-label="New task"
-          onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') close(); }}
-          className="h-9 flex-1 bg-transparent text-base placeholder:text-muted-foreground focus-visible:outline-none" />
-        <Kbd>Enter ↵</Kbd>
+    <div className="min-h-screen bg-background p-3">
+      <div ref={box} className="rounded-xl border bg-card px-4 py-3 shadow-sm">
+        <CaptureBox lists={lists} maxHeight={maxH} onSave={save} onCancel={close} />
       </div>
     </div>
   );
@@ -2521,7 +2696,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -2679,6 +2854,25 @@ function TaskSheet({ bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisti
               <Combobox id="t-bucket" value={form.bucket} onChange={set('bucket')} options={buckets} placeholder={`Add ${labels.bucket.toLowerCase()}`} hideIcon inputClassName={ghostField}
                 createLabel={v => `Use “${v}”`} icon={() => <I.layers className="text-muted-foreground" />} />
             </PropRow>
+            {task && task.bucket && joinedLate(task, bucketMap[norm(task.bucket)]) && (() => {
+              const b = bucketMap[norm(task.bucket)], cur = task.addedReason === 'planned' ? 'planned' : (AR[task.addedReason] ? task.addedReason : '');
+              return (
+                <PropRow label="Added later" htmlFor="t-reason">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Select id="t-reason" variant="ghost" value={cur} onChange={v => change({ addedReason: v })} searchable={false} className="!w-auto shrink-0"
+                      renderValue={o => o.value ? o.node : <span className="inline-flex items-center gap-1.5 text-amber-700 dark:text-amber-300"><I.alert className="size-3.5" />Why was it added?</span>}
+                      options={[
+                        { value: '', label: 'No reason yet', node: <span className="text-muted-foreground">No reason yet</span> },
+                        ...ADD_REASONS.map(r => ({ value: r.id, label: r.label, group: 'Reason', node: <span className="inline-flex items-center gap-1.5"><span className={cn('size-2 rounded-full', r.dot)} />{r.label}</span> })),
+                        { value: 'planned', label: 'Part of the plan', group: 'Not added scope', node: <span className="inline-flex items-center gap-1.5 text-muted-foreground"><I.check className="size-3.5" />Part of the plan</span> },
+                      ]} />
+                    <span className="truncate text-xs text-muted-foreground" title={`Joined ${b.name} on ${fmtDay(joinedAt(task))}, after it started on ${shortDate(b.start)}`}>
+                      {cur === 'planned' ? 'Not counted as added' : `joined ${fmtDay(joinedAt(task))}, after ${b.name} started`}
+                    </span>
+                  </div>
+                </PropRow>
+              );
+            })()}
             <PropRow label={labels.platform} htmlFor="t-project">
               <Combobox id="t-project" value={form.project} onChange={set('project')} options={projects} placeholder={`Add ${labels.platform.toLowerCase()}`} hideIcon inputClassName={ghostField}
                 createLabel={v => `Use “${v}”`} icon={() => <I.folder className="text-muted-foreground" />} />
@@ -3224,8 +3418,10 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
   const [status, setStatus] = useState(BUCKET_STATUSES[0].id);
   const [start, setStart] = useState('');
   const [end, setEnd] = useState('');
+  const [baseEnd, setBaseEnd] = useState('');
   useEffect(() => {
     if (!open) return;
+    setBaseEnd(bucket && bucket.baseEnd || '');
     setName(bucket ? bucket.name : ''); setDescription(bucket ? bucket.description || '' : ''); setStatus(bucket ? bucketStatus(bucket) : BUCKET_STATUSES[0].id);
     setStart(bucket && bucket.start || ''); setEnd(bucket && bucket.end || '');
   }, [open]);
@@ -3236,7 +3432,7 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
   const ok = name.trim() && !clash;
   const lower = noun.toLowerCase();
   const n = bucket && bucketStatus(bucket) === status ? 0 : handoffs(status);
-  const save = () => { if (ok) onSave({ name: name.trim(), description: description.trim(), status, start, end }); };
+  const save = () => { if (ok) onSave({ name: name.trim(), description: description.trim(), status, start, end, ...(baseEnd ? { baseEnd } : {}) }); };
   return (
     <Dialog open={open} onClose={onClose} title={bucket ? `Edit ${lower}` : `New ${lower}`} className="max-w-md"
       footer={<>
@@ -3264,6 +3460,11 @@ function BucketDialog({ open, bucket, names, onClose, onSave, noun = 'Bucket', h
             <DatePicker id="bk-end" value={end} onChange={pickEnd} placeholder="End" format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
           </div>
         </div>
+        {bucket && bucket.baseEnd && start && end && (
+          <Field label="Original end" htmlFor="bk-base" hint={`The end date when this ${lower} started. Moves of the end are measured from it.${baseEnd && end > baseEnd ? ` Now ${nDays(daysBetween(fromISO(baseEnd), fromISO(end)))} later.` : ''}`}>
+            <DatePicker id="bk-base" value={baseEnd} onChange={v => setBaseEnd(v || end)} format={{ day: 'numeric', month: 'short', year: 'numeric' }} />
+          </Field>
+        )}
       </form>
     </Dialog>
   );
@@ -3456,8 +3657,11 @@ function BucketTimeline({ rows, sel, onSelect, onPlan, lower, progress }) {
                   className={cn('sticky left-0 z-20 flex w-64 shrink-0 items-center gap-3 border-r px-4 text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring', on ? 'bg-muted' : 'bg-card')}>
                   <span className="tnum w-5 shrink-0 text-xs font-semibold text-muted-foreground">{has ? ++n : '–'}</span>
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{r.b.name}</span>
-                    <span className="block truncate text-xs text-muted-foreground">{has ? planLabel(b) : 'Not planned'} · {r.st.total ? `${r.st.open.length} of ${r.st.total} open` : 'No tasks'}</span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <span className="truncate text-sm font-medium">{r.b.name}</span>
+                      {r.sc && r.sc.warn && <span title={r.sc.warn} className="shrink-0 text-amber-600 dark:text-amber-400"><I.alert className="size-3.5" /><span className="sr-only">{r.sc.warn}</span></span>}
+                    </span>
+                    <span className="block truncate text-xs text-muted-foreground">{has ? planLabel(b) : 'Not planned'} · {r.st.total ? `${r.st.open.length} of ${r.st.total} open` : 'No tasks'}{r.sc && r.sc.added.length ? <span className="text-amber-700 dark:text-amber-300"> · +{r.sc.added.length} added</span> : null}</span>
                   </span>
                 </button>
                 <div data-lane="" className={cn('relative flex-1', !has && 'cursor-copy')} onPointerDown={e => planAt(e, r)}>
@@ -3473,7 +3677,24 @@ function BucketTimeline({ rows, sel, onSelect, onPlan, lower, progress }) {
                       </button>
                       <span onPointerDown={e => begin(e, r, 'end')} className="absolute inset-y-0 right-0 w-2 cursor-ew-resize rounded-r-md hover:bg-foreground/20" />
                     </div>
-                  ) : (
+                  ) : null}
+                  {has && r.b.baseEnd && (() => {
+                    // Drift: the part of the bar past the original end, and a dashed line where the bucket was meant to end.
+                    const base = daysBetween(first, fromISO(r.b.baseEnd)) + 1, endAt = s0 + len, slip = endAt - base;
+                    if (slip <= 0 || base <= s0) return null;
+                    const tip = `Original end ${shortDate(r.b.baseEnd)}. Now ends ${nDays(slip)} later${r.sc && r.sc.added.length ? `, with ${nTasks(r.sc.added.length)} added after the start` : ''}.`;
+                    return (
+                      <>
+                        <div aria-hidden="true" className="pointer-events-none absolute top-3 z-20 h-8 rounded-r-md border border-l-0 border-amber-500/70"
+                          style={{ left: pct(base), width: `calc(${pct(slip)} - 2px)`, backgroundImage: 'repeating-linear-gradient(135deg, rgba(245,158,11,.35) 0 4px, transparent 4px 9px)' }} />
+                        <div aria-hidden="true" className="pointer-events-none absolute top-1.5 z-20 h-11 border-l-2 border-dashed border-amber-500" style={{ left: pct(base) }} />
+                        <span title={tip} className="absolute top-1/2 z-20 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded bg-amber-500/15 px-1.5 py-0.5 text-[11px] font-semibold text-amber-700 dark:text-amber-300" style={{ left: pct(endAt) }}>
+                          +{slip}d<span className="sr-only"> {tip}</span>
+                        </span>
+                      </>
+                    );
+                  })()}
+                  {has ? null : (
                     <span className="pointer-events-none absolute left-3 top-1/2 z-20 -translate-y-1/2 rounded-md border border-dashed bg-card px-2.5 py-1 text-xs text-muted-foreground opacity-80 group-hover/row:opacity-100">Not planned · click a week to plan it</span>
                   )}
                 </div>
@@ -3487,7 +3708,89 @@ function BucketTimeline({ rows, sel, onSelect, onPlan, lower, progress }) {
   );
 }
 
-function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus, onEditStatuses }) {
+/* ---------- Scope: tasks added after a bucket started (0.19.3) ---------- */
+const ScopeChip = ({ sc }) => (
+  <span title={sc.warn || `${nTasks(sc.added.length)} added after it started`}
+    className={cn('inline-flex shrink-0 items-center gap-1 rounded-full px-1.5 py-px text-[11px] font-medium', sc.warn ? 'bg-amber-500/15 text-amber-700 dark:text-amber-300' : 'bg-muted text-muted-foreground')}>
+    {sc.warn ? <I.alert className="size-3" /> : <I.plus className="size-3" />}{sc.added.length} added{sc.slip > 0 ? ` · +${sc.slip}d` : ''}
+  </span>
+);
+function ReasonPicker({ t, onSet }) {
+  const r = reasonOf(t);
+  return (
+    <DropdownMenu align="end" trigger={pp => (
+      <button {...pp} type="button" aria-label={`Reason for adding ${t.title || 'this task'}: ${r.label}. Change`}
+        className={cn('inline-flex h-6 shrink-0 items-center gap-1 rounded-full px-2 text-[11px] font-medium hover:opacity-80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', r.pill)}>
+        {r.id === 'none' ? 'Why?' : r.label}<I.down className="size-3 opacity-60" />
+      </button>
+    )} items={[...ADD_REASONS.map(x => ({ label: x.label, icon: <span className={cn('ml-0.5 mr-0.5 size-2 rounded-full', x.dot)} />, shortcut: x.id === r.id ? '✓' : undefined, onSelect: () => onSet(t.id, x.id) })),
+      'sep', { label: 'Part of the plan (don’t count)', icon: <I.check className="size-3.5" />, onSelect: () => onSet(t.id, 'planned') },
+      ...(r.id !== 'none' ? [{ label: 'Clear reason', icon: <I.x className="size-3.5" />, onSelect: () => onSet(t.id, '') }] : [])]} />
+  );
+}
+// A stacked bar of the added tasks by reason.
+const ReasonBar = ({ reasons, total }) => (
+  <div className="flex h-1.5 w-full overflow-hidden rounded-full bg-muted" aria-hidden="true">
+    {reasons.map(r => <div key={r.id} className={r.dot} style={{ width: `${(r.n / total) * 100}%` }} />)}
+  </div>
+);
+function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit }) {
+  const [all, setAll] = useState(false);
+  if (!sc) return (
+    <div className="mt-4 rounded-lg border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
+      <div className="mb-0.5 font-medium text-foreground">Scope</div>
+      Plan its dates to track tasks added after it starts. <button type="button" className="underline underline-offset-4 hover:text-foreground" onClick={onEdit}>Set dates</button>
+    </div>
+  );
+  const list = all ? sc.added : sc.added.slice(0, 6);
+  return (
+    <div className="mt-4" aria-label="Scope">
+      <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-muted-foreground">
+        <span className="flex items-center gap-1.5"><I.trendUp className="size-3.5" />Scope</span>
+        {!sc.started && <span>Starts {shortDate(b.start)}</span>}
+      </div>
+      {sc.warn && <div className="mb-2"><Note tone="amber"><I.alert className="mt-0.5 size-3 shrink-0" /><span>{sc.warn}</span></Note></div>}
+      <div className="grid grid-cols-3 gap-2">
+        <div className="rounded-lg border px-2.5 py-2"><div className="tnum text-base font-semibold">{sc.planned}</div><div className="text-[11px] text-muted-foreground">Planned at start</div></div>
+        <div className={cn('rounded-lg border px-2.5 py-2', sc.added.length && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.added.length ? `+${sc.added.length}` : 0}</div><div className="text-[11px] text-muted-foreground">Added later</div></div>
+        <div className={cn('rounded-lg border px-2.5 py-2', sc.slip > 0 && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.slip > 0 ? `+${sc.slip}d` : sc.slip < 0 ? `${sc.slip}d` : b.baseEnd ? 'On plan' : '–'}</div><div className="text-[11px] text-muted-foreground">{b.baseEnd ? `Was ${shortDate(b.baseEnd)}` : 'End not moved'}</div></div>
+      </div>
+      {sc.added.length > 0 && (
+        <div className="mt-2.5">
+          <ReasonBar reasons={sc.reasons} total={sc.added.length} />
+          <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+            {sc.reasons.map(r => <span key={r.id} className="inline-flex items-center gap-1.5"><span className={cn('size-2 rounded-full', r.dot)} />{r.label} <span className="tnum font-medium text-foreground">{r.n}</span></span>)}
+          </div>
+        </div>
+      )}
+      {sc.time >= 60000 && <div className="mt-2 text-xs text-muted-foreground">{fmtShort(sc.time)} spent on added tasks{sc.total >= 60000 ? `, ${Math.round(sc.time / sc.total * 100)}% of this ${lower}’s time` : ''}</div>}
+      {sc.moves.length > 0 && (
+        <div className="mt-1 text-xs text-muted-foreground">
+          End moved {sc.moves.length === 1 ? 'once' : `${sc.moves.length} times`}: {sc.moves.slice(-3).map(m => `${shortDate(m.from)} → ${shortDate(m.to)}`).join(', ')}{sc.moves.length > 3 ? ', …' : ''}
+        </div>
+      )}
+      {sc.added.length > 0 ? (
+        <div className="mt-2.5">
+          <div className="mb-1 text-xs font-medium text-muted-foreground">Added after it started · {sc.added.length}</div>
+          <div className="grid">
+            {list.map(t => (
+              <div key={t.id} className="flex items-center gap-2 rounded-md px-2 py-1 hover:bg-muted">
+                <button type="button" onClick={() => onOpenTask(t.id)} className={cn('min-w-0 flex-1 truncate text-left text-sm', t.status === 'done' && 'text-muted-foreground line-through decoration-muted-foreground/40')}>{t.title || 'Untitled'}</button>
+                <span className="shrink-0 text-[11px] text-muted-foreground">{fmtDay(joinedAt(t))}</span>
+                <ReasonPicker t={t} onSet={onSetReason} />
+              </div>
+            ))}
+          </div>
+          {sc.added.length > 6 && <button type="button" onClick={() => setAll(v => !v)} className="mt-1 px-2 text-xs text-muted-foreground hover:text-foreground">{all ? 'Show fewer' : `Show all ${sc.added.length}`}</button>}
+        </div>
+      ) : (
+        <p className="mt-2 text-xs text-muted-foreground">{sc.started ? `Nothing added since it started on ${shortDate(b.start)}.` : `Tasks added from ${shortDate(toISO(addDays(fromISO(b.start), 1)))} on count as added later.`}</p>
+      )}
+    </div>
+  );
+}
+
+function BucketsView({ list, tasks, scopeTasks, onSetReason, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus, onEditStatuses }) {
   const [tab0, setTab] = useState('active');
   const tab = tab0 === 'active' || BS[tab0] ? tab0 : 'active';
   const [mode, setModeRaw] = useState(() => { try { return localStorage.getItem('tasks-buckets-view') || 'list'; } catch (e) { return 'list'; } });
@@ -3509,7 +3812,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
     .filter(b => (tab === 'active' ? bucketStatus(b) !== 'done' : bucketStatus(b) === tab))
     .filter(b => !nq || norm(b.name).includes(nq) || norm(b.description).includes(nq))
     .sort((a, b) => (a.start || '9999').localeCompare(b.start || '9999') || (a.end || '').localeCompare(b.end || '') || a.name.localeCompare(b.name))
-    .map(b => ({ b, st: stats(b.name) }));
+    .map(b => ({ b, st: stats(b.name), sc: bucketScope(b, scopeTasks || tasks) }));
   const none = stats(null);
   const showNone = tab === 'active' && none.total > 0 && (!nq || norm(`No ${lower}`).includes(nq));
   const cur = sel && (sel === 'none' ? (showNone ? { b: { name: 'none', label: `No ${lower}` }, st: none, none: true } : null) : rows.find(r => r.b.name === sel));
@@ -3536,7 +3839,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
       </div>
     );
   };
-  const row = ({ b, st }, isNone) => {
+  const row = ({ b, st, sc }, isNone) => {
     const on = cur && cur.b.name === b.name;
     return (
       <div key={b.name} role="row" tabIndex={0} aria-selected={on} onClick={() => setSel(on ? null : b.name)}
@@ -3545,7 +3848,10 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
         <div className="flex min-w-0 items-center gap-3">
           <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-xs font-semibold">{isNone ? '–' : (b.name.trim().charAt(0).toUpperCase() || '?')}</span>
           <div className="min-w-0">
-            <div className={cn('truncate text-sm font-medium', isNone && 'text-muted-foreground')}>{b.label || b.name}</div>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className={cn('truncate text-sm font-medium', isNone && 'text-muted-foreground')}>{b.label || b.name}</span>
+              {sc && sc.added.length > 0 && <ScopeChip sc={sc} />}
+            </div>
             {b.description ? <div className="truncate text-xs text-muted-foreground" title={b.description}>{b.description}</div>
               : !isNone && <div className="text-xs text-muted-foreground/60">No description</div>}
           </div>
@@ -3589,6 +3895,7 @@ function BucketsView({ list, tasks, noun, onNew, onEdit, onDelete, onOpen, onSta
           {prop('Progress', progress(st, true))}
           {created && prop('Created', created)}
         </div>
+        {!cur.none && <ScopePanel b={b} sc={cur.sc} lower={lower} onOpenTask={onOpenTask} onSetReason={onSetReason} onEdit={() => onEdit(b)} />}
         <div className="mt-4">
           <div className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground"><span>Open tasks · {st.open.length}</span>{!cur.none && <button type="button" className="hover:text-foreground" onClick={() => onOpen(b.name)}>Show in Tasks</button>}</div>
           {st.open.length ? <div className="grid max-h-72 overflow-y-auto">{st.open.slice().sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999')).map(taskRow)}</div>
@@ -4211,6 +4518,475 @@ function ProjectsView({ list, tasks, onNew, onEdit, onDelete, onOpen }) {
   );
 }
 
+/* =========================================================
+   Weekly report: what was done this week, what's in progress, and next week's plan,
+   grouped by bucket. Built from tasks and timers; every line can be edited, removed or added to,
+   and the result is copied as text, Markdown or formatted for email. Edits are kept per week on this PC.
+   ========================================================= */
+const REPORT_SECTIONS = [
+  { id: 'done', title: 'Done this week', pastTitle: 'Done that week', empty: 'Nothing was marked done in this week.' },
+  { id: 'doing', title: 'In progress', empty: 'Nothing is in progress.' },
+  { id: 'next', title: 'Next week', empty: 'No deadlines next week, and no bucket is planned to start.' },
+];
+const weekStart = offset => addDays(startOfDay(new Date()), -((new Date().getDay() + 6) % 7) + offset * 7);
+const fmtMD = d => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const fmtRange = (a, b) => a.getMonth() === b.getMonth() ? `${fmtMD(a)} – ${b.getDate()}, ${b.getFullYear()}` : `${fmtMD(a)} – ${fmtMD(b)}, ${b.getFullYear()}`;
+async function copyToClipboard(text, html) {
+  try {
+    if (html && window.ClipboardItem && navigator.clipboard && navigator.clipboard.write) {
+      await navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([html], { type: 'text/html' }), 'text/plain': new Blob([text], { type: 'text/plain' }) })]);
+      return true;
+    }
+    await navigator.clipboard.writeText(text); return true;
+  } catch (e) {
+    try {
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
+      document.body.appendChild(ta); ta.select(); const ok = document.execCommand('copy'); ta.remove(); return ok;
+    } catch (e2) { return false; }
+  }
+}
+// Builds the report's content from the tasks. Each item: { key, task, bucket, title, meta: [..] }.
+function buildReport({ tasks, buckets, stages, start, includeTime, noun }) {
+  const end = addDays(start, 7), nextEnd = addDays(start, 14);
+  const S0 = +start, E0 = +end, todayISO = toISO(new Date());
+  const live = tasks.filter(t => !t.inbox);
+  const bmap = Object.fromEntries(buckets.map(b => [norm(b.name), b]));
+  const due = iso => { const d = fromISO(iso); return iso < todayISO && +d < E0 ? `overdue since ${fmtMD(d)}` : `due ${fmtMD(d)}`; };
+  const steps = t => { const c = t.checklist || []; if (!c.length) return []; const n = c.filter(x => x.done).length; return [`${Math.round(n / c.length * 100)}% done`, `${n} of ${c.length} steps`]; };
+  // Done: marked done inside the week (tasks done before doneAt existed use their last change).
+  const done = live.filter(t => t.status === 'done' && (t.doneAt || t.updatedAt || 0) >= S0 && (t.doneAt || t.updatedAt || 0) < E0)
+    .sort((a, b) => (a.doneAt || a.updatedAt || 0) - (b.doneAt || b.updatedAt || 0))
+    .map(t => ({ task: t, meta: [includeTime && elapsed(t) >= 60000 ? fmtShort(elapsed(t)) : null] }));
+  // In progress: In progress or Blocked now, or not done but worked on (timer) during the week.
+  const doing = live.filter(t => t.status !== 'done' && !t.archivedAt && (t.status === 'doing' || t.status === 'blocked' || trackedIn(t, S0, E0) >= 60000))
+    .sort((a, b) => (S[a.status].i - S[b.status].i) || (a.deadline || '9999').localeCompare(b.deadline || '9999'))
+    .map(t => {
+      const st = statusDef(t, stages), wk = trackedIn(t, S0, E0);
+      return { task: t, meta: [
+        t.status === 'blocked' ? (st.builtin ? 'blocked' : `blocked: ${st.name}`) : t.status === 'todo' ? null : !st.builtin ? st.name : null,
+        ...steps(t),
+        includeTime && wk >= 60000 ? `${fmtShort(wk)} this week` : null,
+        t.deadline ? due(t.deadline) : null,
+      ] };
+    });
+  const taken = new Set(doing.map(x => x.task.id));
+  // Next week: open tasks due by the end of next week (overdue ones too) that aren't already in progress.
+  const nextEndISO = toISO(nextEnd);
+  const next = live.filter(t => t.status !== 'done' && !t.archivedAt && !taken.has(t.id) && t.deadline && t.deadline < nextEndISO)
+    .sort((a, b) => a.deadline.localeCompare(b.deadline))
+    .map(t => ({ task: t, meta: [t.deadline ? due(t.deadline) : null] }));
+  // The next bucket in sequence: any bucket planned to start next week, or else the first one planned after that.
+  const nsISO = toISO(end);
+  const planned = buckets.filter(b => bucketStatus(b) !== 'done' && b.start && b.start >= nsISO).sort((a, b) => a.start.localeCompare(b.start) || a.name.localeCompare(b.name));
+  const nextBuckets = planned.filter(b => b.start < nextEndISO);
+  if (!nextBuckets.length && planned[0]) nextBuckets.push(planned[0]);
+  const listed = new Set([...taken, ...next.map(x => x.task.id)]);
+  nextBuckets.forEach(b => live.filter(t => t.status !== 'done' && !t.archivedAt && norm(t.bucket) === norm(b.name) && !listed.has(t.id))
+    .forEach(t => { listed.add(t.id); next.push({ task: t, meta: [t.deadline ? due(t.deadline) : null] }); }));
+  const groupMeta = (name, sec) => {
+    const b = bmap[norm(name)]; if (!b) return '';
+    if (sec === 'next' && nextBuckets.includes(b)) return `starts ${fmtMD(fromISO(b.start))}${b.end ? `, ends ${fmtMD(fromISO(b.end))}` : ''}`;
+    const ts = tasks.filter(t => norm(t.bucket) === norm(name)), d = ts.filter(t => t.status === 'done').length;
+    return [ts.length ? `${d} of ${ts.length} done` : '', b.end ? `${b.end < todayISO && d < ts.length ? 'was due' : 'ends'} ${fmtMD(fromISO(b.end))}` : ''].filter(Boolean).join(', ');
+  };
+  const order = name => { const b = bmap[norm(name)]; return b && b.start ? b.start : '9999'; };
+  const group = (items, sec) => {
+    const m = new Map();
+    items.forEach(x => { const k = norm(x.task.bucket); if (!m.has(k)) m.set(k, { key: k, name: k ? ((bmap[k] || {}).name || x.task.bucket.trim()) : '', items: [] }); m.get(k).items.push({ ...x, key: `${sec}:${x.task.id}`, meta: x.meta.filter(Boolean) }); });
+    if (sec === 'next') nextBuckets.forEach(b => { const k = norm(b.name); if (!m.has(k)) m.set(k, { key: k, name: b.name, items: [] }); });
+    return [...m.values()].map(g => ({ ...g, status: g.name && bmap[g.key] ? bucketStatus(bmap[g.key]) : null, meta: g.name ? groupMeta(g.name, sec) : '' }))
+      .sort((a, b) => (!a.name) - (!b.name) || order(a.name).localeCompare(order(b.name)) || a.name.localeCompare(b.name));
+  };
+  const total = tasks.reduce((n, t) => n + trackedIn(t, S0, E0), 0);
+  return { start, end, sections: { done: group(done, 'done'), doing: group(doing, 'doing'), next: group(next, 'next') }, total, nextStart: end, scope: buildScope({ tasks: live, buckets, S0, E0, includeTime, noun }) };
+}
+// Scope changes for the report: what was added to buckets already under way this week, how far
+// their ends moved, and over every tracked bucket, which reason brings the most added work.
+function buildScope({ tasks, buckets, S0, E0, includeTime, noun }) {
+  const tracked = buckets.map(b => ({ b, sc: bucketScope(b, tasks) })).filter(x => x.sc && x.sc.started);
+  const lower = (noun || 'Bucket').toLowerCase();
+  const rshort = r => (r.n === 1 || r.id === 'none' ? r.short : plural(r.short));
+  const reasonText = rs => rs.map(r => `${r.n} ${rshort(r)}`).join(', ');
+  const lines = [];
+  tracked.forEach(({ b, sc }) => {
+    const wk = sc.added.filter(t => joinedAt(t) >= S0 && joinedAt(t) < E0);
+    const movedWk = sc.moves.filter(m => m.at >= S0 && m.at < E0);
+    const active = bucketStatus(b) !== 'done' && ((b.end || '') >= toISO(new Date(S0)) || sc.late);
+    if (!wk.length && !movedWk.length && !(active && sc.added.length)) return;
+    const parts = [];
+    if (sc.added.length) parts.push(`${nTasks(sc.added.length)} added after it started${wk.length && wk.length !== sc.added.length ? ` (${wk.length} this week)` : wk.length ? ' (all this week)' : ''}: ${reasonText(sc.reasons)}`);
+    if (includeTime && sc.time >= 60000) parts.push(`${fmtShort(sc.time)} spent on them${sc.total >= 60000 ? ` (${Math.round(sc.time / sc.total * 100)}% of its time)` : ''}`);
+    if (sc.slip > 0) parts.push(`ends ${fmtMD(fromISO(b.end))}, ${nDays(sc.slip)} later than the original ${fmtMD(fromISO(b.baseEnd))}${sc.moves.length > 1 ? ` (moved ${sc.moves.length} times)` : ''}`);
+    else if (sc.late) parts.push(`past its end date (${fmtMD(fromISO(b.end))}) with ${nTasks(sc.open.length)} open`);
+    else if (b.baseEnd && b.end) parts.push(`still ends ${fmtMD(fromISO(b.end))} as planned`);
+    lines.push({ key: b.name, name: b.name, status: bucketStatus(b), text: parts.join('; '), warn: !!sc.warn, added: sc.added.length, week: wk.length, slip: sc.slip });
+  });
+  // The pattern, over every bucket that has started (done ones too).
+  const added = tracked.flatMap(x => x.sc.added);
+  const slipped = tracked.filter(x => x.sc.slip > 0);
+  const by = [...ADD_REASONS, NO_REASON].map(r => {
+    const ts = added.filter(t => reasonOf(t).id === r.id);
+    return { ...r, n: ts.length, time: ts.reduce((n, t) => n + elapsed(t), 0), inSlipped: slipped.reduce((n, x) => n + x.sc.added.filter(t => reasonOf(t).id === r.id).length, 0) };
+  }).filter(r => r.n);
+  const named = by.filter(r => r.id !== 'none').sort((a, b) => b.inSlipped - a.inSlipped || b.n - a.n || b.time - a.time);
+  let pattern = '';
+  if (added.length) {
+    const top = named[0];
+    pattern = `Across ${tracked.length} ${tracked.length === 1 ? lower : plural(lower)}, ${nTasks(added.length)} ${added.length === 1 ? 'was' : 'were'} added after the start: ${by.slice().sort((a, b) => b.n - a.n).map(r => `${r.n} ${rshort(r)}${includeTime && r.time >= 60000 ? ` (${fmtShort(r.time)})` : ''}`).join(', ')}.`;
+    if (slipped.length) pattern += ` ${slipped.length} of those ${plural(lower)} ended later than planned, by ${nDays(Math.round(slipped.reduce((n, x) => n + x.sc.slip, 0) / slipped.length))} on average.`;
+    if (top && (top.inSlipped || top.n) && added.length >= 2) pattern += ` ${top.label === 'Other' ? 'Other reasons' : plural(top.label)} ${top.inSlipped ? `are behind most of the work added to ${plural(lower)} that slipped (${top.inSlipped} of ${slipped.reduce((n, x) => n + x.sc.added.length, 0)})` : `are the most common reason (${top.n} of ${added.length})`}.`;
+  }
+  const weekAdded = added.filter(t => joinedAt(t) >= S0 && joinedAt(t) < E0).length;
+  return { lines, pattern, by, total: added.length, weekAdded, buckets: tracked.length };
+}
+const REPORT_EMPTY = { summary: '', hidden: [], titles: {}, notes: {}, extra: { done: [], doing: [], next: [] } };
+function useReportEdits(ws, startISO) {
+  const key = `tasks-report-${ws}-${startISO}`;
+  const read = () => { try { const v = JSON.parse(localStorage.getItem(key)); return v ? { ...REPORT_EMPTY, ...v, extra: { ...REPORT_EMPTY.extra, ...(v.extra || {}) } } : REPORT_EMPTY; } catch (e) { return REPORT_EMPTY; } };
+  const [state, setState] = useState(read);
+  useEffect(() => { setState(read()); }, [key]);
+  const set = fn => setState(cur => { const v = typeof fn === 'function' ? fn(cur) : fn; try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} return v; });
+  const reset = () => { try { localStorage.removeItem(key); } catch (e) {} setState(REPORT_EMPTY); };
+  return [state, set, reset];
+}
+// Click to edit one line of text. Enter or leaving the field saves, Esc cancels.
+function InlineEdit({ value, onSave, placeholder, className, multiline, autoEdit, onDone, label }) {
+  const [edit, setEdit] = useState(!!autoEdit);
+  const [v, setV] = useState(value);
+  useEffect(() => { if (!edit) setV(value); }, [value, edit]);
+  const done = commit => { setEdit(false); if (commit && v !== value) onSave(v); else setV(value); onDone && onDone(); };
+  if (!edit) return (
+    <button type="button" onClick={() => setEdit(true)} title="Click to edit" className={cn('min-w-0 rounded-sm text-left hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', !value && 'text-muted-foreground', className)}>
+      {value || placeholder}
+    </button>
+  );
+  const P = { autoFocus: true, value: v, 'aria-label': label || placeholder, placeholder, onChange: e => setV(e.target.value), onBlur: () => done(true),
+    onKeyDown: e => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(false); } if (e.key === 'Enter' && (!multiline || !e.shiftKey)) { e.preventDefault(); done(true); } } };
+  return multiline
+    ? <Textarea {...P} rows={2} className={cn('min-h-0 resize-none bg-background py-1 text-[13px]', className)} />
+    : <Input {...P} className={cn('h-7 bg-background px-2 text-[13px]', className)} />;
+}
+function reportOutput(R, E, { title, includeTime, noun, includeScope }) {
+  const sc = includeScope ? R.scope : null;
+  const secs = REPORT_SECTIONS.map(s => {
+    const groups = R.sections[s.id].map(g => ({ ...g, items: g.items.filter(x => !E.hidden.includes(x.key)).map(x => ({ text: E.titles[x.key] ?? (x.task.title || 'Untitled'), meta: x.meta, note: E.notes[x.key] || '' })) }))
+      .filter(g => g.items.length || (s.id === 'next' && g.meta.startsWith('starts')));
+    const extra = (E.extra[s.id] || []).filter(x => x.text.trim()).map(x => ({ text: x.text, meta: [], note: '' }));
+    return { title: s.title, groups, extra };
+  });
+  const tail = x => x.meta.length ? ` (${x.meta.join(', ')})` : '';
+  const gname = g => g.name || `No ${noun.toLowerCase()}`;
+  const gTail = g => g.meta ? ` (${g.meta}${g.items.length ? '' : ', no tasks yet'})` : '';
+  const timeLine = includeTime && R.total >= 60000 ? `Time tracked this week: ${fmtShort(R.total)}` : '';
+  // Plain text
+  const tx = [title, ''];
+  if (E.summary.trim()) tx.push(E.summary.trim(), '');
+  if (timeLine) tx.push(timeLine, '');
+  secs.forEach(s => {
+    tx.push(s.title.toUpperCase());
+    if (!s.groups.length && !s.extra.length) tx.push('• Nothing to report');
+    s.groups.forEach(g => { tx.push(`${gname(g)}${gTail(g)}`); g.items.forEach(x => { tx.push(`  • ${x.text}${tail(x)}`); if (x.note) x.note.split('\n').forEach(l => tx.push(`    ${l}`)); }); });
+    s.extra.forEach(x => tx.push(`• ${x.text}`));
+    tx.push('');
+  });
+  if (sc) {
+    tx.push('SCOPE CHANGES');
+    sc.lines.forEach(l => tx.push(`• ${l.name}: ${l.text}`));
+    if (sc.pattern) tx.push(sc.pattern);
+    tx.push('');
+  }
+  // Markdown
+  const esc = s => s.replace(/([*_`[\]])/g, '\\$1');
+  const md = [`## ${title}`, ''];
+  if (E.summary.trim()) md.push(E.summary.trim(), '');
+  if (timeLine) md.push(`_${timeLine}_`, '');
+  secs.forEach(s => {
+    md.push(`### ${s.title}`, '');
+    if (!s.groups.length && !s.extra.length) md.push('- Nothing to report');
+    s.groups.forEach(g => { md.push(`**${esc(gname(g))}**${gTail(g)}`, ''); g.items.forEach(x => { md.push(`- ${esc(x.text)}${tail(x)}`); if (x.note) x.note.split('\n').forEach(l => md.push(`  - ${esc(l)}`)); }); md.push(''); });
+    s.extra.forEach(x => md.push(`- ${esc(x.text)}`));
+    if (s.extra.length) md.push('');
+  });
+  if (sc) {
+    md.push('### Scope changes', '');
+    sc.lines.forEach(l => md.push(`- **${esc(l.name)}**: ${esc(l.text)}`));
+    if (sc.lines.length) md.push('');
+    if (sc.pattern) md.push(esc(sc.pattern), '');
+  }
+  // HTML (pastes with formatting into Outlook, Teams or Word)
+  const h = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const li = x => `<li>${h(x.text)}${x.meta.length ? ` <span style="color:#6b7280">(${h(x.meta.join(', '))})</span>` : ''}${x.note ? `<br><span style="color:#374151">${h(x.note).replace(/\n/g, '<br>')}</span>` : ''}</li>`;
+  let html = `<div style="font-family:Segoe UI,Arial,sans-serif;font-size:14px"><h2 style="margin:0 0 8px">${h(title)}</h2>`;
+  if (E.summary.trim()) html += `<p>${h(E.summary.trim()).replace(/\n/g, '<br>')}</p>`;
+  if (timeLine) html += `<p style="color:#6b7280">${h(timeLine)}</p>`;
+  secs.forEach(s => {
+    html += `<h3 style="margin:16px 0 4px">${h(s.title)}</h3>`;
+    if (!s.groups.length && !s.extra.length) html += '<ul><li>Nothing to report</li></ul>';
+    s.groups.forEach(g => { html += `<p style="margin:8px 0 2px"><b>${h(gname(g))}</b>${g.meta ? ` <span style="color:#6b7280">${h(gTail(g).trim())}</span>` : ''}</p><ul style="margin:0">${g.items.map(li).join('')}</ul>`; });
+    if (s.extra.length) html += `<ul>${s.extra.map(li).join('')}</ul>`;
+  });
+  if (sc) {
+    html += `<h3 style="margin:16px 0 4px">Scope changes</h3>`;
+    if (sc.lines.length) html += `<ul style="margin:0">${sc.lines.map(l => `<li><b>${h(l.name)}</b>: ${h(l.text)}</li>`).join('')}</ul>`;
+    if (sc.pattern) html += `<p style="margin:8px 0 0">${h(sc.pattern)}</p>`;
+  }
+  html += '</div>';
+  return { text: tx.join('\n').trimEnd() + '\n', md: md.join('\n').replace(/\n{3,}/g, '\n\n').trimEnd() + '\n', html };
+}
+function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTask, onOpenBucket }) {
+  const [offset, setOffset] = useState(0);
+  const [includeTime, setIncludeTimeRaw] = useState(() => { try { return localStorage.getItem('tasks-report-time') !== '0'; } catch (e) { return true; } });
+  const setIncludeTime = v => { setIncludeTimeRaw(v); try { localStorage.setItem('tasks-report-time', v ? '1' : '0'); } catch (e) {} };
+  const start = weekStart(offset), startISO = toISO(start);
+  const [E, setE, resetE] = useReportEdits(ws, startISO);
+  const [adding, setAdding] = useState(null);
+  const noun = labels.bucket;
+  const R = useMemo(() => buildReport({ tasks, buckets, stages, start, includeTime, noun }), [tasks, buckets, stages, startISO, includeTime, noun]);
+  const [includeScope, setIncludeScopeRaw] = useState(() => { try { return localStorage.getItem('tasks-report-scope') !== '0'; } catch (e) { return true; } });
+  const setIncludeScope = v => { setIncludeScopeRaw(v); try { localStorage.setItem('tasks-report-scope', v ? '1' : '0'); } catch (e) {} };
+  const hasScope = R.scope.lines.length > 0 || !!R.scope.pattern;
+  const range = fmtRange(R.start, addDays(R.end, -1));
+  const title = `Weekly update: ${range}`;
+  const edited = E.summary || E.hidden.length || Object.keys(E.titles).length || Object.keys(E.notes).length || Object.values(E.extra).some(l => l.length);
+  const visible = id => R.sections[id].reduce((n, g) => n + g.items.filter(x => !E.hidden.includes(x.key)).length, 0) + E.extra[id].filter(x => x.text.trim()).length;
+  const out = () => reportOutput(R, E, { title, includeTime, noun, includeScope: includeScope && hasScope });
+  const copy = async kind => {
+    const o = out();
+    const ok = await copyToClipboard(kind === 'md' ? o.md : o.text, kind === 'rich' ? o.html : null);
+    toast(ok ? (kind === 'md' ? 'Copied as Markdown' : kind === 'rich' ? 'Copied with formatting' : 'Copied as text') : 'Couldn’t copy the report', ok ? (kind === 'rich' ? 'Paste it into an email, Teams or Word.' : 'Paste it wherever you send your update.') : undefined);
+  };
+  const saveMd = async () => {
+    const dest = await saveDialog({ defaultPath: `Weekly update ${startISO}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Text', extensions: ['txt'] }] });
+    if (!dest) return;
+    const o = out();
+    try { await invoke('write_text_file', { dest, content: /\.txt$/i.test(dest) ? o.text : o.md }); toast('Report saved', dest); } catch (e) { toast('Couldn’t save the report', String(e)); }
+  };
+  const hide = k => setE(x => ({ ...x, hidden: [...x.hidden, k] }));
+  const unhide = sec => setE(x => ({ ...x, hidden: x.hidden.filter(k => !k.startsWith(sec + ':')) }));
+  const setTitle = (k, v, orig) => setE(x => { const titles = { ...x.titles }; if (!v.trim() || v === orig) delete titles[k]; else titles[k] = v; return { ...x, titles }; });
+  const setNote = (k, v) => setE(x => { const notes = { ...x.notes }; if (!v.trim()) delete notes[k]; else notes[k] = v; return { ...x, notes }; });
+  const [noteOpen, setNoteOpen] = useState(null);
+  const addExtra = (sec, text) => { if (!text.trim()) return; setE(x => ({ ...x, extra: { ...x.extra, [sec]: [...x.extra[sec], { id: newId(), text }] } })); };
+  const setExtra = (sec, id, text) => setE(x => ({ ...x, extra: { ...x.extra, [sec]: text.trim() ? x.extra[sec].map(y => y.id === id ? { ...y, text } : y) : x.extra[sec].filter(y => y.id !== id) } }));
+  const [askReset, setAskReset] = useState(false);
+  const doReset = () => { setAskReset(false); resetE(); toast('Report rebuilt', 'Your edits for this week were removed.'); };
+  const sub = `${range} · ${visible('done')} done, ${visible('doing')} in progress, ${visible('next')} planned${includeTime && R.total >= 60000 ? ` · ${fmtShort(R.total)} tracked` : ''}`;
+  return (
+    <div className="mx-auto max-w-[920px]">
+      <PageHead title="Weekly report" sub={sub} />
+      <PageBar>
+        <FilterTabs label="Week" value={offset === 0 ? 'w0' : offset === -1 ? 'w1' : 'other'} onChange={v => setOffset(v === 'w0' ? 0 : -1)}
+          items={[{ id: 'w0', label: 'This week' }, { id: 'w1', label: 'Last week' }]} />
+        <div className="flex items-center">
+          <Button variant="ghost" size="icon-sm" aria-label="Previous week" title="Previous week" onClick={() => setOffset(o => o - 1)}><I.left /></Button>
+          <span className="min-w-[9.5rem] text-center text-xs font-medium">{range}</span>
+          <Button variant="ghost" size="icon-sm" aria-label="Next week" title="Next week" disabled={offset >= 0} onClick={() => setOffset(o => Math.min(0, o + 1))}><I.right /></Button>
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-muted-foreground"><Switch checked={includeTime} onChange={setIncludeTime} label="Include time" />Time</label>
+          {edited ? <Button variant="ghost" size="sm" className="h-8 text-muted-foreground" onClick={() => setAskReset(true)} title="Remove your edits and rebuild the report from your tasks"><I.reset />Reset</Button> : null}
+          <DropdownMenu align="end" trigger={p => <Button {...p} size="sm" className="h-8 shadow-none"><I.copy />Copy<I.down className="size-3" /></Button>}
+            items={[
+              { label: 'Copy for email or Teams', icon: <I.copy />, onSelect: () => copy('rich') },
+              { label: 'Copy as text', icon: <I.file />, onSelect: () => copy('text') },
+              { label: 'Copy as Markdown', icon: <I.listCheck />, onSelect: () => copy('md') },
+              'sep',
+              { label: 'Save as file…', icon: <I.download />, onSelect: saveMd },
+            ]} />
+        </div>
+      </PageBar>
+      <Card className="mt-3 px-5 py-5 sm:px-7">
+        <div className="text-base font-semibold tracking-tight">{title}</div>
+        <div className="mt-0.5 text-xs text-muted-foreground">{wsName}{includeTime && R.total >= 60000 ? ` · Time tracked this week: ${fmtShort(R.total)}` : ''}</div>
+        <InlineEdit multiline value={E.summary} onSave={v => setE(x => ({ ...x, summary: v }))} placeholder="Add a short summary for your product owner (optional)" label="Summary"
+          className="mt-3 block w-full px-1 py-1 text-sm leading-relaxed whitespace-pre-wrap" />
+        {REPORT_SECTIONS.map(s => {
+          const groups = R.sections[s.id], hiddenN = groups.reduce((n, g) => n + g.items.filter(x => E.hidden.includes(x.key)).length, 0);
+          const shown = groups.map(g => ({ ...g, items: g.items.filter(x => !E.hidden.includes(x.key)) })).filter(g => g.items.length || (s.id === 'next' && g.meta.startsWith('starts')));
+          const tone = s.id === 'done' ? 'bg-emerald-500' : s.id === 'doing' ? 'bg-blue-500' : 'bg-violet-500';
+          return (
+            <section key={s.id} aria-label={s.title} className="mt-6">
+              <div className="flex items-center gap-2 border-b pb-1.5">
+                <span className={cn('size-2 rounded-full', tone)} />
+                <h2 className="text-sm font-semibold">{offset < 0 && s.pastTitle ? s.pastTitle : s.title}</h2>
+                <span className="tnum text-xs text-muted-foreground">{visible(s.id)}</span>
+                {s.id === 'next' && <span className="text-xs text-muted-foreground">{fmtRange(R.nextStart, addDays(R.nextStart, 6))}</span>}
+                {hiddenN > 0 && <button type="button" onClick={() => unhide(s.id)} className="ml-auto text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline">{hiddenN} removed · Show again</button>}
+              </div>
+              {!shown.length && !E.extra[s.id].length && <p className="mt-2 px-1 text-sm text-muted-foreground">{s.empty}</p>}
+              {shown.map(g => (
+                <div key={g.key || '_none'} className="mt-3">
+                  <div className="flex min-w-0 items-baseline gap-2 px-1">
+                    {g.name ? (
+                      <button type="button" onClick={() => onOpenBucket(g.name)} className="flex min-w-0 items-center gap-1.5 text-[13px] font-medium underline-offset-4 hover:underline" title={`Open ${noun.toLowerCase()}`}>
+                        {g.status && <span className={cn('size-2 shrink-0 rounded-full', BS[g.status].dot)} />}<span className="truncate">{g.name}</span>
+                      </button>
+                    ) : <span className="text-[13px] font-medium text-muted-foreground">No {noun.toLowerCase()}</span>}
+                    {g.meta && <span className="truncate text-xs text-muted-foreground">{g.meta}</span>}
+                  </div>
+                  <ul className="mt-1">
+                    {!g.items.length && <li className="py-1 pl-6 text-[13px] text-muted-foreground">No tasks yet</li>}
+                    {g.items.map(x => {
+                      const orig = x.task.title || 'Untitled', note = E.notes[x.key];
+                      return (
+                        <li key={x.key} className="group rounded-md px-1 hover:bg-muted/30">
+                          <div className="flex min-h-7 items-start gap-2 py-0.5">
+                            <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted-foreground/60" />
+                            <div className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
+                              <InlineEdit value={E.titles[x.key] ?? orig} onSave={v => setTitle(x.key, v, orig)} label="Edit line" className="px-1 py-0.5 text-[13px] leading-5" />
+                              {x.meta.length > 0 && <span className="text-xs text-muted-foreground">{x.meta.join(' · ')}</span>}
+                            </div>
+                            <div className="flex shrink-0 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                              <Button variant="ghost" size="icon-sm" className="size-6" aria-label="Add a note" title="Add a note" onClick={() => setNoteOpen(x.key)}><I.pencil className="size-3.5" /></Button>
+                              <Button variant="ghost" size="icon-sm" className="size-6" aria-label="Open task" title="Open task" onClick={() => onOpenTask(x.task.id)}><I.external className="size-3.5" /></Button>
+                              <Button variant="ghost" size="icon-sm" className="size-6" aria-label="Remove from report" title="Remove from report" onClick={() => hide(x.key)}><I.x className="size-3.5" /></Button>
+                            </div>
+                          </div>
+                          {(note || noteOpen === x.key) && (
+                            <div className="pb-1.5 pl-[18px] pr-2">
+                              <InlineEdit multiline autoEdit={noteOpen === x.key && !note} onDone={() => setNoteOpen(null)} value={note || ''} onSave={v => setNote(x.key, v)} placeholder="Add a note" label="Note"
+                                className="block w-full px-1 py-0.5 text-xs leading-5 text-muted-foreground whitespace-pre-wrap" />
+                            </div>
+                          )}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+              {E.extra[s.id].length > 0 && (
+                <ul className="mt-3">
+                  {E.extra[s.id].map(x => (
+                    <li key={x.id} className="flex min-h-8 items-start gap-2 rounded-md px-1 py-1 hover:bg-muted/30">
+                      <span className="mt-[11px] size-1 shrink-0 rounded-full bg-muted-foreground/60" />
+                      <InlineEdit value={x.text} onSave={v => setExtra(s.id, x.id, v)} label="Edit line" className="px-1 py-0.5 text-[13px] leading-5" />
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="mt-1 pl-1">
+                {adding === s.id
+                  ? <div className="pl-3"><InlineEdit autoEdit value="" placeholder="Type a line and press Enter" label={`Add a line to ${s.title}`} onSave={v => addExtra(s.id, v)} onDone={() => setAdding(null)} className="w-full" /></div>
+                  : <button type="button" onClick={() => setAdding(s.id)} className="inline-flex items-center gap-1.5 rounded-sm px-1 py-1 text-xs text-muted-foreground hover:text-foreground"><I.plus className="size-3.5" />Add a line</button>}
+              </div>
+            </section>
+          );
+        })}
+        {hasScope && (
+          <section aria-label="Scope changes" className={cn('mt-6', !includeScope && 'opacity-60')}>
+            <div className="flex items-center gap-2 border-b pb-1.5">
+              <span className="size-2 rounded-full bg-amber-500" />
+              <h2 className="text-sm font-semibold">Scope changes</h2>
+              {R.scope.weekAdded > 0 && <span className="tnum text-xs text-muted-foreground">{R.scope.weekAdded} added {offset < 0 ? 'that' : 'this'} week</span>}
+              <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground" title="Include scope changes when you copy or save the report"><Switch checked={includeScope} onChange={setIncludeScope} label="Include scope changes" />In the report</label>
+            </div>
+            <ul className="mt-2">
+              {R.scope.lines.map(l => (
+                <li key={l.key} className="flex items-start gap-2 rounded-md px-1 py-1">
+                  {l.warn ? <I.alert className="mt-[3px] size-3.5 shrink-0 text-amber-600 dark:text-amber-400" /> : <span className={cn('mt-[7px] size-2 shrink-0 rounded-full', BS[l.status].dot)} />}
+                  <div className="min-w-0 text-[13px] leading-5">
+                    <button type="button" onClick={() => onOpenBucket(l.name, true)} className="font-medium underline-offset-4 hover:underline" title={`Open ${noun.toLowerCase()}`}>{l.name}</button>
+                    <span className="text-muted-foreground">: {l.text}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            {R.scope.pattern && (
+              <div className="mt-2 rounded-lg border bg-muted/30 px-3 py-2.5">
+                <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><I.trendUp className="size-3.5" />Pattern</div>
+                <ReasonBar reasons={R.scope.by} total={R.scope.total} />
+                <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {R.scope.by.slice().sort((a, b) => b.n - a.n).map(r => <span key={r.id} className="inline-flex items-center gap-1.5"><span className={cn('size-2 rounded-full', r.dot)} />{r.label} <span className="tnum font-medium text-foreground">{r.n}</span></span>)}
+                </div>
+                <p className="mt-2 text-[13px] leading-5">{R.scope.pattern}</p>
+              </div>
+            )}
+          </section>
+        )}
+      </Card>
+      <AlertDialog open={askReset} title="Reset this week’s report?" description="Your summary, notes, changed lines, added lines and removed lines for this week are cleared, and the report is rebuilt from your tasks." confirmLabel="Reset" onConfirm={doReset} onCancel={() => setAskReset(false)} />
+      <p className="mt-2 text-xs text-muted-foreground">Built from your tasks and timers. Click any line to change it, hover a line to add a note or remove it. Your edits are kept for each week on this PC; Reset rebuilds the report.</p>
+    </div>
+  );
+}
+
+/* ---------- What's new (0.19.5) ----------
+   After an update, a short tour of what changed since the version you used last opens once.
+   It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
+const WHATS_NEW = [
+  { v: '0.19.4', title: 'Cloud sync keeps every change', img: null, icon: 'cloud',
+    points: ['Buckets, automations, statuses, platforms and settings now sync one item at a time, like tasks.', 'Two PCs changing different buckets or settings at the same moment both keep their change.', 'Nothing to set up. Update all your PCs so every change is kept.'] },
+  { v: '0.19.3', title: 'See why buckets keep growing', img: 'scope-panel.webp',
+    points: ['Tasks added after a bucket starts are marked “added later”, with a count and the time spent on them.', 'Open a bucket to see what was planned, what was added, and how many days its end moved.'] },
+  { v: '0.19.3', title: 'Say why a task was added', img: 'scope-reason.webp',
+    points: ['Pick a reason in the task: bug, change request or missed requirement.', 'Or “Part of the plan” if it shouldn’t count. A heads-up appears when you add to a bucket that already started.'] },
+  { v: '0.19.3', title: 'Drift on the timeline', img: 'scope-timeline.webp',
+    points: ['The days past a bucket’s original end are striped amber, with a dashed line where it was meant to end.', 'A warning sign shows on buckets where added tasks pushed the end out.'] },
+  { v: '0.19.3', title: 'Evidence for your product owner', img: 'scope-report.webp',
+    points: ['The weekly report has a Scope changes section: what was added to each bucket, why, and how far its end moved.', 'Pattern shows which reason brings the most added work across all your buckets.'] },
+  { v: '0.19.2', title: 'Weekly report', img: 'report.webp', icon: 'clipboard',
+    points: ['Report on the rail builds this week’s update: done, in progress and next week, grouped by bucket.', 'Edit any line, add notes, then copy it for email or Teams, as text or as Markdown.'] },
+  { v: '0.19.1', title: 'Quick capture picks buckets and platforms', img: 'capture.webp',
+    points: ['Type @ to pick a bucket and # to pick a platform while you capture a task.', 'With a platform it goes straight to Open instead of the Inbox.'] },
+];
+const vNum = v => String(v || '0').split('.').map(Number).reduce((n, x) => n * 1000 + (x || 0), 0);
+const whatsNewSince = (seen, cur) => WHATS_NEW.filter(x => vNum(x.v) > vNum(seen) && vNum(x.v) <= vNum(cur));
+function WhatsNewDialog({ open, items, onClose }) {
+  const [i, setI] = useState(0);
+  useLockScroll(open);
+  useEffect(() => { if (open) setI(0); }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const k = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose(); }
+      if (e.key === 'ArrowRight') setI(x => Math.min(items.length - 1, x + 1));
+      if (e.key === 'ArrowLeft') setI(x => Math.max(0, x - 1));
+    };
+    document.addEventListener('keydown', k, true); return () => document.removeEventListener('keydown', k, true);
+  }, [open, items.length, onClose]);
+  if (!open || !items.length) return null;
+  const it = items[Math.min(i, items.length - 1)], last = i >= items.length - 1;
+  const Ico = it.icon && I[it.icon];
+  const title = /[.!?]$/.test(it.title) ? it.title : it.title + '.';
+  // Layout C: the title and text on the left, the screenshot on the right, tilted and running off the edge.
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" onClick={onClose} />
+      <div role="dialog" aria-modal="true" aria-labelledby="wn-title"
+        className="fixed left-1/2 top-1/2 z-[70] h-[min(600px,calc(100%-2rem))] w-[min(1040px,calc(100%-2rem))] overflow-hidden rounded-[14px] border bg-background text-foreground shadow-2xl anim-zoom"
+        style={{ transform: 'translate(-50%,-50%)' }}>
+        <div className="absolute inset-x-0 top-0 flex h-[3px] gap-1" aria-hidden="true">
+          {items.map((_, j) => <span key={j} className={cn('flex-1 transition-colors', j <= i ? 'bg-foreground' : 'bg-border')} />)}
+        </div>
+        <div className="absolute inset-y-0 left-0 z-[1] flex w-[min(470px,48%)] flex-col py-12 pb-9 pl-12 pr-2">
+          <div className="text-[13px] text-muted-foreground">What’s new · <span className="text-foreground">{it.v}</span></div>
+          <h2 id="wn-title" className="mt-9 text-[40px] font-extrabold leading-[1.05] tracking-[-0.035em]">{title}</h2>
+          <p className="mr-10 mt-5 text-base leading-relaxed text-muted-foreground">{it.points[0]}</p>
+          {it.points.slice(1).map((p, j) => <p key={j} className="mr-10 mt-2.5 text-sm leading-relaxed text-muted-foreground">{p}</p>)}
+          <div className="mt-auto flex items-center gap-2 pt-6">
+            <span className="tnum mr-auto text-sm text-muted-foreground">{i + 1} of {items.length}</span>
+            {i > 0 && <Button variant="outline" onClick={() => setI(i - 1)}>Back</Button>}
+            {last
+              ? <Button autoFocus onClick={onClose}>Got it</Button>
+              : <Button autoFocus onClick={() => setI(i + 1)}>Next</Button>}
+          </div>
+        </div>
+        <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-[2] rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x /></button>
+        <div key={i} className="anim-fade absolute left-[52%] top-16 w-[56%] -rotate-2">
+          {it.img ? <img src={`/whats-new/${it.img}`} alt={it.title} className="block w-full rounded-[14px] border shadow-[0_30px_80px_rgba(0,0,0,.45)]" />
+            : <div className="flex aspect-[4/3] flex-col items-center justify-center gap-4 rounded-[14px] border bg-[#0b0b0c] p-6 text-zinc-300 shadow-[0_30px_80px_rgba(0,0,0,.45)]">
+                {Ico && <Ico className="size-12" />}
+                <div className="flex flex-col items-start gap-2 text-sm">
+                  <span className="rounded-md border border-zinc-700 px-2.5 py-1">PC 1 edits Checkout v2</span>
+                  <span className="rounded-md border border-zinc-700 px-2.5 py-1">PC 2 edits Refunds</span>
+                  <span className="rounded-md border border-emerald-600/60 bg-emerald-500/10 px-2.5 py-1 text-emerald-300">Both changes kept</span>
+                </div>
+              </div>}
+        </div>
+      </div>
+    </>, document.body);
+}
+
 function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null }) {
   const me = prof.data.user;
   const {
@@ -4248,6 +5024,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [renaming, setRenaming] = useState(null);
   const [statusesOpen, setStatusesOpen] = useState(false);
   const up = useUpdater();
+  // What's new: opens once after an update. A brand-new install starts from the current version.
+  const [whatsNew, setWhatsNew] = useState(null);
+  useEffect(() => {
+    if (standaloneId || !up.version || !loaded) return;
+    let seen = null; try { seen = localStorage.getItem('tasks-seen-version'); } catch (e) {}
+    try { localStorage.setItem('tasks-seen-version', up.version); } catch (e) {}
+    if (seen === up.version) return;
+    // No record: either a new install (no tasks yet, nothing to show) or an update from before 0.19.5.
+    const items = seen ? whatsNewSince(seen, up.version) : Object.keys(tasks).length ? whatsNewSince('0.19.0', up.version) : [];
+    if (items.length) setWhatsNew(items);
+  }, [up.version, loaded]);
+  const openWhatsNew = () => setWhatsNew(whatsNewSince('0.19.0', up.version || '9.9.9'));
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
   const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
   // The app opens on Home.
@@ -4446,21 +5234,65 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const b = bucketList.find(x => norm(x.name) === norm(name)); if (!b || (b.start === start && b.end === end)) return;
     saveBuckets([...bucketList.filter(x => x !== b), bucketRecord(b, { start, end })]);
   };
-  const saveBucket = ({ name, description, status, start, end }) => {
+  const saveBucket = ({ name, description, status, start, end, baseEnd }) => {
     const old = bucketEdit && bucketEdit.bucket;
     const list = bucketList.filter(b => !old || norm(b.name) !== norm(old.name));
-    const base = old ? { ...old, name, description, start, end } : { name, description, start, end, createdAt: Date.now() };
+    const base = old ? { ...old, name, description, start, end, ...(baseEnd && old.baseEnd ? { baseEnd } : {}) } : { name, description, start, end, createdAt: Date.now() };
     const moving = !old || bucketStatus(old) !== status;
     const { fired, made } = moving ? handoff(base, status) : { fired: base.fired, made: [] };
     saveBuckets([...list, bucketRecord(old, { ...base, status, ...(fired ? { fired } : {}) })]);
     if (old && old.name !== name) {
-      const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(old.name)).map(t => ({ ...t, bucket: name }));
+      const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(old.name)).map(t => ({ ...t, bucket: name, bucketJoin: { name: norm(name), at: joinedAt(t) } }));
       if (moved.length) saveMany(moved);
       if (bucketFilter === old.name) setBucketFilter(name);
     }
     if (made.length) saveMany(made);
     setBucketEdit(null);
     toast(old ? `${labels.bucket} saved` : `${labels.bucket} created`, made.length ? `${name}. ${made.length} ${made.length === 1 ? 'task' : 'tasks'} created.` : name);
+  };
+  // Scope tracking: when a bucket's start day arrives, its end date becomes the original end, and every
+  // later change of the end is logged (changes within 10 minutes of each other count as one move).
+  // A bucket moved to start in the future again is back in planning, so its record starts over.
+  const [dayKey, setDayKey] = useState(() => toISO(new Date()));
+  useEffect(() => { const i = setInterval(() => setDayKey(toISO(new Date())), 600000); return () => clearInterval(i); }, []);
+  const scopeTasks = useMemo(() => [...all, ...Object.values(archived)], [all, archived]);
+  const scopeRef = useRef(scopeTasks); scopeRef.current = scopeTasks;
+  useEffect(() => {
+    if (!loaded || standaloneId) return;
+    const now = Date.now(); let changed = false;
+    const next = storedBuckets.map(b => {
+      if (!b.start || !b.end) return b;
+      if (b.start > dayKey) {
+        if (!b.baseEnd) return b;
+        changed = true; const { baseEnd, baseAt, trackedEnd, moves, ...rest } = b; return rest;
+      }
+      if (!b.baseEnd) { changed = true; return { ...b, baseEnd: b.end, baseAt: now, trackedEnd: b.end }; }
+      if (b.trackedEnd === b.end) return b;
+      changed = true;
+      const moves = [...(b.moves || [])], last = moves[moves.length - 1];
+      if (last && now - last.at < 600000) { moves[moves.length - 1] = { ...last, to: b.end, at: now }; if (b.end === last.from) moves.pop(); }
+      else moves.push({ at: now, from: b.trackedEnd || b.baseEnd, to: b.end, added: scopeRef.current.filter(t => norm(t.bucket) === norm(b.name) && isAddedLater(t, b)).length });
+      return { ...b, trackedEnd: b.end, moves };
+    });
+    if (changed) saveBuckets(next);
+  }, [storedBuckets, loaded, dayKey]);
+  // A heads-up when a task is added to a bucket that has already started.
+  const lateSeen = useRef(null);
+  useEffect(() => {
+    if (!loaded || standaloneId) return;
+    const bm = Object.fromEntries(bucketList.map(b => [norm(b.name), b]));
+    const ids = new Set(all.filter(t => (t.title || '').trim() && t.bucket && joinedLate(t, bm[norm(t.bucket)])).map(t => t.id));
+    const prev = lateSeen.current; lateSeen.current = ids;
+    if (!prev) return;
+    const fresh = all.find(t => ids.has(t.id) && !prev.has(t.id) && Date.now() - joinedAt(t) < 120000 && t.addedReason !== 'planned');
+    if (!fresh) return;
+    const b = bm[norm(fresh.bucket)], sc = bucketScope(b, scopeRef.current);
+    toast(`Added after ${b.name} started`, sc && sc.warn ? sc.warn : `${sc ? nTasks(sc.added.length) : 'This task'} added since it started. Open the task to say why: bug, change request or missed requirement.`);
+  }, [all, bucketList, loaded]);
+  const setAddedReason = (id, reason) => {
+    const t = tasksRef.current[id]; if (!t) return;
+    const n = { ...t }; if (reason) n.addedReason = reason; else delete n.addedReason;
+    saveMany([n]);
   };
   // When the last open task in a bucket is finished, offer to move the bucket to Ready for dev.
   const [readyAsk, setReadyAsk] = useState(null);
@@ -4504,6 +5336,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     bucketList.forEach(b => { if (b.start && b.end) m[norm(b.name)] = { name: b.name, end: b.end }; });
     return m;
   }, [bucketList]);
+  const bucketMap = useMemo(() => Object.fromEntries(bucketList.map(b => [norm(b.name), b])), [bucketList]);
   const deadlineLock = t => (t && t.bucket && bucketEnds[norm(t.bucket)]) || null;
   // A task follows the bucket's end unless you picked an earlier date while it was in this bucket
   // (deadlineCustom holds that bucket). A date after the end is pulled back to the end.
@@ -4602,6 +5435,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(x => ({ ...x, id: newId(), done: false })),
           bucket: t.bucket || '', project: r.target, status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, blockedBy: null,
           generatedFrom: t.id, generatedBy: r.id,
+          // A copy belongs to the same piece of scope as its original.
+          ...(t.bucket ? { bucketJoin: { name: norm(t.bucket), at: joinedAt(t) } } : {}), ...(t.addedReason ? { addedReason: t.addedReason } : {}),
         };
         created.push(c);
         t = { ...t, followUps: { ...(t.followUps || {}), [r.id]: c.id } };
@@ -4837,11 +5672,24 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [prefs.captureKey]);
   const captureRef = useRef(null);
   // Quick capture (the Windows shortcut, ` in the app, or the box on Home) saves just a title into the Inbox.
-  captureRef.current = title => {
-    const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project: '', bucket: '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, inbox: true }, null);
+  // @bucket and #platform picked in quick capture come along. A platform accepts the task, so it goes straight to Open.
+  captureRef.current = (title, extra = {}) => {
+    const bucket = (extra.bucket || '').trim(), project = (extra.project || '').trim();
+    const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project, bucket, createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, inbox: !project }, null);
     saveMany([auto.task, ...auto.created]);
-    toast('Saved to Inbox', title);
+    toast(project ? 'Saved to Open' : 'Saved to Inbox', [title, bucket && `@${bucket}`, project && `#${project}`].filter(Boolean).join('  '));
   };
+  // Keep the quick capture window's @ and # lists current.
+  useEffect(() => {
+    if (standaloneId) return;
+    try {
+      localStorage.setItem(captureListsKey(ws), JSON.stringify({
+        labels: { bucket: labels.bucket, platform: labels.platform },
+        buckets: bucketList.map(b => { const st = BS[bucketStatus(b)] || {}; return { name: b.name, dot: st.dot, note: st.label, done: bucketStatus(b) === 'done' }; }),
+        platforms: projectList.map(p => ({ name: p.name, dot: (PROJECT_COLORS[p.color || autoColor(p.name)] || PROJECT_COLORS.slate).dot })),
+      }));
+    } catch (e) {}
+  }, [bucketList, projectList, labels.bucket, labels.platform, ws]);
   // Accepting moves a captured task into Open. Giving it a platform accepts it too.
   const acceptTask = id => {
     const t = tasksRef.current[id]; if (!t || !t.inbox) return;
@@ -4851,7 +5699,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   useEffect(() => {
     if (standaloneId) return;
     let a = null, b = null, dead = false;
-    listen('capture-task', e => { if (e.payload && (e.payload.ws || 'product') === ws && e.payload.title) captureRef.current(e.payload.title); }).then(f => { if (dead) f(); else a = f; }).catch(() => {});
+    listen('capture-task', e => { if (e.payload && (e.payload.ws || 'product') === ws && e.payload.title) captureRef.current(e.payload.title, e.payload); }).then(f => { if (dead) f(); else a = f; }).catch(() => {});
     listen('tray-capture', () => openCaptureWindow()).then(f => { if (dead) f(); else b = f; }).catch(() => {});
     return () => { dead = true; try { a && a(); b && b(); } catch (e) {} };
   }, []);
@@ -5253,6 +6101,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setActiveTab('home'); setView('projects'); } },
     { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); } },
     { id: 'v-time', group: 'Actions', label: 'Go to Timesheet', icon: <I.timer />, run: () => { setActiveTab('home'); setView('time'); } },
+    { id: 'a-whatsnew', group: 'Actions', label: 'What’s new', keywords: 'release notes changes update version', icon: <I.zap />, run: openWhatsNew },
+    { id: 'v-report', group: 'Actions', label: 'Go to Weekly report', keywords: 'status update product owner', icon: <I.clipboard />, run: () => { setActiveTab('home'); setView('report'); } },
     { id: 'a-addtime', group: 'Actions', label: 'Add time', icon: <I.timer />, run: () => setAddTime({}) },
     { id: 'v-table', group: 'Actions', label: 'Table view', icon: <I.table />, run: () => { setView('tasks'); setViewMode('table'); } },
     { id: 'v-list', group: 'Actions', label: 'List view', icon: <I.rows />, run: () => { setView('tasks'); setViewMode('list'); } },
@@ -5293,7 +6143,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -5314,7 +6164,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSelect={setActiveTab} onNew={() => createTask({ tab: true })}
         onClose={id => { if (id === tabs.active && tabClose.current) tabClose.current(); else closeTab(id); }} />
       {tabs.active !== 'home' && tabTask ? (
-        <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
+        <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
           onHome={() => setActiveTab('home')} onClose={() => closeTab(tabTask.id)}
           onPopOut={() => { const t = tabTask; closeTab(t.id); openTaskWindow(t.id, t.title || 'Untitled', ws); }}
           people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
@@ -5324,7 +6174,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ) : (<>
       {/* Icon rail: workspace, pages with badges, running timer, account */}
       <div className="flex min-h-0 flex-1">
-      <nav aria-label="Pages" className="flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto border-r bg-card px-2 py-2.5">
+      <nav aria-label="Pages" className="no-scrollbar flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden border-r bg-card px-2 py-2.5">
         <DropdownMenu align="start"
           trigger={p => (
             <button {...p} type="button" aria-label={`Switch workspace (${wsName})`} title={wsName} className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
@@ -5343,6 +6193,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           { id: 'projects', label: plural(labels.bucket), icon: I.layers, on: view === 'projects', go: () => setView('projects') },
           { id: 'docs', label: 'Docs', icon: I.file, badge: docs.filter(d => d.inbox).length, badgeTitle: 'new documents', on: view === 'docs', go: () => setView('docs') },
           { id: 'time', label: 'Time', icon: I.timer, on: view === 'time', go: () => setView('time') },
+          { id: 'report', label: 'Report', icon: I.clipboard, on: view === 'report', go: () => setView('report') },
         ].map(v => (
           <button key={v.id} type="button" onClick={v.go} aria-current={v.on ? 'page' : undefined} title={v.badge ? `${v.label}, ${v.badge} ${v.badgeTitle}` : v.label}
             className={cn('relative flex h-14 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-[10.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -5401,7 +6252,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         <div className="flex min-w-0 items-center gap-2 text-sm">
           <span className="truncate text-muted-foreground">{wsName}</span>
           <span className="text-muted-foreground/50">/</span>
-          <span className="truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
+          <span className="truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', report: 'Weekly report', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-2">
           {searchOpen || query ? (
@@ -5432,6 +6283,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
               { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
               { label: 'Settings', icon: <I.sliders />, onSelect: () => setSettingsOpen(true) },
+              { label: 'What’s new', icon: <I.zap />, onSelect: openWhatsNew },
             ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
         </div>
@@ -5450,13 +6302,16 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       )}
 
       {view === 'projects' ? (
-        <BucketsView list={bucketList} tasks={all} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
+        <BucketsView list={bucketList} tasks={all} scopeTasks={scopeTasks} onSetReason={setAddedReason} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} onStatus={setBucketStatus} onPlan={planBucket}
           onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} focus={bucketFocus} onEditStatuses={() => setBucketStatusesOpen(true)} />
       ) : view === 'home' ? (
         <HomeView tasks={all} archived={Object.values(archived)} buckets={bucketList} docs={docs} onOpenTask={id => openTask(id)} onToggle={toggleTimer}
           onCapture={title => captureRef.current(title)} onGo={(v, f) => { setView(v); if (f) { setFilter(f); setQuery(''); } }}
           onOpenBucket={n => { setBucketFocus(n); setView('projects'); }} onOpenDoc={id => { setView('docs'); setDocFocus(id); }} />
+      ) : view === 'report' ? (
+        <WeeklyReportView ws={ws} wsName={wsName} tasks={[...all, ...Object.values(archived)]} buckets={bucketList} stages={stages} labels={labels}
+          onOpenTask={id => openTask(id)} onOpenBucket={n => { setBucketFocus(n); setView('projects'); }} />
       ) : view === 'time' ? (
         <TimesheetView tasks={[...all, ...Object.values(archived)]} stages={stages} labels={labels} onOpenTask={id => openTask(id)} onAddTime={init => setAddTime(init)}
           onDeleteSession={(t, x) => {
@@ -5781,7 +6636,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </>)}
 
-      <TaskSheet bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -5830,6 +6685,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
+      <WhatsNewDialog open={!!whatsNew} items={whatsNew || []} onClose={() => setWhatsNew(null)} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName} shortcutError={shortcutError}
         watch={settings.watchFolders || []} status={watchStatus} onAddFolder={addWatchFolder} onSubfolders={setFolderSubfolders}
         onRemoveFolder={path => saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).filter(w => w.path !== path) }))} />
@@ -5845,10 +6701,15 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {!idle && <PausedTimersDialog note={pausedNote} tasks={tasks} oneAtATime={prefs.oneAtATime} onResume={resumeTimers} onClose={closePausedNote} />}
       <IdleDialog idle={idle} onKeep={() => resolveIdle('keep')} onRemove={() => resolveIdle('remove')} onRemoveStop={() => resolveIdle('stop')} />
       {quickAdd && (
-        <Dialog open onClose={() => setQuickAdd(false)} title="Quick add" className="max-w-md">
-          <form onSubmit={e => { e.preventDefault(); const v = e.currentTarget.elements.qa.value.trim(); if (v) captureRef.current(v); setQuickAdd(false); }}>
-            <Input name="qa" autoFocus placeholder="New task, press Enter to save" aria-label="New task" />
-          </form>
+        <Dialog open onClose={() => setQuickAdd(false)} title="Quick add" className="max-w-2xl">
+          <CaptureBox compact lists={{
+              labels: { bucket: labels.bucket, platform: labels.platform },
+              buckets: bucketList.map(b => { const st = BS[bucketStatus(b)] || {}; return { name: b.name, dot: st.dot, note: st.label, done: bucketStatus(b) === 'done' }; }),
+              platforms: projectList.map(p => ({ name: p.name, dot: colorOf(p.name).dot })) }}
+            maxHeight={Math.max(72, Math.round(window.innerHeight * 0.3))}
+            onCancel={() => setQuickAdd(false)}
+            onSave={({ title, bucket, project }) => { if (title) captureRef.current(title, { bucket, project }); setQuickAdd(false); }} />
+          <p className="-mt-2 text-xs text-muted-foreground">Enter saves. Type @ to pick a {labels.bucket.toLowerCase()} and # to pick a {labels.platform.toLowerCase()}.</p>
         </Dialog>
       )}
       <MergeDocsDialog doc={mergeFor} docs={docs} onClose={() => setMergeFor(null)} onMerge={mergeDocs} />
@@ -5990,6 +6851,8 @@ const CLOUD_TONE = {
   signin: { dot: 'bg-zinc-400', text: 'Signed out' },
   off: { dot: '', text: 'Off' },
 };
+// While these run, the cloud icon drifts gently.
+const CLOUD_BUSY = new Set(['syncing', 'first', 'connecting', 'checking']);
 const ago = ms => { if (!ms) return ''; const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmtDay(ms); };
 
 function CloudButton({ onClick }) {
@@ -5999,7 +6862,7 @@ function CloudButton({ onClick }) {
   return (
     <button type="button" onClick={onClick} aria-label={label} title={label}
       className="relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      <I.cloud className={cn('size-[19px]', c.phase === 'off' && 'opacity-60')} />
+      <I.cloud className={cn('size-[19px]', c.phase === 'off' && 'opacity-60', CLOUD_BUSY.has(c.phase) && 'anim-cloud-sync')} />
       {tone.dot && <span className={cn('absolute right-2.5 top-2.5 size-2 rounded-full ring-2 ring-card', tone.dot)} />}
     </button>
   );

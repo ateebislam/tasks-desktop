@@ -63,5 +63,9 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 .anim-pop{animation:pop-in .12s ease-out}
 .anim-toast{animation:toast-in .2s ease-out}
 .anim-ping{animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite}
-@media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-toast,.anim-ping{animation:none}}
+@keyframes cloud-sync{0%,100%{transform:translateY(0);opacity:1}50%{transform:translateY(-1.5px);opacity:.55}}
+.anim-cloud-sync{animation:cloud-sync 1.6s ease-in-out infinite}
+.no-scrollbar{scrollbar-width:none}
+.no-scrollbar::-webkit-scrollbar{display:none}
+@media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-toast,.anim-ping,.anim-cloud-sync{animation:none}}
 html,body,#root{height:100%}
