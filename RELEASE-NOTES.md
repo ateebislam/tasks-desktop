@@ -1,3 +1,11 @@
+Cloud sync: use Tasks on any of your PCs, with the same tasks and documents everywhere.
+- Cloud sync: click the cloud icon at the bottom of the rail (or your avatar → Cloud sync…) and sign in with your email and password. Your tasks, buckets, rules, workspaces, archive, trash, time history and documents are kept in your own Supabase project. CLOUD-SETUP.md explains the one-time setup.
+- On the first PC you sign in on, everything is uploaded. A PC that already has tasks of its own asks whether to use the cloud's data or combine both, and saves a backup first.
+- Changes on one open PC show up on your other PCs within a second or two. Each task syncs on its own, so working on two PCs is fine. If the same task is edited on both at once, the newer edit is kept and you see a notice.
+- Your data stays on each PC too, so Tasks works offline and sends your changes when you're back online. The cloud icon shows the state: green up to date, blue syncing, amber offline.
+- Timers: a running timer shows on every PC but belongs to the PC that started it, so closing or shutting down one PC only stops its own timers.
+- Watch folders, theme and shortcuts stay separate on each PC.
+
 Timers stop when Tasks closes, and bucket deadlines can be set earlier.
 - Timers: closing Tasks (the window's X, Quit in the tray, or installing an update) stops every running timer and saves the time up to then. Next time you open Tasks, it lists the tasks whose timers were paused, with Resume for each one, Resume all, or Keep paused.
 - Timers: if the PC shuts down or Tasks doesn't close normally, the timers stop at the last moment Tasks was known to be running (it checks in every 30 seconds), and you get the same list.

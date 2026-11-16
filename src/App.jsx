@@ -13,6 +13,7 @@ import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { applyTheme, readTheme, saveTheme } from './theme.js';
+import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc } from './cloud.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
 /* =========================================================
@@ -739,9 +740,11 @@ const BucketStatusPill = ({ status, className }) => (
 // A bucket automation creates one task when a bucket moves to a status. {bucket} in the title becomes the bucket's name.
 const fillBucket = (text, b) => (text || '{bucket}').replace(/\{bucket\}/gi, b.name);
 
-/* Local storage: everything is written as JSON files in the app's data folder on this computer. */
+/* Local storage: everything is written as JSON files in the app's data folder on this computer.
+   With cloud sync on, the main window also sends each change to Supabase (see cloud.js). */
 const writers = {};
 function persist(name, obj) {
+  cloudNote(name, obj);
   const w = writers[name] || (writers[name] = { busy: false, next: null });
   w.next = JSON.stringify(obj);
   if (w.busy) return;
@@ -828,18 +831,46 @@ function useTasks(ws = 'product') {
     }).then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
     return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
   }, []);
+  // Changes from your other PCs (cloud sync). They don't become undo steps. Each handler is
+  // registered once its file has been read, so nothing that arrived meanwhile is lost.
+  const cloudData = patch => {
+    hist.current.mute += 1;
+    const tp = {}, m = {};
+    Object.entries(patch).forEach(([k, v]) => { if (k.startsWith('t/')) tp[k.slice(2)] = v; else if (k.startsWith('m/')) m[k.slice(2)] = v; });
+    if (Object.keys(tp).length) setTasks(p => { const n = { ...p }; Object.entries(tp).forEach(([id, v]) => { if (v === null) delete n[id]; else n[id] = v; }); return n; });
+    if (Array.isArray(m.rules)) setRules(m.rules.map(normalizeRule));
+    if (Array.isArray(m.projects)) setProjects(m.projects);
+    if (Array.isArray(m.stages)) setStages(m.stages);
+    if (Array.isArray(m.buckets)) setBuckets(m.buckets);
+    if (m.labels && typeof m.labels === 'object') setLabels(m.labels);
+    if (m.settings && typeof m.settings === 'object') setSettings(s => ({ archiveDays: ARCHIVE_DAYS_DEFAULT, ...m.settings, ...(s.watchFolders ? { watchFolders: s.watchFolders } : {}) }));
+    if (Array.isArray(m.looseDocs)) setLooseDocs(m.looseDocs);
+  };
+  const cloudArch = patch => {
+    hist.current.mute += 1;
+    setArch(a => {
+      const n = { archived: { ...a.archived }, trash: { ...a.trash } };
+      Object.entries(patch).forEach(([k, v]) => { const f = k.startsWith('a/') ? n.archived : k.startsWith('x/') ? n.trash : null; if (!f) return; const id = k.slice(2); if (v === null) delete f[id]; else f[id] = v; });
+      return n;
+    });
+  };
+  const cloudUn = useRef([]);
+  useEffect(() => () => { cloudUn.current.forEach(f => f()); }, []);
   useEffect(() => {
     (async () => {
+      let d = null, a = null;
       try {
         const raw = await invoke('read_store', { name: storeFor('data', ws) });
-        if (raw) apply(JSON.parse(raw));
+        if (raw) { d = JSON.parse(raw); apply(d); }
       } catch (e) { toast('Couldn’t read your saved tasks', String(e)); }
       setLoaded(true);
+      cloudUn.current.push(cloudLive(storeFor('data', ws), cloudData, d));
       try {
         const raw = await invoke('read_store', { name: storeFor('archive', ws) });
-        if (raw) { const a = JSON.parse(raw); setArch({ archived: a.archived || {}, trash: a.trash || {} }); }
+        if (raw) { a = JSON.parse(raw); setArch({ archived: a.archived || {}, trash: a.trash || {} }); }
       } catch (e) {}
       setArchLoaded(true);
+      cloudUn.current.push(cloudLive(storeFor('archive', ws), cloudArch, a));
     })();
   }, []);
   useEffect(() => {
@@ -892,7 +923,11 @@ function useTasks(ws = 'product') {
         const prev = p[t.id];
         let doneAt = null;
         if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
-        n[t.id] = { ...t, updatedAt: now, doneAt };
+        const x = { ...t, updatedAt: now, doneAt };
+        // Remember which PC runs a timer, so closing one PC never stops a timer running on another.
+        if (x.timerStartedAt && (!prev || prev.timerStartedAt !== x.timerStartedAt)) x.timerDevice = DEVICE_ID;
+        else if (!x.timerStartedAt) delete x.timerDevice;
+        n[t.id] = x;
       });
       return n;
     });
@@ -1039,6 +1074,7 @@ function useUpdater() {
     try {
       await beforeQuit();
       await flushAll();
+      await cloudFlush();
       let total = 0, got = 0;
       setProgress(-1);
       await update.downloadAndInstall(ev => {
@@ -1333,6 +1369,8 @@ function useProfile() {
   return { ...state, update };
 }
 
+// A timer started on this PC (timers from before 0.19 have no PC and count as this one's).
+const timerHere = t => !t.timerDevice || t.timerDevice === DEVICE_ID;
 const elapsed = t => (t.timeSpent || 0) + (t.timerStartedAt ? Date.now() - t.timerStartedAt : 0);
 // Stops a running timer and records the session, so time can be summed per day and week.
 const stopT = t => t.timerStartedAt
@@ -1405,8 +1443,14 @@ async function importDoc(info) {
   const e = extOf(info.name);
   return { id: r.id, file: r.file, name: info.name, size: r.size, kind: kindOf(info.name), mime: RAW_TYPES[e] || MIME[e] || 'application/octet-stream', addedAt: Date.now() };
 }
+// A document added on another PC may still be on its way here: fetch it from the cloud first.
+async function readDoc(file) {
+  try { return await invoke('read_document', { file }); }
+  catch (e) { if (await cloudEnsureDoc(file)) return await invoke('read_document', { file }); throw e; }
+}
+const haveDoc = async file => { try { await readDoc(file); return true; } catch (e) { return false; } };
 async function fileBlob(f) {
-  const buf = await invoke('read_document', { file: f.file });
+  const buf = await readDoc(f.file);
   return new Blob([buf], { type: f.mime });
 }
 async function downloadFile(f) {
@@ -1414,15 +1458,16 @@ async function downloadFile(f) {
     const ext = extOf(f.name);
     const dest = await saveDialog({ defaultPath: f.name.replace(/\.htm$/i, '.html'), filters: ext ? [{ name: (KINDS[f.kind] || KINDS.other).label, extensions: [ext === 'htm' ? 'html' : ext] }] : [] });
     if (!dest) return;
+    await haveDoc(f.file);
     await invoke('export_document', { file: f.file, dest });
     toast('Copy saved', dest);
   } catch (e) { toast(`Couldn’t save “${f.name}”`, String(e)); }
 }
 async function openExternal(f) {
-  try { await invoke('open_document', { file: f.file }); }
+  try { await haveDoc(f.file); await invoke('open_document', { file: f.file }); }
   catch (e) { toast(`Couldn’t open “${f.name}”`, 'There may be no app on this computer for this file type.'); }
 }
-async function deleteDoc(f) { try { await invoke('delete_document', { file: f.file }); } catch (e) {} }
+async function deleteDoc(f) { try { await invoke('delete_document', { file: f.file }); } catch (e) {} cloudDeleteDoc(f.file); }
 const fileInfos = paths => invoke('file_info', { paths });
 async function pickFiles() {
   const sel = await openDialog({ multiple: true, filters: [{ name: 'Documents', extensions: ALLOWED }] });
@@ -4244,6 +4289,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [confirmId, setConfirmId] = useState(null);
   const storageOk = true;
   const [profileOpen, setProfileOpen] = useState(false);
+  const [cloudOpen, setCloudOpen] = useState(false);
   const [restoreSrc, setRestoreSrc] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const sheetDrop = useRef(null);
@@ -4717,7 +4763,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   // remembers which ones so it can offer to resume them next time.
   const [pausedNote, setPausedNote] = useState(null);
   const pauseForClose = async () => {
-    const list = Object.values(tasksRef.current).filter(t => t.timerStartedAt);
+    const list = Object.values(tasksRef.current).filter(t => t.timerStartedAt && timerHere(t));
     if (!list.length) return;
     const now = Date.now();
     saveMany(list.map(t => stopAt(t, now)));
@@ -4735,11 +4781,11 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     beforeQuit = () => pauseRef.current();
     getCurrentWindow().onCloseRequested(async e => {
       if (prefsRef.current.keepInTray) e.preventDefault();
-      await pauseRef.current(); await flushAll();
+      await pauseRef.current(); await flushAll(); await cloudFlush();
       if (prefsRef.current.keepInTray) getCurrentWindow().hide().catch(() => {});
     }).then(f => { if (dead) f(); else un = f; }).catch(() => {});
     // Quit in the tray asks the window to stop the timers first.
-    listen('app-quit', async () => { try { await pauseRef.current(); await flushAll(); } finally { invoke('quit_app').catch(() => {}); } })
+    listen('app-quit', async () => { try { await pauseRef.current(); await flushAll(); await cloudFlush(); } finally { invoke('quit_app').catch(() => {}); } })
       .then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
     return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
   }, []);
@@ -4757,7 +4803,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     checkedWs.add(ws);
     loadSession().then(s => {
       const cur = tasksRef.current, hb = lastHeartbeat;
-      const stale = Object.values(cur).filter(t => t.timerStartedAt && t.timerStartedAt < SESSION_START);
+      const stale = Object.values(cur).filter(t => t.timerStartedAt && t.timerStartedAt < SESSION_START && timerHere(t));
       const ends = stale.map(t => (hb > t.timerStartedAt ? hb : Math.max(t.timerStartedAt, t.updatedAt || 0)));
       if (stale.length) saveMany(stale.map((t, i) => stopAt(t, ends[i])));
       const prev = (s.paused || {})[ws];
@@ -5307,6 +5353,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           </button>
         ))}
         <div className="flex-1" />
+        <CloudButton onClick={() => setCloudOpen(true)} />
         {running && (() => {
           const mm = t => (m => m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`)(Math.floor(elapsed(t) / 60000));
           const ring = 'group relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950';
@@ -5341,6 +5388,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           items={[
             { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
             'sep',
+            { label: 'Cloud sync…', icon: <I.cloud />, onSelect: () => setCloudOpen(true) },
             { label: 'Back up data…', icon: <I.download />, onSelect: backup },
             { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
             { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
@@ -5842,6 +5890,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         </div>
       )}
       <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} prof={prof} />
+      <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
         description="Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first."
         confirmLabel="Replace and restore" onConfirm={doRestore} onCancel={() => setRestoreSrc(null)} />
@@ -5920,6 +5969,119 @@ function SignIn({ prof }) {
   );
 }
 
+/* =========================================================
+   Cloud sync (Supabase)
+   ========================================================= */
+function useCloud() {
+  const [st, setSt] = useState({ phase: 'loading' });
+  useEffect(() => onCloudStatus(x => setSt({ ...x })), []);
+  return st;
+}
+const CLOUD_TONE = {
+  synced: { dot: 'bg-emerald-500', text: 'Up to date' },
+  syncing: { dot: 'bg-sky-500 animate-pulse', text: 'Syncing…' },
+  first: { dot: 'bg-sky-500 animate-pulse', text: 'Copying your data…' },
+  connecting: { dot: 'bg-sky-500 animate-pulse', text: 'Connecting…' },
+  checking: { dot: 'bg-sky-500 animate-pulse', text: 'Connecting…' },
+  loading: { dot: 'bg-zinc-400', text: 'Starting…' },
+  offline: { dot: 'bg-amber-500', text: 'Offline' },
+  error: { dot: 'bg-red-500', text: 'Not syncing' },
+  choose: { dot: 'bg-amber-500', text: 'Needs your choice' },
+  signin: { dot: 'bg-zinc-400', text: 'Signed out' },
+  off: { dot: '', text: 'Off' },
+};
+const ago = ms => { if (!ms) return ''; const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmtDay(ms); };
+
+function CloudButton({ onClick }) {
+  const c = useCloud();
+  const tone = CLOUD_TONE[c.phase] || CLOUD_TONE.loading;
+  const label = c.phase === 'off' ? 'Cloud sync is off' : `Cloud sync: ${tone.text}${c.phase === 'synced' && c.lastSync ? `, ${ago(c.lastSync)}` : ''}${c.pending ? `, ${c.pending} changes waiting` : ''}`;
+  return (
+    <button type="button" onClick={onClick} aria-label={label} title={label}
+      className="relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <I.cloud className={cn('size-[19px]', c.phase === 'off' && 'opacity-60')} />
+      {tone.dot && <span className={cn('absolute right-2.5 top-2.5 size-2 rounded-full ring-2 ring-card', tone.dot)} />}
+    </button>
+  );
+}
+
+function CloudDialog({ open, onClose }) {
+  const c = useCloud();
+  const [url, setUrl] = useState(''); const [key, setKey] = useState('');
+  const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  const [editProject, setEditProject] = useState(false);
+  useEffect(() => { if (open) { setErr(''); setPw(''); setEditProject(false); setUrl(c.url || ''); if (!email && c.email) setEmail(c.email); } }, [open]);
+  const run = async f => { setBusy(true); setErr(''); try { await f(); } catch (e) { setErr(String((e && e.message) || e)); } setBusy(false); };
+  const tone = CLOUD_TONE[c.phase] || CLOUD_TONE.loading;
+  const phase = editProject ? 'off' : c.phase;
+  let body, footer;
+  if (phase === 'off') {
+    body = (
+      <form id="cloud-setup" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(() => cloudConfigure(url, key)); }}>
+        <p className="text-sm text-muted-foreground">Keep your tasks and documents in your own free Supabase project, so every PC you sign in on has the same data and changes show up on the others within seconds. Your data stays on this PC too, so Tasks keeps working offline.</p>
+        <Field label="Project URL" htmlFor="cl-url" hint="Supabase → Project Settings → Data API."><Input id="cl-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://abcdefgh.supabase.co" autoFocus spellCheck={false} /></Field>
+        <Field label="Publishable key" htmlFor="cl-key" hint="Supabase → Project Settings → API Keys. Use the publishable (anon) key, never the secret one."><Input id="cl-key" value={key} onChange={e => setKey(e.target.value)} placeholder="sb_publishable_… or eyJ…" spellCheck={false} /></Field>
+        <p className="text-xs text-muted-foreground">First time? CLOUD-SETUP.md has the five steps to create the project (about 10 minutes).</p>
+      </form>
+    );
+    footer = <>{editProject && <Button variant="outline" onClick={() => setEditProject(false)}>Cancel</Button>}<Button type="submit" form="cloud-setup" disabled={busy || !url.trim() || !key.trim()}>{busy ? 'Checking…' : 'Next'}</Button></>;
+  } else if (phase === 'signin') {
+    body = (
+      <form id="cloud-signin" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(() => cloudSignIn(email, pw)); }}>
+        <p className="text-sm text-muted-foreground">Sign in to sync your tasks and documents across your PCs. Use the same email and password on every PC.</p>
+        <Field label="Email" htmlFor="cl-email"><Input id="cl-email" type="email" value={email} onChange={e => setEmail(e.target.value)} autoFocus={!email} autoComplete="username" /></Field>
+        <Field label="Password" htmlFor="cl-pw"><Input id="cl-pw" type="password" value={pw} onChange={e => setPw(e.target.value)} autoFocus={!!email} autoComplete="current-password" /></Field>
+        <button type="button" onClick={() => setEditProject(true)} className="justify-self-start text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">Use a different Supabase project</button>
+      </form>
+    );
+    footer = <Button type="submit" form="cloud-signin" disabled={busy || !email.trim() || !pw}>{busy ? 'Signing in…' : 'Sign in'}</Button>;
+  } else if (phase === 'choose') {
+    const opt = (mode, title, text, rec) => (
+      <button type="button" disabled={busy} onClick={() => run(() => cloudFirstSync(mode))}
+        className="grid gap-1 rounded-lg border p-4 text-left transition-colors hover:border-foreground/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+        <span className="flex items-center gap-2 text-sm font-medium">{title}{rec && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">Recommended for a second PC</span>}</span>
+        <span className="text-sm text-muted-foreground">{text}</span>
+      </button>
+    );
+    body = (
+      <div className="grid gap-3">
+        <p className="text-sm text-muted-foreground">Your cloud already has <b className="font-medium text-foreground">{c.remoteCount} tasks</b>, and this PC has <b className="font-medium text-foreground">{c.localCount}</b> of its own. What should this PC do? A backup of this PC’s data is saved in the data folder first.</p>
+        {opt('replace', 'Use the cloud’s data', 'This PC shows exactly what’s in the cloud. Tasks that only exist on this PC are removed (they stay in the backup).', true)}
+        {opt('combine', 'Combine both', 'Keep everything from both. Where the same task differs, the newer edit wins.')}
+      </div>
+    );
+  } else if (phase === 'checking' || phase === 'first' || phase === 'loading' || (phase === 'connecting' && !c.lastSync)) {
+    body = <div className="flex items-center gap-3 py-2 text-sm text-muted-foreground"><span className={cn('size-2 rounded-full', tone.dot)} />{phase === 'first' ? (c.mode === 'upload' ? 'Uploading this PC’s tasks and documents…' : c.mode === 'replace' ? 'Copying your cloud data to this PC…' : 'Combining this PC with your cloud…') : 'Connecting to your cloud…'}</div>;
+  } else {
+    const row = (k, v) => <div className="flex items-start justify-between gap-4 py-2.5 text-sm"><span className="text-muted-foreground">{k}</span><span className="min-w-0 text-right">{v}</span></div>;
+    body = (
+      <div className="grid gap-4">
+        <div className="divide-y rounded-lg border px-4">
+          {row('Account', <span className="truncate">{c.email || '—'}</span>)}
+          {row('Status', <span className="inline-flex items-center gap-2"><span className={cn('size-2 rounded-full', tone.dot)} />{tone.text}{c.phase === 'synced' && c.lastSync ? <span className="text-muted-foreground">· {ago(c.lastSync)}</span> : null}</span>)}
+          {c.pending > 0 && row('Waiting to send', `${c.pending} ${c.pending === 1 ? 'change' : 'changes'}`)}
+          {row('Documents in the cloud', String(c.docs || 0))}
+        </div>
+        {c.phase === 'offline' && <p className="text-sm text-muted-foreground">You’re offline. Your changes are saved on this PC and sent as soon as you’re back online.</p>}
+        {c.phase === 'error' && <p className="text-sm text-destructive break-words">{c.error}</p>}
+        <p className="text-xs text-muted-foreground">Sign in with the same account on your other PCs. Changes show up there within a second or two. If the same task is changed on two PCs at once, the newer edit is kept and you’ll see a notice. A timer belongs to the PC that started it, so closing one PC never stops a timer running on another.</p>
+      </div>
+    );
+    footer = <>
+      <Button variant="ghost" className="sm:mr-auto text-destructive hover:text-destructive" disabled={busy} onClick={() => run(cloudSignOut)}>Sign out</Button>
+      <Button variant="outline" disabled={busy} onClick={cloudSyncNow}>Sync now</Button>
+      <Button onClick={onClose}>Done</Button>
+    </>;
+  }
+  return (
+    <Dialog open={open} onClose={onClose} title="Cloud sync" className="max-w-lg" footer={footer}>
+      {body}
+      {err && <p className="text-sm text-destructive break-words">{err}</p>}
+    </Dialog>
+  );
+}
+
 function ProfileDialog({ open, onClose, prof }) {
   const u = prof.data.user || {};
   const [name, setName] = useState(u.name || '');
@@ -5962,7 +6124,14 @@ function useWorkspaces() {
       const v = raw ? JSON.parse(raw) : null;
       if (v && Array.isArray(v.list) && v.list.length) setList(v.list);
       else { setList(DEFAULT_WORKSPACES); persist('workspaces', { version: 1, list: DEFAULT_WORKSPACES }); }
+      // A workspace added or renamed on another PC.
+      un = cloudLive('workspaces', patch => {
+        const l = patch['m/list'];
+        if (Array.isArray(l) && l.length) { setList(l); persist('workspaces', { version: 1, list: l }); }
+      }, v);
     }).catch(() => setList(DEFAULT_WORKSPACES));
+    let un = () => {};
+    return () => un();
   }, []);
   const switchTo = id => { setActive(id); if (!STANDALONE_ID) { try { localStorage.setItem('tasks-ws', id); } catch (e) {} } };
   const rename = (id, name) => setList(l => { const n = l.map(w => w.id === id ? { ...w, name } : w); persist('workspaces', { version: 1, list: n }); return n; });
@@ -5977,6 +6146,15 @@ export default function Root() {
 function MainRoot() {
   const prof = useProfile();
   const wsp = useWorkspaces();
+  // Cloud sync runs in the main window only; task windows get changes from it.
+  useEffect(() => {
+    if (WINDOW_LABEL !== 'main') return;
+    cloudStart();
+    return onCloudNotice(n => {
+      if (n.kind === 'conflict') toast('Changed on two PCs at once', n.kept === 'other' ? `“${n.title}” was also edited on your other PC. Its newer edit was kept.` : `“${n.title}” was also edited on your other PC. Your newer edit here was kept.`);
+      else toast(n.title, n.detail);
+    });
+  }, []);
   const [openOnLoad, setOpenOnLoad] = useState(null);
   return (
     <MeContext.Provider value={prof.data.user || null}>
