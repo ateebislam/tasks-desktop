@@ -51,7 +51,7 @@ fn safe_name(name: &str) -> Res<&str> {
 /// The app's own data files. Each workspace has its tasks in `data[-<workspace>]` and
 /// its archive and trash in `archive[-<workspace>]`; `profile` and `workspaces` are shared.
 fn is_store_name(name: &str) -> bool {
-    if name == "profile" || name == "workspaces" || name == "session" { return true; }
+    if name == "profile" || name == "workspaces" || name == "session" || name == "cloud" { return true; }
     for base in ["data", "archive"] {
         if name == base { return true; }
         if let Some(rest) = name.strip_prefix(base).and_then(|r| r.strip_prefix('-')) {
@@ -72,8 +72,9 @@ fn store_files(dir: &Path) -> Vec<String> {
         for e in rd.flatten() {
             let n = e.file_name().to_string_lossy().to_string();
             if let Some(stem) = n.strip_suffix(".json") {
-                // The session file (heartbeat, paused timers) belongs to this computer's last run, not a backup.
-                if stem != "session" && is_store_name(stem) && e.path().is_file() { out.push(n); }
+                // The session file (heartbeat, paused timers) belongs to this computer's last run, and the
+                // cloud file (sync state and sign-in details) to this computer's link with the cloud: neither is backed up.
+                if stem != "session" && stem != "cloud" && is_store_name(stem) && e.path().is_file() { out.push(n); }
             }
         }
     }
@@ -182,6 +183,33 @@ fn delete_document(app: AppHandle, file: String) -> Res<()> {
         fs::remove_file(path).map_err(err)?;
     }
     Ok(())
+}
+
+/// Saves a document that arrived from cloud sync. The file name comes in the `x-file` header and
+/// the bytes as the raw request body.
+#[tauri::command]
+fn save_document(app: AppHandle, request: tauri::ipc::Request) -> Res<()> {
+    let file = request
+        .headers()
+        .get("x-file")
+        .and_then(|v| v.to_str().ok())
+        .ok_or("Missing file name")?
+        .to_string();
+    let name = safe_name(&file)?;
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the file's contents".into());
+    };
+    let dir = docs_dir(&app)?;
+    let tmp = dir.join(format!("{name}.part"));
+    fs::write(&tmp, bytes).map_err(err)?;
+    fs::rename(&tmp, dir.join(name)).map_err(err)
+}
+
+/// Which of these documents are not on this computer yet.
+#[tauri::command]
+fn missing_documents(app: AppHandle, files: Vec<String>) -> Res<Vec<String>> {
+    let dir = docs_dir(&app)?;
+    Ok(files.into_iter().filter(|f| safe_name(f).is_ok() && !dir.join(f).exists()).collect())
 }
 
 #[tauri::command]
@@ -568,6 +596,8 @@ pub fn run() {
             export_document,
             open_document,
             delete_document,
+            save_document,
+            missing_documents,
             open_data_folder,
             backup,
             restore,
