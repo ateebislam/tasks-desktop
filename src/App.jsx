@@ -1212,15 +1212,9 @@ const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMi
 const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
 const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p === 'Win' ? 'Super' : p).join('+');
 
-// Quick capture glass (0.19.7). Windows 11 blurs what's behind the window (Acrylic); Windows 10 only shows it through, unblurred.
-// Frostiness: 0 is clear glass with no blur, higher adds the blur plus a milky haze and grain. Translucency: how much shows through.
-let win11 = null;
-const isWin11 = async () => {
-  if (win11 !== null) return win11;
-  try { const v = await navigator.userAgentData.getHighEntropyValues(['platformVersion']); win11 = parseInt(v.platformVersion, 10) >= 13; } catch (e) { win11 = false; }
-  return win11;
-};
-const glassEffects = (frost, dark) => frost > 0 ? { effects: ['acrylic'], color: dark ? [20, 20, 22, 30] : [250, 250, 250, 30] } : null;
+// Quick capture glass. The window is see-through and Windows blurs what's behind it (capture_glass in lib.rs),
+// on Windows 10 and 11. Frostiness: 0 is clear glass with no blur, higher adds the blur plus a milky haze and grain.
+// Translucency: how much shows through.
 const glassVars = (frost, clear, dark) => {
   const f = Math.max(0, Math.min(100, frost)) / 100, c = Math.max(0, Math.min(100, clear)) / 100;
   return {
@@ -1230,17 +1224,14 @@ const glassVars = (frost, clear, dark) => {
     '--glass-blur': Math.round(f * 34) + 'px',
   };
 };
-const systemDark = () => { const m = readTheme(); return m === 'dark' || (m === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches); };
 
 // Quick capture: a small window that floats over whatever you're doing.
 async function openCaptureWindow() {
   try {
     const existing = await WebviewWindow.getByLabel('capture');
     if (existing) { await existing.show(); await existing.setFocus(); return; }
-    const p = readPrefs();
-    const fx = (await isWin11()) ? glassEffects(p.captureFrost, systemDark()) : null;
     new WebviewWindow('capture', { url: 'index.html#capture=1', title: 'Quick capture', width: CAPTURE_W, height: 132, center: true, resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, focus: true,
-      transparent: true, shadow: true, ...(fx ? { windowEffects: fx } : {}) });
+      transparent: true, shadow: false });
   } catch (e) { toast('Couldn’t open quick capture', String(e)); }
 }
 
@@ -1437,15 +1428,15 @@ function QuickCaptureWindow() {
     window.addEventListener('storage', on); window.addEventListener('focus', on);
     return () => { window.removeEventListener('storage', on); window.removeEventListener('focus', on); };
   }, []);
-  const first = useRef(true);
-  useEffect(() => {
-    if (first.current) { first.current = false; return; }
-    (async () => {
-      if (!(await isWin11())) return;
-      const fx = glassEffects(glass.frost, th.dark); const w = getCurrentWindow();
-      (fx ? w.setEffects(fx) : w.clearEffects()).catch(() => {});
-    })();
-  }, [glass.frost > 0, th.dark]);
+  // Sizes the window to the box and gives it its rounded, blurred glass shape. Outside Windows only the size changes.
+  const height = useRef(0);
+  const shape = () => {
+    const h = height.current; if (!h) return;
+    invoke('capture_glass', { width: CAPTURE_W, height: h, radius: GLASS_RADIUS, blur: glass.frost > 0 })
+      .catch(() => getCurrentWindow().setSize(new LogicalSize(CAPTURE_W, h)).catch(() => {}));
+  };
+  const shapeRef = useRef(shape); shapeRef.current = shape;
+  useEffect(() => { shape(); }, [glass.frost > 0]);
   useEffect(() => {
     let un = null;
     getCurrentWindow().onFocusChanged(({ payload }) => { if (!payload) close(); }).then(f => { un = f; }).catch(() => {});
@@ -1460,7 +1451,7 @@ function QuickCaptureWindow() {
     const ro = new ResizeObserver(() => {
       const h = Math.ceil(el.getBoundingClientRect().height);
       if (h === last) return; last = h;
-      getCurrentWindow().setSize(new LogicalSize(CAPTURE_W, h)).then(() => invoke('round_window', { radius: GLASS_RADIUS })).catch(() => {});
+      height.current = h; shapeRef.current();
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -1527,8 +1518,6 @@ function ShortcutRecorder({ value, onChange, error }) {
 // Frostiness and Translucency for the quick capture glass, with a live preview over a sample background.
 function CaptureGlassSettings({ prefs, onPrefs }) {
   const th = useTheme();
-  const [w11, setW11] = useState(true);
-  useEffect(() => { isWin11().then(setW11); }, []);
   const slider = (key, label, left, right, hint) => (
     <div className="grid gap-1">
       <div className="flex items-center justify-between text-sm"><span className="font-medium">{label}</span><span className="tnum text-xs text-muted-foreground">{prefs[key]}%</span></div>
@@ -1552,12 +1541,12 @@ function CaptureGlassSettings({ prefs, onPrefs }) {
         <div className="absolute bottom-3 left-4 flex gap-1.5">{['#8b5cf6', '#0ea5e9', '#f59e0b'].map(c => <span key={c} className="h-4 w-14 rounded" style={{ background: c }} />)}</div>
         <div className="absolute inset-x-8 top-[26px]">
           <div className="glass glass-preview flex h-[52px] items-center gap-3 px-4"
-            style={{ ...glassVars(prefs.captureFrost, prefs.captureClear, th.dark), ...(w11 && prefs.captureFrost > 0 ? {} : { backdropFilter: 'none' }) }}>
+            style={{ ...glassVars(prefs.captureFrost, prefs.captureClear, th.dark), ...(prefs.captureFrost > 0 ? {} : { backdropFilter: 'none' }) }}>
             <I.plus className="size-4 text-muted-foreground" /><span className="flex-1 text-[15px] text-muted-foreground">What needs doing?</span><Kbd className="glass-kbd">Enter ↵</Kbd>
           </div>
         </div>
       </div>
-      {slider('captureFrost', 'Frostiness', 'Clear', 'Frosted', w11 ? null : 'Windows 10 can’t blur what’s behind the window, so this only adds the frosted haze.')}
+      {slider('captureFrost', 'Frostiness', 'Clear', 'Frosted', null)}
       {slider('captureClear', 'Translucency', 'Solid', 'See-through')}
     </div>
   );
@@ -5060,6 +5049,8 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.8', title: 'Quick capture glass, fixed', img: 'capture-glass-fix.webp',
+    points: ['The rounded glass bar no longer sits on a dark square, with no white outline and no stray title bar.', 'The blur behind the glass now works on Windows 10 too. Frostiness at 0 turns it off.'] },
   { v: '0.19.7', title: 'Quick capture is made of glass', img: 'capture-glass.webp',
     points: ['The quick capture window is frosted glass now, so you can see the app behind it, blurred, on Windows 11.', 'Bigger text, and Bucket and Platform buttons you can click instead of typing @ or #. It tells you if the task lands in the Inbox or in Open.'] },
   { v: '0.19.7', title: 'Make the glass your own', img: 'capture-glass-settings.webp',

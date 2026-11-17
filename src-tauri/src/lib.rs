@@ -537,30 +537,72 @@ fn show_main(app: &AppHandle) {
 }
 
 /* ---------------------------------------------------------------
-   Quick capture glass: Windows 11 only rounds a window's corners by 8 px, so the capture window
-   is cut to a rounder shape here. Called again after every resize, since the shape is in pixels.
+   Quick capture glass (0.19.8). Sizes the capture window and, on Windows, gives it its shape:
+   no frame (a shaped window with a frame gets Windows' old-style title bar and a white border),
+   no Windows 11 corner rounding or border, a blur that follows the window's shape (Acrylic and Mica
+   fill the full square), and a rounded cut. Called after every resize, since the shape is in pixels.
    --------------------------------------------------------------- */
 
 #[cfg(windows)]
-fn round_corners(w: &tauri::WebviewWindow, radius: f64) -> Res<()> {
+mod glass {
+    use std::ffi::c_void;
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
     use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
-    let hwnd = w.hwnd().map_err(err)?;
-    let size = w.outer_size().map_err(err)?;
-    let d = ((radius * w.scale_factor().map_err(err)?).round() as i32) * 2;
-    unsafe {
-        let rgn = CreateRoundRectRgn(0, 0, size.width as i32 + 1, size.height as i32 + 1, d, d);
-        // Windows owns the region from here on, so it isn't freed here.
-        SetWindowRgn(hwnd.0 as _, rgn, 1);
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_STYLE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, SWP_NOZORDER, WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_SYSMENU, WS_THICKFRAME,
+    };
+    #[repr(C)]
+    struct AccentPolicy { state: u32, flags: u32, color: u32, animation: u32 }
+    #[repr(C)]
+    struct CompositionData { attribute: u32, data: *mut c_void, size: usize }
+    type SetWca = unsafe extern "system" fn(HWND, *mut CompositionData) -> i32;
+
+    pub fn apply(hwnd: HWND, w: i32, h: i32, radius: i32, blur: bool) {
+        unsafe {
+            // 1. No frame at all.
+            let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+            let bare = style & !((WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MAXIMIZEBOX | WS_MINIMIZEBOX) as isize);
+            if bare != style {
+                SetWindowLongPtrW(hwnd, GWL_STYLE, bare);
+                SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            }
+            // 2. Windows 11: no 8 px corner rounding and no 1 px border of its own (Windows 10 ignores these).
+            let no_round: u32 = 1; // DWMWCP_DONOTROUND
+            DwmSetWindowAttribute(hwnd, 33, &no_round as *const u32 as *const c_void, 4);
+            let no_border: u32 = 0xFFFF_FFFE; // DWMWA_COLOR_NONE
+            DwmSetWindowAttribute(hwnd, 34, &no_border as *const u32 as *const c_void, 4);
+            // 3. Blur behind the window (off for clear glass). Works on Windows 10 and 11.
+            let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
+            if !user32.is_null() {
+                if let Some(f) = GetProcAddress(user32, b"SetWindowCompositionAttribute\0".as_ptr()) {
+                    let set: SetWca = std::mem::transmute(f);
+                    let mut accent = AccentPolicy { state: if blur { 3 } else { 0 }, flags: 0, color: 0, animation: 0 };
+                    let mut data = CompositionData { attribute: 19, data: &mut accent as *mut _ as *mut c_void, size: std::mem::size_of::<AccentPolicy>() };
+                    set(hwnd, &mut data);
+                }
+            }
+            // 4. Cut the window to a rounded rectangle. Windows owns the region afterwards.
+            let rgn = CreateRoundRectRgn(0, 0, w + 1, h + 1, radius * 2, radius * 2);
+            SetWindowRgn(hwnd, rgn, 1);
+        }
     }
-    Ok(())
 }
 
-#[cfg(not(windows))]
-fn round_corners(_w: &tauri::WebviewWindow, _radius: f64) -> Res<()> { Ok(()) }
-
 #[tauri::command]
-fn round_window(window: tauri::WebviewWindow, radius: f64) -> Res<()> {
-    round_corners(&window, radius)
+fn capture_glass(window: tauri::WebviewWindow, width: f64, height: f64, radius: f64, blur: bool) -> Res<()> {
+    window.set_size(tauri::LogicalSize::new(width, height)).map_err(err)?;
+    #[cfg(windows)]
+    {
+        let s = window.scale_factor().map_err(err)?;
+        let hwnd = window.hwnd().map_err(err)?;
+        glass::apply(hwnd.0 as _, (width * s).round() as i32, (height * s).round() as i32, (radius * s).round() as i32, blur);
+    }
+    #[cfg(not(windows))]
+    let _ = (radius, blur);
+    Ok(())
 }
 
 /// Quits Tasks after the window has stopped the running timers (see the tray's Quit).
@@ -612,7 +654,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            round_window,
+            capture_glass,
             list_folder,
             idle_seconds,
             write_text_file,

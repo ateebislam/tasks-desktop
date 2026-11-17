@@ -1,5 +1,10 @@
+Quick capture glass shows properly on Windows: rounded, with no dark square or white outline.
+- Quick capture: the rounded glass bar no longer sits on a dark square-cornered rectangle, and the thick white outline and the old-style "Quick capture" title bar that could appear are gone. The window now has no frame of its own at all.
+- Quick capture: the blur behind the glass now follows the rounded shape, and works on Windows 10 as well as Windows 11. Frostiness at 0 turns the blur off for clear glass.
+- Nothing changes in what's saved or synced.
+
 Quick capture is made of glass, with sliders for how frosted and how see-through it is.
-- Quick capture: the floating window is now frosted glass. On Windows 11 the app behind it shows through, blurred, with a bright edge, a soft sheen and well-rounded corners. On Windows 10 it shows through without the blur.
+- Quick capture: the floating window is now frosted glass. On Windows 11 the app behind it shows through, blurred, with a bright edge, a soft sheen and well-rounded corners. 
 - Quick capture: bigger text, and Bucket and Platform buttons along the bottom. Click one to open the same list as typing @ or #. What you pick shows on the button, with × to remove it. Click it again to change it.
 - Quick capture: the bottom right says where the task will go, Inbox or Open (a task with a platform goes straight to Open).
 - Settings: new Frostiness (clear to frosted) and Translucency (solid to see-through) sliders under Quick capture glass, with a live preview and Reset. Changes apply to an open quick capture window straight away.
