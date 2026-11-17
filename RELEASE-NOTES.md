@@ -1,3 +1,11 @@
+Quick capture is made of glass, with sliders for how frosted and how see-through it is.
+- Quick capture: the floating window is now frosted glass. On Windows 11 the app behind it shows through, blurred, with a bright edge, a soft sheen and well-rounded corners. On Windows 10 it shows through without the blur.
+- Quick capture: bigger text, and Bucket and Platform buttons along the bottom. Click one to open the same list as typing @ or #. What you pick shows on the button, with × to remove it. Click it again to change it.
+- Quick capture: the bottom right says where the task will go, Inbox or Open (a task with a platform goes straight to Open).
+- Settings: new Frostiness (clear to frosted) and Translucency (solid to see-through) sliders under Quick capture glass, with a live preview and Reset. Changes apply to an open quick capture window straight away.
+- These two settings stay on each PC, like the theme and the shortcut. Nothing new is synced and there's nothing to set up in Supabase.
+- Quick add inside the app (`) keeps its current look.
+
 What's new has a new layout.
 - The title and text are on the left in big type, and the screenshot sits on the right, larger and easier to read.
 - Back and Next use the same buttons as the rest of the app, and a bar at the top shows where you are.

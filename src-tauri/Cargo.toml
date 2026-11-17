@@ -1,6 +1,6 @@
 [package]
 name = "tasks"
-version = "0.19.6"
+version = "0.19.7"
 description = "A simple personal task manager"
 edition = "2021"
 
@@ -31,9 +31,9 @@ rand = "0.8"
 url = "2"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
-# Reads how long the computer has been idle (for idle detection).
+# Reads how long the computer has been idle (for idle detection), and rounds the quick capture window's corners.
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Win32_Graphics_Gdi"] }
 
 [profile.release]
 codegen-units = 1

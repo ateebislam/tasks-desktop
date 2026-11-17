@@ -536,6 +536,33 @@ fn show_main(app: &AppHandle) {
     }
 }
 
+/* ---------------------------------------------------------------
+   Quick capture glass: Windows 11 only rounds a window's corners by 8 px, so the capture window
+   is cut to a rounder shape here. Called again after every resize, since the shape is in pixels.
+   --------------------------------------------------------------- */
+
+#[cfg(windows)]
+fn round_corners(w: &tauri::WebviewWindow, radius: f64) -> Res<()> {
+    use windows_sys::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+    let hwnd = w.hwnd().map_err(err)?;
+    let size = w.outer_size().map_err(err)?;
+    let d = ((radius * w.scale_factor().map_err(err)?).round() as i32) * 2;
+    unsafe {
+        let rgn = CreateRoundRectRgn(0, 0, size.width as i32 + 1, size.height as i32 + 1, d, d);
+        // Windows owns the region from here on, so it isn't freed here.
+        SetWindowRgn(hwnd.0 as _, rgn, 1);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn round_corners(_w: &tauri::WebviewWindow, _radius: f64) -> Res<()> { Ok(()) }
+
+#[tauri::command]
+fn round_window(window: tauri::WebviewWindow, radius: f64) -> Res<()> {
+    round_corners(&window, radius)
+}
+
 /// Quits Tasks after the window has stopped the running timers (see the tray's Quit).
 #[tauri::command]
 fn quit_app(app: AppHandle) { app.exit(0); }
@@ -585,6 +612,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            round_window,
             list_folder,
             idle_seconds,
             write_text_file,
