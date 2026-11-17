@@ -1208,7 +1208,7 @@ function ThemeToggle() {
 }
 
 /* Preferences for this computer. */
-const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20, oneAtATime: false, captureFrost: 60, captureClear: 55 };
+const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20, oneAtATime: false, captureFrost: 60, captureClear: 40 };
 const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
 const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p === 'Win' ? 'Super' : p).join('+');
 
@@ -1218,7 +1218,8 @@ const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p =
 const glassVars = (frost, clear, dark) => {
   const f = Math.max(0, Math.min(100, frost)) / 100, c = Math.max(0, Math.min(100, clear)) / 100;
   return {
-    '--glass-tint': (0.94 - c * 0.86).toFixed(3),
+    // Never fully see-through, so the text stays readable over a window of the opposite brightness.
+    '--glass-tint': (0.96 - c * 0.62).toFixed(3),
     '--glass-haze': (f * (dark ? 0.09 : 0.32)).toFixed(3),
     '--glass-grain': (f * 0.14).toFixed(3),
     '--glass-blur': Math.round(f * 34) + 'px',
@@ -1422,6 +1423,13 @@ function QuickCaptureWindow() {
   const close = () => getCurrentWindow().close().catch(() => {});
   // The window itself is see-through; the glass is drawn by the box below (and by Windows' blur behind it).
   useLayoutEffect(() => { document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent'; }, []);
+  // The page behind the box gets the same tint, so if Windows' cut corner and the drawn corner differ by a pixel
+  // or two, the gap shows glass of the same color instead of a lighter sliver.
+  useLayoutEffect(() => {
+    const v = glassVars(glass.frost, glass.clear, th.dark), r = document.documentElement;
+    Object.entries(v).forEach(([k, x]) => r.style.setProperty(k, x));
+    r.style.background = 'hsl(var(--popover) / var(--glass-tint))';
+  }, [glass.frost, glass.clear, th.dark]);
   // Settings changed in the main window apply here straight away, including turning the blur on or off.
   useEffect(() => {
     const on = () => { const p = readPrefs(); setGlass(g => g.frost === p.captureFrost && g.clear === p.captureClear ? g : { frost: p.captureFrost, clear: p.captureClear }); };
@@ -5049,6 +5057,8 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.9', title: 'Glass you can read on any background', img: 'capture-glass-readable.webp',
+    points: ['Quick capture stays readable over a window of the opposite brightness: the glass is a little denser and the grey text is brighter.', 'The rounded corners line up cleanly, with no lighter sliver. Press Reset under Quick capture glass in Settings to get the new default.'] },
   { v: '0.19.8', title: 'Quick capture glass, fixed', img: 'capture-glass-fix.webp',
     points: ['The rounded glass bar no longer sits on a dark square, with no white outline and no stray title bar.', 'The blur behind the glass now works on Windows 10 too. Frostiness at 0 turns it off.'] },
   { v: '0.19.7', title: 'Quick capture is made of glass', img: 'capture-glass.webp',

@@ -1,3 +1,8 @@
+Quick capture glass reads well over any background, and its corners are clean.
+- Quick capture: dark glass over a bright window (or light glass over a dark one) no longer turns a washed-out grey with faint text. The glass never goes fully see-through, and grey text inside it is brighter with a soft shadow.
+- Quick capture: the rounded corners no longer show a lighter sliver where Windows' cut and the drawn corner differ.
+- Translucency now starts at 40% instead of 55%. If you moved the sliders before, press Reset under Quick capture glass in Settings to get the new default.
+
 Quick capture glass shows properly on Windows: rounded, with no dark square or white outline.
 - Quick capture: the rounded glass bar no longer sits on a dark square-cornered rectangle, and the thick white outline and the old-style "Quick capture" title bar that could appear are gone. The window now has no frame of its own at all.
 - Quick capture: the blur behind the glass now follows the rounded shape, and works on Windows 10 as well as Windows 11. Frostiness at 0 turns the blur off for clear glass.
