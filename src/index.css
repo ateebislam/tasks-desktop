@@ -14,7 +14,6 @@
   --destructive:0 72% 51%; --destructive-foreground:0 0% 98%;
   --border:0 0% 89.5%; --input:0 0% 87%; --ring:0 0% 25%;
   --radius:0.625rem;
-  --glass-rim:255 255 255 / .95; --glass-ring:255 255 255 / .5; --glass-sheen:255 255 255 / .55; --glass-pill:255 255 255 / .55; --glass-pill-rim:255 255 255 / .9; --glass-hi:255 255 255 / .6; --glass-line:0 0% 9% / .08; --glass-drop:15 23 42 / .18; --glass-muted:0 0% 36%; --glass-text-shadow:0 1px 1px rgb(255 255 255 / .55);
   color-scheme:light;
   box-sizing:border-box;
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
@@ -32,7 +31,6 @@
     --accent:0 0% 15.5%; --accent-foreground:0 0% 96%;
     --destructive:0 62% 50%; --destructive-foreground:0 0% 98%;
     --border:0 0% 16%; --input:0 0% 20%; --ring:0 0% 80%;
-    --glass-rim:255 255 255 / .22; --glass-ring:255 255 255 / .06; --glass-sheen:255 255 255 / .10; --glass-pill:255 255 255 / .08; --glass-pill-rim:255 255 255 / .14; --glass-hi:255 255 255 / .10; --glass-line:0 0% 100% / .09; --glass-drop:0 0 0 / .55; --glass-muted:0 0% 76%; --glass-text-shadow:0 1px 2px rgb(0 0 0 / .5);
     color-scheme:dark;
   }
 }
@@ -47,7 +45,6 @@
     --accent:0 0% 15.5%; --accent-foreground:0 0% 96%;
     --destructive:0 62% 50%; --destructive-foreground:0 0% 98%;
     --border:0 0% 16%; --input:0 0% 20%; --ring:0 0% 80%;
-    --glass-rim:255 255 255 / .22; --glass-ring:255 255 255 / .06; --glass-sheen:255 255 255 / .10; --glass-pill:255 255 255 / .08; --glass-pill-rim:255 255 255 / .14; --glass-hi:255 255 255 / .10; --glass-line:0 0% 100% / .09; --glass-drop:0 0 0 / .55; --glass-muted:0 0% 76%; --glass-text-shadow:0 1px 2px rgb(0 0 0 / .5);
     color-scheme:dark;
 }
 *,*::before,*::after{box-sizing:inherit;border-color:hsl(var(--border))}
@@ -73,17 +70,5 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 @media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-toast,.anim-ping,.anim-cloud-sync{animation:none}}
 html,body,#root{height:100%}
 
-/* Quick capture glass (0.19.7). --glass-tint, --glass-haze and --glass-grain come from the Frostiness and Translucency settings. */
-.glass{position:relative;overflow:hidden;border-radius:20px;--muted-foreground:var(--glass-muted);text-shadow:var(--glass-text-shadow);background:hsl(var(--popover) / var(--glass-tint,.6));
-  box-shadow:inset 0 1px 0 rgb(var(--glass-rim)),inset 0 0 0 1px rgb(var(--glass-ring)),inset 0 -1px 0 rgb(var(--glass-ring))}
-.glass::before{content:"";position:absolute;inset:0;pointer-events:none;
-  background:linear-gradient(160deg,rgb(var(--glass-sheen)) 0%,transparent 38%),radial-gradient(120% 60% at 15% -10%,rgb(var(--glass-sheen)),transparent 60%),rgb(255 255 255 / var(--glass-haze,0))}
-.glass::after{content:"";position:absolute;inset:0;pointer-events:none;opacity:var(--glass-grain,0);mix-blend-mode:overlay;
-  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
-.glass>*{position:relative;z-index:1}
-/* The Settings preview blurs with CSS, since there it sits inside the app rather than over other windows. */
-.glass-preview{border-radius:16px;backdrop-filter:blur(var(--glass-blur,20px)) saturate(1.6);box-shadow:inset 0 1px 0 rgb(var(--glass-rim)),inset 0 0 0 1px rgb(var(--glass-ring)),0 16px 40px rgb(var(--glass-drop))}
-.glass-pill{background:rgb(var(--glass-pill));box-shadow:inset 0 1px 0 rgb(var(--glass-pill-rim)),inset 0 0 0 1px hsl(var(--glass-line))}
-.glass-hi{background:rgb(var(--glass-hi));box-shadow:inset 0 1px 0 rgb(var(--glass-pill-rim))}
-.glass-kbd{background:rgb(var(--glass-pill));border-color:rgb(var(--glass-pill-rim))}
-.glass-range{width:100%;accent-color:hsl(var(--primary));height:20px;cursor:pointer}
+/* Quick capture (0.19.11): a plain solid panel. */
+.capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:inset 0 0 0 1px hsl(var(--border))}

@@ -1,3 +1,13 @@
+Quick capture is a plain solid panel, with no glass.
+- Quick capture: the frosted glass is gone. The window is a solid panel in the app's colors, with a thin border and rounded corners, so it reads the same over any background.
+- Everything else works the same: the Bucket and Platform buttons, @ and #, the Inbox or Open hint, and Enter to save.
+- Settings: the Frostiness and Translucency sliders under Quick capture glass are removed.
+- Nothing changes in what's saved or synced.
+
+The Frostiness slider visibly changes quick capture.
+- Quick capture: Frostiness used to only switch the blur on or off, plus a faint haze, so moving it barely showed. Now the haze and grain grow clearly as you slide it, and from 50% up Windows uses its heavier, grainier Acrylic blur instead of the light blur. At 0 the glass is clear.
+- Settings explains what Frostiness does under the slider.
+
 Quick capture glass reads well over any background, and its corners are clean.
 - Quick capture: dark glass over a bright window (or light glass over a dark one) no longer turns a washed-out grey with faint text. The glass never goes fully see-through, and grey text inside it is brighter with a soft shadow.
 - Quick capture: the rounded corners no longer show a lighter sliver where Windows' cut and the drawn corner differ.

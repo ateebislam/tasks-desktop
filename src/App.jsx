@@ -1208,23 +1208,9 @@ function ThemeToggle() {
 }
 
 /* Preferences for this computer. */
-const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20, oneAtATime: false, captureFrost: 60, captureClear: 40 };
+const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20, oneAtATime: false };
 const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
 const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p === 'Win' ? 'Super' : p).join('+');
-
-// Quick capture glass. The window is see-through and Windows blurs what's behind it (capture_glass in lib.rs),
-// on Windows 10 and 11. Frostiness: 0 is clear glass with no blur, higher adds the blur plus a milky haze and grain.
-// Translucency: how much shows through.
-const glassVars = (frost, clear, dark) => {
-  const f = Math.max(0, Math.min(100, frost)) / 100, c = Math.max(0, Math.min(100, clear)) / 100;
-  return {
-    // Never fully see-through, so the text stays readable over a window of the opposite brightness.
-    '--glass-tint': (0.96 - c * 0.62).toFixed(3),
-    '--glass-haze': (f * (dark ? 0.09 : 0.32)).toFixed(3),
-    '--glass-grain': (f * 0.14).toFixed(3),
-    '--glass-blur': Math.round(f * 34) + 'px',
-  };
-};
 
 // Quick capture: a small window that floats over whatever you're doing.
 async function openCaptureWindow() {
@@ -1320,29 +1306,29 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
   );
   const dotOf = (kind, name) => (((kind === 'bucket' ? lists.buckets : lists.platforms) || []).find(x => norm(x.name) === norm(name)) || {}).dot;
   const list = picking && (
-    <div role="listbox" aria-label={L[tok.kind]} className="border-t border-[hsl(var(--glass-line))] px-2 py-1.5">
+    <div role="listbox" aria-label={L[tok.kind]} className="border-t px-2 py-1.5">
       <div className="px-2 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{plural(L[tok.kind])}</div>
       {options.length ? options.map((o, i) => (
         <div key={o.name} role="option" aria-selected={i === hi} onMouseDown={e => e.preventDefault()} onMouseEnter={() => setHi(i)} onClick={() => pick(o)}
-          className={cn('flex h-[34px] cursor-pointer items-center gap-2 rounded-[10px] px-2 text-sm', i === hi && 'glass-hi')}>
+          className={cn('flex h-[34px] cursor-pointer items-center gap-2 rounded-[10px] px-2 text-sm', i === hi && 'bg-muted')}>
           <span className={cn('size-2 shrink-0 rounded-full', o.dot || 'bg-zinc-400')} />
           <span className={cn('min-w-0 flex-1 truncate', o.done && 'text-muted-foreground')}>{o.name}</span>
           {o.note && <span className="shrink-0 text-xs text-muted-foreground">{o.note}</span>}
-          {i === hi && <Kbd className="glass-kbd">Enter</Kbd>}
+          {i === hi && <Kbd>Enter</Kbd>}
         </div>
       )) : <div className="px-2 py-1.5 text-sm text-muted-foreground">{tok.query ? `No ${L[tok.kind].toLowerCase()} matches “${tok.query}”` : `No ${plural(L[tok.kind]).toLowerCase()} yet`}</div>}
     </div>
   );
   const pill = (kind, name) => name ? (
-    <span key={kind} className="glass-pill inline-flex h-[30px] max-w-[15rem] items-center gap-1.5 rounded-full pl-3 pr-1.5 text-[13px]">
+    <span key={kind} className="inline-flex h-[30px] max-w-[15rem] items-center gap-1.5 rounded-lg border bg-muted pl-3 pr-1.5 text-[13px]">
       {dotOf(kind, name) && <span className={cn('size-2 shrink-0 rounded-full', dotOf(kind, name))} />}
       <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => startPick(kind === 'bucket' ? '@' : '#')} title={`Change ${L[kind].toLowerCase()}`} className="truncate font-medium">{name}</button>
       <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'bucket' ? setBucket('') : setPlatform('')} aria-label={`Remove ${L[kind].toLowerCase()} ${name}`}
-        className="flex size-[18px] items-center justify-center rounded-full text-muted-foreground hover:bg-[hsl(var(--foreground)/0.08)] hover:text-foreground"><I.x className="size-3" /></button>
+        className="flex size-[18px] items-center justify-center rounded-full text-muted-foreground hover:bg-background hover:text-foreground"><I.x className="size-3" /></button>
     </span>
   ) : (
     <button key={kind} type="button" onMouseDown={e => e.preventDefault()} onClick={() => startPick(kind === 'bucket' ? '@' : '#')}
-      className="glass-pill inline-flex h-[30px] items-center gap-1.5 rounded-full px-3 text-[13px] text-muted-foreground hover:text-foreground">
+      className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border px-3 text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground">
       {kind === 'bucket' ? <I.layers className="size-3.5" /> : <span className="w-3.5 text-center text-[15px] leading-none">#</span>}{L[kind]}
     </button>
   );
@@ -1358,12 +1344,12 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
           className="min-w-0 flex-1 resize-none bg-transparent text-[21px] leading-[30px] tracking-[-0.01em] placeholder:text-muted-foreground focus-visible:outline-none" />
       </div>
       {list}
-      <div className="flex items-center justify-between gap-2 border-t border-[hsl(var(--glass-line))] px-3.5 py-2.5">
+      <div className="flex items-center justify-between gap-2 border-t bg-muted/30 px-3.5 py-2.5">
         {picking ? (
           <div className="flex items-center gap-3.5 text-xs text-muted-foreground">
-            <span className="inline-flex items-center gap-1.5"><Kbd className="glass-kbd">↑↓</Kbd>move</span>
-            <span className="inline-flex items-center gap-1.5"><Kbd className="glass-kbd">Enter</Kbd>pick</span>
-            <span className="inline-flex items-center gap-1.5"><Kbd className="glass-kbd">Esc</Kbd>keep as text</span>
+            <span className="inline-flex items-center gap-1.5"><Kbd>↑↓</Kbd>move</span>
+            <span className="inline-flex items-center gap-1.5"><Kbd>Enter</Kbd>pick</span>
+            <span className="inline-flex items-center gap-1.5"><Kbd>Esc</Kbd>keep as text</span>
           </div>
         ) : <div className="flex min-w-0 items-center gap-1.5">{pill('bucket', bucket)}{pill('platform', platform)}</div>}
         <div className="flex shrink-0 items-center gap-3 text-xs text-muted-foreground">
@@ -1371,7 +1357,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
             ? <span>Picking a {L.platform.toLowerCase()} sends it to Open</span>
             : platform ? <span className="inline-flex items-center gap-1.5"><I.arrowRight className="size-3.5" />Saves to <span className="font-medium text-foreground">Open</span></span>
               : <span className="inline-flex items-center gap-1.5"><I.inbox className="size-3.5" />Saves to Inbox</span>}
-          {!picking && <Kbd className="glass-kbd">Enter ↵</Kbd>}
+          {!picking && <Kbd>Enter ↵</Kbd>}
         </div>
       </div>
     </div>
@@ -1413,38 +1399,25 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
 }
 
 const CAPTURE_W = 720;
-const GLASS_RADIUS = 20; // matches .glass in index.css
+const CAPTURE_RADIUS = 14; // matches .capture-panel in index.css
 function QuickCaptureWindow() {
   const [lists, setLists] = useState(() => { let ws = 'product'; try { ws = localStorage.getItem('tasks-ws') || 'product'; } catch (e) {} return readCaptureLists(ws); });
   const [maxH, setMaxH] = useState(() => Math.max(72, Math.round(((window.screen && window.screen.availHeight) || 900) * 0.3)));
   const box = useRef(null);
   const th = useTheme();
-  const [glass, setGlass] = useState(() => { const p = readPrefs(); return { frost: p.captureFrost, clear: p.captureClear }; });
   const close = () => getCurrentWindow().close().catch(() => {});
-  // The window itself is see-through; the glass is drawn by the box below (and by Windows' blur behind it).
-  useLayoutEffect(() => { document.documentElement.style.background = 'transparent'; document.body.style.background = 'transparent'; }, []);
-  // The page behind the box gets the same tint, so if Windows' cut corner and the drawn corner differ by a pixel
-  // or two, the gap shows glass of the same color instead of a lighter sliver.
+  // A plain solid panel. The page behind it is the same color, so the rounded corners Windows cuts never show a sliver.
   useLayoutEffect(() => {
-    const v = glassVars(glass.frost, glass.clear, th.dark), r = document.documentElement;
-    Object.entries(v).forEach(([k, x]) => r.style.setProperty(k, x));
-    r.style.background = 'hsl(var(--popover) / var(--glass-tint))';
-  }, [glass.frost, glass.clear, th.dark]);
-  // Settings changed in the main window apply here straight away, including turning the blur on or off.
-  useEffect(() => {
-    const on = () => { const p = readPrefs(); setGlass(g => g.frost === p.captureFrost && g.clear === p.captureClear ? g : { frost: p.captureFrost, clear: p.captureClear }); };
-    window.addEventListener('storage', on); window.addEventListener('focus', on);
-    return () => { window.removeEventListener('storage', on); window.removeEventListener('focus', on); };
-  }, []);
-  // Sizes the window to the box and gives it its rounded, blurred glass shape. Outside Windows only the size changes.
+    document.documentElement.style.background = 'hsl(var(--popover))'; document.body.style.background = 'transparent';
+  }, [th.dark]);
+  // Sizes the window to the box and rounds its corners (capture_glass in lib.rs, with no blur). Outside Windows only the size changes.
   const height = useRef(0);
   const shape = () => {
     const h = height.current; if (!h) return;
-    invoke('capture_glass', { width: CAPTURE_W, height: h, radius: GLASS_RADIUS, blur: glass.frost > 0 })
+    invoke('capture_glass', { width: CAPTURE_W, height: h, radius: CAPTURE_RADIUS, frost: 0, dark: th.dark })
       .catch(() => getCurrentWindow().setSize(new LogicalSize(CAPTURE_W, h)).catch(() => {}));
   };
   const shapeRef = useRef(shape); shapeRef.current = shape;
-  useEffect(() => { shape(); }, [glass.frost > 0]);
   useEffect(() => {
     let un = null;
     getCurrentWindow().onFocusChanged(({ payload }) => { if (!payload) close(); }).then(f => { un = f; }).catch(() => {});
@@ -1471,7 +1444,7 @@ function QuickCaptureWindow() {
     close();
   };
   return (
-    <div ref={box} className="glass" style={glassVars(glass.frost, glass.clear, th.dark)}>
+    <div ref={box} className="capture-panel">
       <CaptureBox lists={lists} maxHeight={maxH} onSave={save} onCancel={close} />
     </div>
   );
@@ -1523,43 +1496,6 @@ function ShortcutRecorder({ value, onChange, error }) {
   );
 }
 
-// Frostiness and Translucency for the quick capture glass, with a live preview over a sample background.
-function CaptureGlassSettings({ prefs, onPrefs }) {
-  const th = useTheme();
-  const slider = (key, label, left, right, hint) => (
-    <div className="grid gap-1">
-      <div className="flex items-center justify-between text-sm"><span className="font-medium">{label}</span><span className="tnum text-xs text-muted-foreground">{prefs[key]}%</span></div>
-      <input type="range" min="0" max="100" step="5" value={prefs[key]} aria-label={label} onChange={e => onPrefs({ [key]: Number(e.target.value) })} className="glass-range" />
-      <div className="flex justify-between text-[11px] text-muted-foreground"><span>{left}</span><span>{right}</span></div>
-      {hint && <p className="text-[0.8rem] text-muted-foreground">{hint}</p>}
-    </div>
-  );
-  const changed = prefs.captureFrost !== PREF_DEFAULTS.captureFrost || prefs.captureClear !== PREF_DEFAULTS.captureClear;
-  return (
-    <div className="grid gap-3">
-      <div className="flex items-center justify-between">
-        <Label>Quick capture glass</Label>
-        <Button variant="ghost" size="sm" disabled={!changed} onClick={() => onPrefs({ captureFrost: PREF_DEFAULTS.captureFrost, captureClear: PREF_DEFAULTS.captureClear })}>Reset</Button>
-      </div>
-      <div className="relative h-[104px] overflow-hidden rounded-lg border" aria-hidden="true"
-        style={{ background: th.dark ? '#101114' : '#f3f4f6' }}>
-        <div className="absolute left-4 top-3 text-[15px] font-semibold">Release plan for 0.20</div>
-        <div className="absolute left-4 top-9 w-[55%] text-[11px] leading-4 text-muted-foreground">The sidebar fix, the new sync animation and the quick capture changes all go out together on Friday.</div>
-        <div className="absolute right-4 top-3 h-[80px] w-[38%] rounded-lg" style={{ background: 'linear-gradient(135deg,#10b981,#3b82f6 55%,#ec4899)' }} />
-        <div className="absolute bottom-3 left-4 flex gap-1.5">{['#8b5cf6', '#0ea5e9', '#f59e0b'].map(c => <span key={c} className="h-4 w-14 rounded" style={{ background: c }} />)}</div>
-        <div className="absolute inset-x-8 top-[26px]">
-          <div className="glass glass-preview flex h-[52px] items-center gap-3 px-4"
-            style={{ ...glassVars(prefs.captureFrost, prefs.captureClear, th.dark), ...(prefs.captureFrost > 0 ? {} : { backdropFilter: 'none' }) }}>
-            <I.plus className="size-4 text-muted-foreground" /><span className="flex-1 text-[15px] text-muted-foreground">What needs doing?</span><Kbd className="glass-kbd">Enter ↵</Kbd>
-          </div>
-        </div>
-      </div>
-      {slider('captureFrost', 'Frostiness', 'Clear', 'Frosted', null)}
-      {slider('captureClear', 'Translucency', 'Solid', 'See-through')}
-    </div>
-  );
-}
-
 function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onAddFolder, onRemoveFolder, onSubfolders, status, wsName, shortcutError }) {
   if (!open) return null;
   return (
@@ -1578,7 +1514,6 @@ function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onAddFolder, onR
           <ShortcutRecorder value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} error={shortcutError} />
           <p className="text-[0.8rem] text-muted-foreground">Inside the app, press ` (the key left of 1) for quick capture.</p>
         </div>
-        <CaptureGlassSettings prefs={prefs} onPrefs={onPrefs} />
         <Field label="Ask about idle time after" htmlFor="st-idle" hint="When a timer is running and there’s no keyboard or mouse activity for this long, Tasks asks what to do with that time.">
           <Select id="st-idle" value={String(prefs.idleMinutes)} onChange={v => onPrefs({ idleMinutes: Number(v) })} searchable={false}
             options={[['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['20', '20 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['0', 'Never']].map(([value, label]) => ({ value, label }))} />
@@ -5057,6 +4992,10 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.11', title: 'Quick capture, plain and simple', img: 'capture-solid.webp',
+    points: ['Quick capture is a plain solid panel again: no glass, no blur, readable over anything.', 'Bucket and Platform buttons, the Inbox or Open hint and Enter to save all work the same. The Frostiness and Translucency sliders are gone from Settings.'] },
+  { v: '0.19.10', title: 'Frostiness you can see', img: 'capture-frost.webp',
+    points: ['The Frostiness slider now clearly changes quick capture: at 0 the glass is clear, and higher adds a milky haze and grain.', 'From 50% Windows switches to its heavier, grainier blur behind the glass.'] },
   { v: '0.19.9', title: 'Glass you can read on any background', img: 'capture-glass-readable.webp',
     points: ['Quick capture stays readable over a window of the opposite brightness: the glass is a little denser and the grey text is brighter.', 'The rounded corners line up cleanly, with no lighter sliver. Press Reset under Quick capture glass in Settings to get the new default.'] },
   { v: '0.19.8', title: 'Quick capture glass, fixed', img: 'capture-glass-fix.webp',

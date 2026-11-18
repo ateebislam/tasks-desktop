@@ -560,7 +560,7 @@ mod glass {
     struct CompositionData { attribute: u32, data: *mut c_void, size: usize }
     type SetWca = unsafe extern "system" fn(HWND, *mut CompositionData) -> i32;
 
-    pub fn apply(hwnd: HWND, w: i32, h: i32, radius: i32, blur: bool) {
+    pub fn apply(hwnd: HWND, w: i32, h: i32, radius: i32, frost: u32, dark: bool) {
         unsafe {
             // 1. No frame at all.
             let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -574,12 +574,16 @@ mod glass {
             DwmSetWindowAttribute(hwnd, 33, &no_round as *const u32 as *const c_void, 4);
             let no_border: u32 = 0xFFFF_FFFE; // DWMWA_COLOR_NONE
             DwmSetWindowAttribute(hwnd, 34, &no_border as *const u32 as *const c_void, 4);
-            // 3. Blur behind the window (off for clear glass). Works on Windows 10 and 11.
+            // 3. Blur behind the window, by Frostiness: 0 none (clear glass), up to 49 a light blur,
+            //    50 and up the heavier, grainy Acrylic blur. Both follow the window's shape. Windows 10 and 11.
             let user32 = GetModuleHandleA(b"user32.dll\0".as_ptr());
             if !user32.is_null() {
                 if let Some(f) = GetProcAddress(user32, b"SetWindowCompositionAttribute\0".as_ptr()) {
                     let set: SetWca = std::mem::transmute(f);
-                    let mut accent = AccentPolicy { state: if blur { 3 } else { 0 }, flags: 0, color: 0, animation: 0 };
+                    let state = if frost == 0 { 0 } else if frost < 50 { 3 } else { 4 };
+                    // Acrylic needs a tint color (0xAABBGGRR); keep it faint, the app draws its own tint on top.
+                    let color: u32 = if dark { 0x1014_1414 } else { 0x10FA_FAFA };
+                    let mut accent = AccentPolicy { state, flags: if state == 4 { 2 } else { 0 }, color: if state == 4 { color } else { 0 }, animation: 0 };
                     let mut data = CompositionData { attribute: 19, data: &mut accent as *mut _ as *mut c_void, size: std::mem::size_of::<AccentPolicy>() };
                     set(hwnd, &mut data);
                 }
@@ -592,16 +596,16 @@ mod glass {
 }
 
 #[tauri::command]
-fn capture_glass(window: tauri::WebviewWindow, width: f64, height: f64, radius: f64, blur: bool) -> Res<()> {
+fn capture_glass(window: tauri::WebviewWindow, width: f64, height: f64, radius: f64, frost: u32, dark: bool) -> Res<()> {
     window.set_size(tauri::LogicalSize::new(width, height)).map_err(err)?;
     #[cfg(windows)]
     {
         let s = window.scale_factor().map_err(err)?;
         let hwnd = window.hwnd().map_err(err)?;
-        glass::apply(hwnd.0 as _, (width * s).round() as i32, (height * s).round() as i32, (radius * s).round() as i32, blur);
+        glass::apply(hwnd.0 as _, (width * s).round() as i32, (height * s).round() as i32, (radius * s).round() as i32, frost.min(100), dark);
     }
     #[cfg(not(windows))]
-    let _ = (radius, blur);
+    let _ = (radius, frost, dark);
     Ok(())
 }
 
