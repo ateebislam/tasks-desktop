@@ -35,6 +35,9 @@ const I = {
   right: p => <Icon {...p}><path d="m9 18 6-6-6-6"/></Icon>,
   down: p => <Icon {...p}><path d="m6 9 6 6 6-6"/></Icon>,
   updown: p => <Icon {...p}><path d="m7 15 5 5 5-5"/><path d="m7 9 5-5 5 5"/></Icon>,
+  arrowUp: p => <Icon {...p}><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></Icon>,
+  arrowDown: p => <Icon {...p}><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></Icon>,
+  columns: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/><path d="M15 3v18"/></Icon>,
   trash: p => <Icon {...p}><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></Icon>,
   pencil: p => <Icon {...p}><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/></Icon>,
   check: p => <Icon {...p}><path d="M20 6 9 17l-5-5"/></Icon>,
@@ -223,8 +226,13 @@ const Empty = ({ icon, title, description, children }) => (
 function useDismiss(open, setOpen, refs) {
   useEffect(() => {
     if (!open) return;
-    const down = e => { if (!refs.some(r => r.current && r.current.contains(e.target))) setOpen(false); };
-    const key = e => { if (e.key === 'Escape') { e.stopPropagation(); setOpen(false); } };
+    // A click in a dropdown opened from inside this one (a Select in the sort popover) keeps this one open.
+    // A dropdown opened from inside this one (a Select in the sort menu) is a later [data-float] panel:
+    // clicks in it keep this one open, and Escape closes only it.
+    const mine = () => refs.map(r => r.current).find(el => el && el.dataset && el.dataset.float);
+    const isChild = el => { const m = mine(); return !!m && !!el && el !== m && !!(m.compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING); };
+    const down = e => { if (!refs.some(r => r.current && r.current.contains(e.target)) && !isChild(e.target.closest && e.target.closest('[data-float]'))) setOpen(false); };
+    const key = e => { if (e.key === 'Escape' && ![...document.querySelectorAll('[data-float]')].some(isChild)) { e.stopPropagation(); setOpen(false); } };
     const away = () => setOpen(false);
     document.addEventListener('mousedown', down);
     document.addEventListener('touchstart', down, { passive: true });
@@ -238,8 +246,28 @@ function useDismiss(open, setOpen, refs) {
     };
   }, [open]);
 }
+/* Motion (0.19.14): keeps a closing menu, dialog or panel on screen for its 150ms closing animation.
+   Returns [mounted, closing, last]: `last` is what was showing while it was open, so the closing
+   picture doesn't change underneath the animation. With "reduce motion" on, it closes at once. */
+const OUT_MS = 150;
+const reducedMotion = () => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; } };
+function usePresence(open, content) {
+  const [mounted, setMounted] = useState(open);
+  const last = useRef(content);
+  if (open) last.current = content;
+  useEffect(() => {
+    if (open) { setMounted(true); return; }
+    if (!mounted) return;
+    if (reducedMotion()) { setMounted(false); return; }
+    const id = setTimeout(() => setMounted(false), OUT_MS);
+    return () => clearTimeout(id);
+  }, [open]);
+  return [open || mounted, !open && mounted, open ? content : last.current];
+}
+
 function Floating({ anchorRef, open, align = 'start', matchWidth, minMatch, className, children, panelRef }) {
   const [pos, setPos] = useState(null);
+  const [shown, closing, kids] = usePresence(open, children);
   useLayoutEffect(() => {
     if (!open || !anchorRef.current) return;
     const place = () => {
@@ -256,11 +284,11 @@ function Floating({ anchorRef, open, align = 'start', matchWidth, minMatch, clas
     window.addEventListener('scroll', place, true);
     return () => { cancelAnimationFrame(id); window.removeEventListener('scroll', place, true); };
   }, [open]);
-  if (!open) return null;
+  if (!shown) return null;
   return createPortal(
-    <div ref={panelRef} style={{ position: 'fixed', top: pos ? pos.top : -9999, left: pos ? pos.left : -9999, width: pos && pos.width, minWidth: pos && pos.minWidth, maxWidth: 'calc(100vw - 16px)' }}
-      className={cn('z-[80] rounded-md border bg-popover text-popover-foreground shadow-md outline-none anim-pop', className)}>
-      {children}
+    <div ref={closing ? undefined : panelRef} data-float={closing ? undefined : '1'} aria-hidden={closing || undefined} style={{ position: 'fixed', top: pos ? pos.top : -9999, left: pos ? pos.left : -9999, width: pos && pos.width, minWidth: pos && pos.minWidth, maxWidth: 'calc(100vw - 16px)' }}
+      className={cn('z-[80] rounded-md border bg-popover text-popover-foreground shadow-md outline-none anim-pop', closing && 'anim-out', className)}>
+      {kids}
     </div>, document.body);
 }
 
@@ -302,14 +330,16 @@ function DropdownMenu({ trigger, items, align = 'end', quiet = false, className 
 }
 
 /* Select: the app's own dropdown, used everywhere instead of the system one.
-   options: [{ value, label, node?, icon?, group?, divider? }] */
-function Select({ value, onChange, options, placeholder = 'Choose…', variant = 'field', className, id, label, footer, searchable, renderValue, icon, menuClassName, creatable }) {
+   options: [{ value, label, node?, icon?, group?, divider? }]
+   multiple: value is a list; picking ticks or unticks an option and keeps the list open. */
+function Select({ value, onChange, options, placeholder = 'Choose…', variant = 'field', className, id, label, footer, searchable, renderValue, icon, menuClassName, creatable, multiple }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [hi, setHi] = useState(0);
   const a = useRef(null), p = useRef(null), inp = useRef(null), lst = useRef(null);
   useDismiss(open, setOpen, [a, p]);
-  const sel = options.find(o => o.value === value);
+  const picked = o => (multiple ? (value || []).includes(o.value) : o.value === value);
+  const sel = multiple ? ((value || []).length ? options.filter(picked) : null) : options.find(o => o.value === value);
   const canSearch = searchable ?? options.length > 8;
   const nq = norm(q);
   // creatable(text) returns an option for what you typed when nothing matches it exactly (e.g. a new person).
@@ -326,7 +356,10 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
     const el = lst.current.querySelector(`[data-i="${hi}"]`);
     if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
   }, [hi, open]);
-  const pick = o => { onChange(o.value); setOpen(false); setTimeout(() => a.current && a.current.focus(), 0); };
+  const pick = o => {
+    if (multiple) { const v = value || []; onChange(v.includes(o.value) ? v.filter(x => x !== o.value) : [...v, o.value]); return; }
+    onChange(o.value); setOpen(false); setTimeout(() => a.current && a.current.focus(), 0);
+  };
   const onKey = e => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, list.length - 1)); }
     else if (e.key === 'ArrowUp') { e.preventDefault(); setHi(h => Math.max(h - 1, 0)); }
@@ -351,7 +384,7 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
         className={cn(triggerCls, 'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', open && variant !== 'chip' && 'border-input', className)}>
         {icon}
         <span className={cn('flex min-w-0 items-center truncate', variant !== 'word' && 'flex-1', !sel && 'text-muted-foreground')}>
-          {sel ? (renderValue ? renderValue(sel) : (sel.node || <span className="truncate">{sel.label}</span>)) : placeholder}
+          {sel ? (renderValue ? renderValue(sel) : multiple ? <span className="flex flex-wrap items-center gap-1">{sel.map(o => <React.Fragment key={o.value}>{o.node || o.label}</React.Fragment>)}</span> : (sel.node || <span className="truncate">{sel.label}</span>)) : placeholder}
         </span>
         <I.down className={cn('shrink-0 opacity-50 transition-transform', variant === 'chip' || variant === 'word' ? 'size-3' : 'size-4', open && 'rotate-180')} />
       </button>
@@ -370,12 +403,13 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
                 <React.Fragment key={String(o.value) + i}>
                   {(head && i > 0) || (o.divider && !nq && i > 0) ? <div className="mx-1 my-1 h-px bg-border" /> : null}
                   {head && <div className="px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">{head}</div>}
-                  <div id={`opt-${i}`} data-i={i} role="option" aria-selected={o.value === value}
+                  <div id={`opt-${i}`} data-i={i} role="option" aria-selected={picked(o)}
                     onMouseEnter={() => setHi(i)} onMouseDown={e => e.preventDefault()} onClick={() => pick(o)}
                     className={cn('flex min-h-8 cursor-default items-center gap-2 rounded-sm px-2 py-1 text-sm', i === hi && 'bg-accent text-accent-foreground')}>
+                    {multiple && <span aria-hidden="true" className={cn('flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border', picked(o) ? 'border-primary bg-primary text-primary-foreground' : 'border-input')}>{picked(o) && <I.check className="size-2.5" />}</span>}
                     {o.icon}
                     <span className="flex min-w-0 flex-1 items-center">{o.node || <span className="truncate">{o.label}</span>}</span>
-                    {o.value === value && <I.check className="size-3.5 shrink-0 text-muted-foreground" />}
+                    {!multiple && o.value === value && <I.check className="size-3.5 shrink-0 text-muted-foreground" />}
                   </div>
                 </React.Fragment>
               );
@@ -555,16 +589,17 @@ const SHEET_VARIANTS = {
 };
 function Sheet({ open, onClose, children, labelledBy, variant = 'side', onPick }) {
   useLockScroll(open);
+  const [shown, closing, kids] = usePresence(open, children);
   useEffect(() => {
     if (!open) return;
     const k = e => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('keydown', k);
     return () => document.removeEventListener('keydown', k);
   }, [open, onClose]);
-  if (!open) return null;
+  if (!shown) return null;
   return createPortal(
     <>
-      {variant !== 'full' && <div className={cn('fixed inset-0 z-50 anim-fade', variant === 'side' ? 'bg-black/30' : 'bg-black/80')} onClick={e => {
+      {variant !== 'full' && <div className={cn('fixed inset-0 z-50 anim-fade', closing && 'anim-out', variant === 'side' ? 'bg-black/30' : 'bg-black/80')} onClick={e => {
         // With the side sheet open, clicking another task in the list behind it switches to that task.
         if (variant === 'side' && onPick) {
           e.currentTarget.style.pointerEvents = 'none';
@@ -575,10 +610,10 @@ function Sheet({ open, onClose, children, labelledBy, variant = 'side', onPick }
         }
         onClose();
       }} />}
-      <div role="dialog" aria-modal="true" aria-labelledby={labelledBy}
-        className={SHEET_VARIANTS[variant] || SHEET_VARIANTS.side}
+      <div role="dialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} aria-labelledby={labelledBy}
+        className={cn(SHEET_VARIANTS[variant] || SHEET_VARIANTS.side, closing && 'anim-out')}
         style={{ paddingTop: 'env(safe-area-inset-top,0px)', paddingBottom: 'env(safe-area-inset-bottom,0px)', ...(variant === 'center' ? { transform: 'translate(-50%,-50%)' } : {}) }}>
-        {children}
+        {kids}
         <button type="button" onClick={onClose} aria-label="Close"
           className="absolute right-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
           style={{ top: 'calc(1rem + env(safe-area-inset-top,0px))' }}><I.x /></button>
@@ -587,6 +622,7 @@ function Sheet({ open, onClose, children, labelledBy, variant = 'side', onPick }
 }
 function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCancel, cancelLabel = 'Cancel', destructive = true }) {
   const cancelRef = useRef(null);
+  const [shown, closing, text] = usePresence(open, { title, description, confirmLabel, cancelLabel });
   useEffect(() => {
     if (!open) return;
     cancelRef.current && cancelRef.current.focus();
@@ -594,18 +630,18 @@ function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCanc
     document.addEventListener('keydown', k, true);
     return () => document.removeEventListener('keydown', k, true);
   }, [open]);
-  if (!open) return null;
+  if (!shown) return null;
   return createPortal(
     <>
-      <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" />
-      <div role="alertdialog" aria-modal="true" className="fixed left-1/2 top-1/2 z-[70] grid w-[calc(100%-2rem)] max-w-lg gap-4 rounded-lg border bg-background p-6 shadow-lg anim-zoom" style={{ transform: 'translate(-50%,-50%)' }}>
+      <div className={cn('fixed inset-0 z-[70] bg-black/80 anim-fade', closing && 'anim-out')} />
+      <div role="alertdialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} className={cn('fixed left-1/2 top-1/2 z-[70] grid w-[calc(100%-2rem)] max-w-lg gap-4 rounded-lg border bg-background p-6 shadow-lg anim-zoom', closing && 'anim-out')} style={{ transform: 'translate(-50%,-50%)' }}>
         <div className="flex flex-col space-y-2 text-center sm:text-left">
-          <h2 className="text-lg font-semibold">{title}</h2>
-          <p className="text-sm text-muted-foreground">{description}</p>
+          <h2 className="text-lg font-semibold">{text.title}</h2>
+          <p className="text-sm text-muted-foreground">{text.description}</p>
         </div>
         <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button ref={cancelRef} variant="outline" onClick={onCancel}>{cancelLabel}</Button>
-          <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>{confirmLabel}</Button>
+          <Button ref={cancelRef} variant="outline" onClick={onCancel}>{text.cancelLabel}</Button>
+          <Button variant={destructive ? 'destructive' : 'default'} onClick={onConfirm}>{text.confirmLabel}</Button>
         </div>
       </div>
     </>, document.body);
@@ -620,6 +656,7 @@ const Switch = ({ checked, onChange, label }) => (
 );
 function Dialog({ open, onClose, title, description, children, footer, className }) {
   useLockScroll(open);
+  const [shown, closing, view] = usePresence(open, { title, description, children, footer });
   useEffect(() => {
     if (!open) return;
     // An open @/# list inside the dialog takes Esc first.
@@ -627,19 +664,19 @@ function Dialog({ open, onClose, title, description, children, footer, className
     document.addEventListener('keydown', k, true);
     return () => document.removeEventListener('keydown', k, true);
   }, [open, onClose]);
-  if (!open) return null;
+  if (!shown) return null;
   // The title and the buttons stay put; only the middle scrolls, with faded edges (0.19.12).
   return createPortal(
     <>
-      <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-labelledby="dlg-title"
-        className={cn('fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col gap-5 overflow-hidden rounded-lg border bg-background p-6 shadow-lg anim-zoom', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
+      <div className={cn('fixed inset-0 z-[70] bg-black/80 anim-fade', closing && 'anim-out')} onClick={closing ? undefined : onClose} />
+      <div role="dialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} aria-labelledby={closing ? undefined : 'dlg-title'}
+        className={cn('fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col gap-5 overflow-hidden rounded-lg border bg-background p-6 shadow-lg anim-zoom', closing && 'anim-out', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
         <div className="flex shrink-0 flex-col space-y-1.5 pr-6 text-left">
-          <h2 id="dlg-title" className="text-lg font-semibold leading-none tracking-tight break-words">{title}</h2>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
+          <h2 id={closing ? undefined : 'dlg-title'} className="text-lg font-semibold leading-none tracking-tight break-words">{view.title}</h2>
+          {view.description && <p className="text-sm text-muted-foreground">{view.description}</p>}
         </div>
-        <DialogBody>{children}</DialogBody>
-        {footer && <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">{footer}</div>}
+        <DialogBody>{view.children}</DialogBody>
+        {view.footer && <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">{view.footer}</div>}
         <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x /></button>
       </div>
     </>, document.body);
@@ -727,36 +764,92 @@ const PIcon = ({ name, icon, className }) => {
 };
 const autoColor = name => COLOR_KEYS[[...(name || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % COLOR_KEYS.length];
 
-/* Automations: "When a task [in project] [trigger], [action] [target]". */
+/* Automations: "When a task [in project] [trigger] [its words], [action] [target]".
+   0.19.14: a trigger can carry its own words in `when` ({ statuses, status, priority, person, days, hours, bstatus }),
+   and a group can have "Only if" conditions in `only` ([{ field, op, value }]). Triggers marked hidden
+   are kept for automations made before 0.19.14 and are only listed when one already uses them. */
 const TRIGGERS = [
+  { id: 'timer_started', label: 'timer starts', short: 'When its timer starts', group: 'Timer' },
+  { id: 'timer_paused', label: 'timer is paused', short: 'When its timer is paused', group: 'Timer' },
+  { id: 'timer_long', label: 'timer runs longer than', short: 'When its timer runs long', group: 'Timer', arg: 'hours' },
   { id: 'created', label: 'is created', short: 'When created', group: 'Status' },
-  { id: 'started', label: 'is started (In progress)', short: 'When started', group: 'Status' },
-  { id: 'blocked', label: 'becomes blocked', short: 'When blocked', group: 'Status' },
-  { id: 'unblocked', label: 'is no longer blocked', short: 'When unblocked', group: 'Status' },
+  { id: 'status_to', label: 'status changes to', short: 'When its status changes', group: 'Status', arg: 'statuses' },
+  { id: 'status_from', label: 'status changes from', short: 'When its status changes', group: 'Status', arg: 'statuses' },
+  { id: 'started', label: 'is started (In progress)', short: 'When started', group: 'Status', hidden: true },
+  { id: 'blocked', label: 'becomes blocked', short: 'When blocked', group: 'Status', hidden: true },
+  { id: 'unblocked', label: 'is no longer blocked', short: 'When unblocked', group: 'Status', hidden: true },
   { id: 'done', label: 'is marked done', short: 'When done', group: 'Status' },
   { id: 'reopened', label: 'is reopened after being done', short: 'When reopened', group: 'Status' },
-  { id: 'due_soon', label: 'is due tomorrow', short: 'A day before the deadline', group: 'Dates' },
-  { id: 'overdue', label: 'becomes overdue', short: 'When overdue', group: 'Dates' },
-  { id: 'checklist', label: 'has its checklist finished', short: 'When the checklist is finished', group: 'Details' },
-  { id: 'assigned', label: 'gets a new assignee', short: 'When assigned', group: 'Details' },
-  { id: 'high', label: 'is set to High priority', short: 'When made High priority', group: 'Details' },
+  { id: 'priority_to', label: 'priority changes to', short: 'When its priority changes', group: 'Details', arg: 'priority' },
+  { id: 'assigned_to', label: 'gets assigned to', short: 'When assigned', group: 'Details', arg: 'person' },
+  { id: 'assigned', label: 'gets a new assignee', short: 'When assigned', group: 'Details', hidden: true },
+  { id: 'high', label: 'is set to High priority', short: 'When made High priority', group: 'Details', hidden: true },
+  { id: 'deadline_changed', label: 'deadline is set or changed', short: 'When its deadline changes', group: 'Details' },
+  { id: 'bucket_added', label: 'is added to a bucket', short: 'When added to a bucket', group: 'Details' },
   { id: 'file_added', label: 'gets a document attached', short: 'When a document is attached', group: 'Details' },
+  { id: 'checklist', label: 'has its checklist finished', short: 'When the checklist is finished', group: 'Details' },
   { id: 'moved', label: 'is moved into the project', short: 'When moved into this project', group: 'Details' },
+  { id: 'due_in', label: 'is due in', short: 'Before the deadline', group: 'Dates', arg: 'days' },
+  { id: 'due_soon', label: 'is due tomorrow', short: 'A day before the deadline', group: 'Dates', hidden: true },
+  { id: 'overdue', label: 'becomes overdue', short: 'When overdue', group: 'Dates' },
+  { id: 'stale', label: 'has been in', short: 'When it sits in a status', group: 'Dates', arg: 'stale', menu: 'has been in a status for' },
+  { id: 'bucket_moved', label: 'bucket moves to', short: 'When its bucket moves', group: 'Bucket', arg: 'bstatus', menu: 'its bucket moves to' },
 ];
-// Triggers that depend on the date are checked when the app opens and every minute after.
-const TIME_TRIGGERS = ['overdue', 'due_soon'];
+// Triggers that depend on the time are checked when the app opens and every minute after.
+const TIME_TRIGGERS = ['overdue', 'due_soon', 'due_in', 'stale', 'timer_long'];
+const HOUR_OPTIONS = [['1', '1 hour'], ['2', '2 hours'], ['3', '3 hours'], ['4', '4 hours'], ['6', '6 hours'], ['8', '8 hours'], ['12', '12 hours']];
+const DUE_IN_OPTIONS = [['1', '1 day'], ['2', '2 days'], ['3', '3 days'], ['5', '5 days'], ['7', 'a week'], ['14', '2 weeks']];
+const STALE_OPTIONS = [['1', '1 day'], ['2', '2 days'], ['3', '3 days'], ['5', '5 days'], ['7', 'a week'], ['14', '2 weeks'], ['30', 'a month']];
+const defaultWhen = id => ({ statuses: { statuses: [] }, hours: { hours: '4' }, days: { days: '1' }, stale: { status: 'doing', days: '3' }, priority: { priority: 'high' }, person: { person: '' }, bstatus: { bstatus: (BUCKET_STATUSES[0] || {}).id || 'planned' } })[(TRIGGERS.find(t => t.id === id) || {}).arg] || undefined;
 const ACTIONS = [
-  { id: 'copy', label: 'create a copy in', target: 'project' },
-  { id: 'move', label: 'move it to', target: 'project' },
   { id: 'status', label: 'change its status to', target: 'status' },
   { id: 'priority', label: 'set its priority to', target: 'priority' },
   { id: 'assign', label: 'assign it to', target: 'person' },
   { id: 'unassign', label: 'remove its assignee', target: 'none' },
   { id: 'deadline', label: 'set its deadline to', target: 'days' },
   { id: 'checklist', label: 'add checklist items', target: 'text', placeholder: 'For example: Brief, Design, Review' },
-  { id: 'stop_timer', label: 'stop its timer', target: 'none' },
+  { id: 'start_timer', label: 'start its timer', target: 'none', divider: true },
+  { id: 'stop_timer', label: 'pause its timer', target: 'none' },
+  { id: 'bucket', label: 'move it to bucket', target: 'bucket' },
+  { id: 'unblock', label: 'clear what blocks it', target: 'none' },
+  { id: 'copy', label: 'create a copy in', target: 'project', divider: true },
+  { id: 'move', label: 'move it to', target: 'project' },
   { id: 'notify', label: 'notify me', target: 'text', optional: true, placeholder: 'Message (optional)' },
 ];
+/* "Only if" conditions. They're checked on the task as it was just before the change that set the
+   automation off ("timer starts, only if its status is To do"), or as it is now for time-based ones. */
+const COND_FIELDS = [
+  { id: 'status', label: 'its status', ops: [['is', 'is'], ['not', 'is not']] },
+  { id: 'priority', label: 'its priority', ops: [['is', 'is'], ['not', 'is not']] },
+  { id: 'assignee', label: 'its assignee', ops: [['is', 'is'], ['not', 'is not']] },
+  { id: 'timer', label: 'its timer', ops: [['running', 'is running'], ['stopped', 'is not running']] },
+];
+const COND = Object.fromEntries(COND_FIELDS.map(c => [c.id, c]));
+const condDefault = field => ({ field, op: COND[field].ops[0][0], value: field === 'status' ? [] : field === 'priority' ? 'high' : '' });
+/* Rules from 0.19.14 that a PC on an older version can't read are stored switched off for it
+   (enabled: false), with the real switch in `on` (v: 2). Older PCs then skip them instead of
+   misreading them; this version reads `on`. */
+const OLD_TRIGGER_IDS = ['created', 'started', 'blocked', 'unblocked', 'done', 'reopened', 'due_soon', 'overdue', 'checklist', 'assigned', 'high', 'file_added', 'moved'];
+const OLD_ACTION_IDS = ['copy', 'move', 'status', 'priority', 'assign', 'unassign', 'deadline', 'checklist', 'stop_timer', 'notify'];
+const ruleIsNew = r => r.scope !== 'bucket' && (!OLD_TRIGGER_IDS.includes(r.trigger) || !OLD_ACTION_IDS.includes(r.action)
+  || (r.only && r.only.length > 0) || (r.action === 'status' && String(r.target || '').includes('|')));
+const ruleIn = r => (r && r.v === 2 ? { ...r, enabled: r.on !== false } : r);
+const ruleOut = r => { const { v, on, ...x } = r; return ruleIsNew(x) ? { ...x, v: 2, on: !!x.enabled, enabled: false } : x; };
+// The workspace's task statuses, for the sentences automations show. Set by App on each render.
+let STAGES_NOW = [];
+// A status as automations store it: the group's id ("doing"), or "group|status id" for your own ones.
+const statusKeyOf = d => (d.builtin ? d.group : `${d.group}|${d.id}`);
+const taskStatusKey = (t, stages) => statusKeyOf(statusDef(t, stages));
+const statusKeyLabel = k => { const d = statusList(STAGES_NOW).find(x => statusKeyOf(x) === k); return d ? d.name : (S[k] || { label: 'a deleted status' }).label; };
+const condHolds = (c, t, stages) => {
+  if (!c || !COND[c.field]) return true;
+  if (c.field === 'timer') return !!t.timerStartedAt === (c.op === 'running');
+  let hit;
+  if (c.field === 'status') { const v = Array.isArray(c.value) ? c.value : []; if (!v.length) return true; hit = v.includes(taskStatusKey(t, stages)); }
+  else if (c.field === 'priority') hit = (t.priority || 'normal') === c.value;
+  else hit = norm(t.assignee) === norm(c.value);
+  return c.op === 'not' ? !hit : hit;
+};
 const DEADLINE_OPTIONS = [['0', 'today'], ['1', 'tomorrow'], ['2', 'in 2 days'], ['3', 'in 3 days'], ['7', 'in a week'], ['14', 'in 2 weeks'], ['30', 'in a month'], ['none', 'no deadline']];
 const TRIG = Object.fromEntries(TRIGGERS.map(t => [t.id, t]));
 const ACT = Object.fromEntries(ACTIONS.map(a => [a.id, a]));
@@ -769,7 +862,7 @@ const newId = () => Date.now().toString(36) + Math.random().toString(36).slice(2
 const targetText = r => {
   const kind = (ACT[r.action] || {}).target;
   if (kind === 'none') return '';
-  if (r.action === 'status') return (S[r.target] || {}).label;
+  if (r.action === 'status') return r.target ? statusKeyLabel(r.target) : '';
   if (r.action === 'priority') return (P[r.target] || {}).label;
   if (r.action === 'deadline') return (DEADLINE_OPTIONS.find(o => o[0] === r.target) || [])[1];
   if (kind === 'text') return r.target ? `“${r.target}”` : '';
@@ -779,7 +872,21 @@ const describeRule = r => {
   if (r.scope === 'bucket') return `When a bucket moves to ${(BS[r.status] || { label: 'a deleted status' }).label}, create “${r.title || '{bucket}'}”${r.target ? ` in ${r.target}` : ''}`;
   const a = ACT[r.action] || {};
   const tail = a.target === 'none' || (a.optional && !r.target) ? '' : ` ${targetText(r) || '…'}`;
-  return `${r.project ? `In ${r.project}, when` : 'When'} a task ${(TRIG[r.trigger] || {}).label}, ${a.label}${tail}`;
+  return `${r.project ? `In ${r.project}, when` : 'When'} a task ${triggerText(r)}, ${a.label}${tail}`;
+};
+// The trigger with its own words: "status changes to Ready for dev or In review".
+const triggerText = r => {
+  const t = TRIG[r.trigger]; if (!t) return 'changes';
+  const w = r.when || {}, pick = (list, v) => (list.find(o => o[0] === String(v)) || [])[1] || '…';
+  const ors = l => l.length > 1 ? `${l.slice(0, -1).join(', ')} or ${l[l.length - 1]}` : l[0] || '…';
+  if (t.arg === 'statuses') return `${t.label} ${ors((w.statuses || []).map(statusKeyLabel))}`;
+  if (t.arg === 'hours') return `${t.label} ${pick(HOUR_OPTIONS, w.hours)}`;
+  if (t.arg === 'days') return `${t.label} ${pick(DUE_IN_OPTIONS, w.days)}`;
+  if (t.arg === 'stale') return `${t.label} ${w.status ? statusKeyLabel(w.status) : '…'} for ${pick(STALE_OPTIONS, w.days)}`;
+  if (t.arg === 'priority') return `${t.label} ${(P[w.priority] || { label: '…' }).label}`;
+  if (t.arg === 'person') return `${t.label} ${w.person || 'anyone'}`;
+  if (t.arg === 'bstatus') return `${t.label} ${(BS[w.bstatus] || { label: '…' }).label}`;
+  return t.label;
 };
 
 /* Buckets have a status that says where their work stands. Buckets from before 0.12 start as In design.
@@ -1056,6 +1163,9 @@ function useTasks(ws = 'product') {
           const was = j ? j.name : norm(prev && prev.bucket);
           if (was && x.addedReason && x.addedReason === (prev && prev.addedReason)) delete x.addedReason; // the reason was for the old bucket
         }
+        // Remember when the status last changed, for "has been in [status] for [days]" automations (0.19.14).
+        if (!prev || prev.status !== x.status || (prev.stage || '') !== (x.stage || '')) x.statusAt = now;
+        else if (prev.statusAt && !x.statusAt) x.statusAt = prev.statusAt;
         // Remember which PC runs a timer, so closing one PC never stops a timer running on another.
         if (x.timerStartedAt && (!prev || prev.timerStartedAt !== x.timerStartedAt)) x.timerDevice = DEVICE_ID;
         else if (!x.timerStartedAt) delete x.timerDevice;
@@ -1294,16 +1404,55 @@ function useTheme() {
 
 function ThemeToggle() {
   const th = useTheme();
+  // One click switches light and dark (0.19.14). Match Windows lives in Settings > Appearance.
+  const label = th.dark ? 'Switch to light mode' : 'Switch to dark mode';
   return (
-    <DropdownMenu
-      trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" data-theme-toggle aria-label={`Appearance: ${THEMES.find(t => t.id === th.mode).label}`} title="Appearance (Shift+D)">{th.dark ? <I.moon /> : <I.sun />}</Button>}
-      items={THEMES.map(t => ({
-        label: t.label,
-        icon: t.id === 'light' ? <I.sun /> : t.id === 'dark' ? <I.moon /> : <I.monitor />,
-        shortcut: th.mode === t.id ? '✓' : undefined,
-        onSelect: () => th.choose(t.id),
-      }))} />
+    <Button variant="outline" size="icon" className="rounded-lg bg-card shadow-none" data-theme-toggle aria-label={label} title={`${label}  (Shift+D)`}
+      onClick={e => th.toggle(e.currentTarget)}>{th.dark ? <I.moon /> : <I.sun />}</Button>
   );
+}
+
+/* Our own window buttons (0.19.14): the Windows title bar is off, so minimize, maximize and close live in the
+   slim top row. Close does what the Windows one did (hide to the tray when that's on). */
+function WindowControls() {
+  const [max, setMax] = useState(false);
+  useEffect(() => {
+    let off;
+    try {
+      const w = getCurrentWindow();
+      const read = () => w.isMaximized().then(setMax).catch(() => {});
+      read();
+      w.onResized(read).then(f => { off = f; }).catch(() => {});
+    } catch (e) {}
+    return () => { if (off) off(); };
+  }, []);
+  const act = f => () => { try { f(getCurrentWindow()).catch(() => {}); } catch (e) {} };
+  const base = 'flex h-10 w-[46px] items-center justify-center text-muted-foreground transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring';
+  return (
+    <div className="flex shrink-0 self-stretch">
+      <button type="button" onClick={act(w => w.minimize())} aria-label="Minimize" title="Minimize" className={cn(base, 'hover:bg-muted hover:text-foreground')}>
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" stroke="currentColor" /></svg>
+      </button>
+      <button type="button" onClick={act(w => w.toggleMaximize())} aria-label={max ? 'Restore' : 'Maximize'} title={max ? 'Restore' : 'Maximize'} className={cn(base, 'hover:bg-muted hover:text-foreground')}>
+        {max
+          ? <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2.5 2.5V1.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1" stroke="currentColor" fill="none" /><rect x="0.5" y="2.5" width="7" height="7" rx="1" stroke="currentColor" fill="none" /></svg>
+          : <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9" rx="1.5" stroke="currentColor" fill="none" /></svg>}
+      </button>
+      <button type="button" onClick={act(w => w.close())} aria-label="Close" title="Close" className={cn(base, 'hover:bg-red-600 hover:text-white')}>
+        <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0.5 0.5l9 9M9.5 0.5l-9 9" stroke="currentColor" /></svg>
+      </button>
+    </div>
+  );
+}
+
+/* Each page's title and summary sit in the big page header at the top (0.19.14). Pages render
+   <PageHead>, which moves itself into that header's slot (window-only pages keep it in place). */
+const headSlot = { el: null, subs: new Set() };
+const setHeadSlot = el => { if (headSlot.el === el) return; headSlot.el = el; headSlot.subs.forEach(f => f()); };
+function useHeadSlot() {
+  const [el, setEl] = useState(headSlot.el);
+  useEffect(() => { const f = () => setEl(headSlot.el); headSlot.subs.add(f); f(); return () => { headSlot.subs.delete(f); }; }, []);
+  return el;
 }
 
 /* Preferences for this computer. */
@@ -1771,7 +1920,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
         return (
           <div key={w.path} className="group/f rounded-md px-2 py-1.5 transition-colors hover:bg-muted/50">
             <div className="flex items-center gap-2 text-[13px]">
-              <I.folder className="size-3.5 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
+              <I.folder className="size-3.5 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate">{w.path}</span>
               <span className="shrink-0 text-xs text-muted-foreground">
                 {st.error ? <span className="text-destructive">{st.error}</span>
                   : st.checkedAt ? <>{st.added ? `${st.added} added` : `Checked ${relTime(st.checkedAt).toLowerCase()}`}{st.skipped && st.skipped.length ? <> · <span title={st.skipped.map(x => `${x.name}: ${x.why}`).join('\n')} className="underline decoration-dotted underline-offset-2">{st.skipped.length} skipped</span></> : ''}</> : 'Not checked yet'}
@@ -2567,7 +2716,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
               <>
                 <div className="flex items-center gap-2.5 border-b px-3 py-2">
                   <FileBadge kind={sel.kind} className="h-6 w-6 rounded text-[7px]" />
-                  <span className="min-w-0 truncate text-sm font-semibold" title={sel.name}>{viewVer ? viewVer.name : sel.name}</span>
+                  <span className="min-w-0 truncate text-sm font-semibold">{viewVer ? viewVer.name : sel.name}</span>
                   {(sel.versions || []).length > 0 && (
                     <DropdownMenu align="start"
                       trigger={p => <button {...p} type="button" className="inline-flex h-5 shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] text-muted-foreground hover:text-foreground">{viewVer ? `v${sel.versions.indexOf(viewVer) + 1}` : `v${versionCount(sel)}`} of {versionCount(sel)}<I.down className="size-3" /></button>}
@@ -3151,7 +3300,8 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
     });
   }, [task, stages]);
   useEffect(() => () => commit(), []);
-  if (!open || !form || !task) return null;
+  // Closed: still rendered (but not shown) so the panel can play its closing animation (0.19.14).
+  if (!form || !task || (!open && mode === 'window')) return null;
   const change = (patch, debounce) => {
     setForm(f => ({ ...f, ...patch }));
     pendingId.current = task.id;
@@ -3335,7 +3485,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
               )}
               {blocker && form.status !== 'blocked' && <Note><I.x className="mt-0.5 size-3 shrink-0" /><span>This removes the blocker.</span></Note>}
               {autoRules.length > 0 && form.status !== 'done' && (
-                <Note><I.zap className="mt-0.5 size-3 shrink-0" /><span>{autoRules.slice(0, 2).map(r => `${TRIG[r.trigger].short}: ${ACT[r.action].label} ${targetText(r)}.`).join(' ')}{autoRules.length > 2 ? ` And ${autoRules.length - 2} more.` : ''}</span></Note>
+                <Note><I.zap className="mt-0.5 size-3 shrink-0" /><span>{autoRules.slice(0, 2).map(r => `${(TRIG[r.trigger] || { short: 'Automation' }).short}: ${(ACT[r.action] || { label: '' }).label} ${targetText(r)}.`).join(' ')}{autoRules.length > 2 ? ` And ${autoRules.length - 2} more.` : ''}</span></Note>
               )}
             </div>
           )}
@@ -3479,7 +3629,7 @@ function TimeSummary({ tasks, onHide }) {
           <div key={name} className={tile}>
             <div className="flex min-w-0 items-center gap-2">
               <span className="flex size-[26px] shrink-0 items-center justify-center rounded-md bg-muted text-foreground"><PIcon name={name} className="size-3.5" /></span>
-              <span className="truncate text-sm font-medium" title={name}>{name}</span>
+              <span className="truncate text-sm font-medium">{name}</span>
               <span className="tnum ml-auto text-xs text-muted-foreground">{pct}%</span>
             </div>
             <div className={big}>{fmtShort(ms)}</div>
@@ -3512,16 +3662,20 @@ function ShortcutsDialog({ open, onClose }) {
 /* Automations (0.19.12): grouped by what sets them off. Each group's heading is the event
    ("When a task in Any project becomes overdue"), and each thing it does is a line under it.
    Every word in a box is a dropdown. Grouping is only how the list is shown: rules are stored
-   and synced exactly as before, one rule per action. Changing a heading changes every rule in it. */
-const TRIGGER_ICON = { created: 'plus', started: 'play', blocked: 'ban', unblocked: 'refresh', done: 'check', reopened: 'reset', due_soon: 'calendar', overdue: 'alert', checklist: 'listCheck', assigned: 'user', high: 'flag', file_added: 'paperclip', moved: 'arrowRight' };
-const ruleGroupKey = r => r.scope === 'bucket' ? `b|${r.status}` : `t|${norm(r.project)}|${r.trigger}`;
+   and synced exactly as before, one rule per action. Changing a heading changes every rule in it.
+   0.19.14: the heading can carry the trigger's own words (statuses, hours, days…) and "Only if" lines,
+   which belong to the heading too, so they're kept on every rule of the group. */
+const TRIGGER_ICON = { created: 'plus', started: 'play', blocked: 'ban', unblocked: 'refresh', done: 'check', reopened: 'reset', due_soon: 'calendar', overdue: 'alert', checklist: 'listCheck', assigned: 'user', high: 'flag', file_added: 'paperclip', moved: 'arrowRight',
+  timer_started: 'play', timer_paused: 'pause', timer_long: 'timer', status_to: 'circleDot', status_from: 'circleDot', priority_to: 'flag', assigned_to: 'user', deadline_changed: 'calendar', bucket_added: 'layers', due_in: 'calendar', stale: 'loader', bucket_moved: 'layers' };
+const ruleGroupKey = r => r.scope === 'bucket' ? `b|${r.status}` : `t|${norm(r.project)}|${r.trigger}|${JSON.stringify(r.when || null)}|${JSON.stringify(r.only || [])}`;
 // A box you can type in, sized to its text, that sits in a sentence next to the dropdown words.
 const WordInput = ({ value, onChange, placeholder, label, className }) => (
   <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} aria-label={label}
     style={{ width: `calc(${Math.min(Math.max(String(value || '').length, (placeholder || '').length, 4), 30)}ch + 1.25rem)` }}
     className={cn('h-7 max-w-full rounded-md border border-border bg-transparent px-2 text-[13px] text-foreground placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', className)} />
 );
-function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave, onOpenNotifications, bucketNoun = 'Bucket' }) {
+const MULTI_WORD = 'h-auto min-h-7 max-w-full py-[3px]';
+function AutomationsDialog({ open, onClose, rules, projects, people, me, stages = [], buckets = [], onSave, onOpenNotifications, bucketNoun = 'Bucket' }) {
   // Notifications live in Settings since 0.19.13. They're still rules, kept out of this list and saved back untouched.
   const isNote = r => r.action === 'notify' && r.scope !== 'bucket';
   const [draft, setDraft] = useState(() => rules.filter(r => !isNote(r)));
@@ -3537,17 +3691,30 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
     if ((r.action === 'copy' || r.action === 'move') && r.project && norm(r.project) === norm(r.target)) return 'Pick a different project than the one the task is in.';
     return null;
   };
-  const valid = draft.every(r => !problem(r));
+  // Problems with the heading or its "Only if" lines, shown once under the heading.
+  const groupProblem = f => {
+    if (f.scope === 'bucket') return null;
+    const arg = (TRIG[f.trigger] || {}).arg, w = f.when || {};
+    if (arg === 'statuses' && !(w.statuses || []).length) return 'Pick at least one status.';
+    if ((f.only || []).some(c => c.field === 'status' && !(c.value || []).length)) return 'Pick a status for “Only if”, or remove it.';
+    return null;
+  };
+  const valid = draft.every(r => !problem(r) && !groupProblem(r));
   const helpPlatform = projects.find(p => /help/i.test(p)) || '';
   const bucketRule = (status = 'ready') => ({ scope: 'bucket', trigger: 'bucket_status', status, action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' });
+  const statusOptions = statusList(stages).map(x => ({ value: statusKeyOf(x), label: x.name, group: GROUP_HEAD[x.group], node: <DefPill def={x} /> }));
+  // "Waiting" statuses for the idea: Blocked plus your own review or ready ones.
+  const waiting = ['blocked', ...statusList(stages).filter(x => !x.builtin && /review|ready|wait/i.test(x.name || '')).map(statusKeyOf)];
   const ideas = [
+    { title: 'In progress when the timer starts', text: 'Move a To do task to In progress when you start its timer.', rule: { trigger: 'timer_started', action: 'status', target: 'doing', only: [{ field: 'status', op: 'is', value: ['todo'] }] } },
+    { title: 'Pause the timer while waiting', text: 'Pause the timer when a task moves to Blocked or a review status.', rule: { trigger: 'status_to', when: { statuses: waiting }, action: 'stop_timer', target: '' } },
+    { title: 'Catch forgotten timers', text: 'Pause a timer that has run for 4 hours.', rule: { trigger: 'timer_long', when: { hours: '4' }, action: 'stop_timer', target: '' } },
+    { title: 'Nudge stuck work', text: 'Make a task High priority when it has been In progress for 3 days.', rule: { trigger: 'stale', when: { status: 'doing', days: '3' }, action: 'priority', target: 'high' } },
     { title: `Hand off when ${bnoun} is ready`, text: `Create a task for the ${bnoun} when it moves to ${BS.ready ? BS.ready.label : 'Ready for dev'}.`, rule: bucketRule('ready') },
     { title: 'Finish tasks automatically', text: 'Mark a task done when its checklist is finished.', rule: { trigger: 'checklist', action: 'status', target: 'done' } },
     { title: 'Flag overdue work', text: 'Make a task High priority when it becomes overdue.', rule: { trigger: 'overdue', action: 'priority', target: 'high' } },
     { title: 'Assign new tasks to me', text: 'Every new task starts assigned to you.', rule: { trigger: 'created', action: 'assign', target: me } },
-    { title: 'Claim what you start', text: 'Assign a task to you when it moves to In progress.', rule: { trigger: 'started', action: 'assign', target: me } },
-    { title: 'Raise blocked tasks', text: 'Make a task High priority when it gets blocked.', rule: { trigger: 'blocked', action: 'priority', target: 'high' } },
-    { title: 'Stop the clock when blocked', text: 'Pause the timer as soon as a task gets blocked.', rule: { trigger: 'blocked', action: 'stop_timer', target: '' } },
+    { title: 'Claim what you start', text: 'Assign a task to you when its timer starts.', rule: { trigger: 'timer_started', action: 'assign', target: me } },
     { title: 'Give new tasks a deadline', text: 'New tasks without a date are due in a week.', rule: { trigger: 'created', action: 'deadline', target: '7' } },
     { title: 'Start with a checklist', text: 'Add Brief, Design and Review to every new task.', rule: { trigger: 'created', action: 'checklist', target: 'Brief, Design, Review' } },
     { title: 'Reopened work goes to the top', text: 'Make a task High priority when it’s reopened.', rule: { trigger: 'reopened', action: 'priority', target: 'high' } },
@@ -3556,15 +3723,16 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   // Groups, in the order their first rule appears.
   const groups = [];
   { const byKey = {}; draft.forEach(r => { const k = ruleGroupKey(r); if (!byKey[k]) groups.push(byKey[k] = { key: k, rules: [] }); byKey[k].rules.push(r); }); }
+  const usedTrigger = id => draft.some(r => r.scope !== 'bucket' && !r.project && r.trigger === id);
   const usedGroup = k => groups.some(g => g.key === k);
   // A new task automation starts on an event that isn't in the list yet, so it gets its own group.
-  const addTask = () => { const t = TRIGGERS.find(x => !usedGroup(`t||${x.id}`)) || TRIGGERS[0]; add({ trigger: t.id, action: 'priority', target: 'high' }); };
+  const addTask = () => { const t = TRIGGERS.find(x => !x.hidden && !usedTrigger(x.id)) || TRIGGERS[0]; add({ trigger: t.id, when: defaultWhen(t.id), action: 'priority', target: 'high' }); };
   const addBucket = () => { const s = BUCKET_STATUSES.find(x => !usedGroup(`b|${x.id}`)) || BUCKET_STATUSES[0]; add(bucketRule(s.id)); };
   const addToGroup = g => {
     const f = g.rules[0];
     if (f.scope === 'bucket') return add(bucketRule(f.status));
     const free = ACTIONS.find(a => a.id !== 'notify' && !g.rules.some(r => r.action === a.id)) || ACTIONS[0];
-    add({ project: f.project, trigger: f.trigger, action: free.id, target: '' });
+    add({ project: f.project, trigger: f.trigger, ...(f.when ? { when: f.when } : {}), ...(f.only && f.only.length ? { only: f.only } : {}), action: free.id, target: '' });
   };
   const projectOptions = (none = 'Any project') => [
     { value: '', label: none },
@@ -3573,20 +3741,53 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   // Typing a name that isn't on any task yet offers it, as the old person box did.
   const newPerson = v => ({ value: v, label: `Assign to “${v}”`, icon: <Avatar name={v} className="h-5 w-5" /> });
   const peopleOptions = v => [...new Set([...(people || []), ...(v ? [v] : [])])].map(p => ({ value: p, label: p, icon: <Avatar name={p} className="h-5 w-5" /> }));
+  const priorityOptions = ['high', 'normal', 'low'].map(x => ({ value: x, label: P[x].label, node: <PriorityPill priority={x} /> }));
+  const bucketOptions = v => [...new Set([...buckets, ...(v ? [v] : [])])].map(b => ({ value: b, label: b, icon: <I.layers className="size-3.5 text-muted-foreground" /> }));
   const targetField = r => {
     const kind = (ACT[r.action] || ACT.copy).target;
     const setT = v => upd(r.id, { target: v });
     if (kind === 'project') return <Select variant="word" label="Project" value={r.target} onChange={setT} placeholder="a project" options={projectOptions().slice(1)} />;
-    if (kind === 'status') return <Select variant="word" label="Status" value={r.target} onChange={setT} placeholder="a status" searchable={false}
-      options={STATUSES.map(x => ({ value: x.id, label: x.label, node: <StatusPill status={x.id} /> }))} />;
-    if (kind === 'priority') return <Select variant="word" label="Priority" value={r.target} onChange={setT} placeholder="a priority" searchable={false}
-      options={['high', 'normal', 'low'].map(x => ({ value: x, label: P[x].label, node: <PriorityPill priority={x} /> }))} />;
+    if (kind === 'status') return <Select variant="word" label="Status" value={r.target} onChange={setT} placeholder="a status" searchable={false} options={statusOptions} />;
+    if (kind === 'priority') return <Select variant="word" label="Priority" value={r.target} onChange={setT} placeholder="a priority" searchable={false} options={priorityOptions} />;
     if (kind === 'days') return <Select variant="word" label="Deadline" value={r.target} onChange={setT} placeholder="a date" searchable={false}
       options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l }))} />;
+    if (kind === 'bucket') return <Select variant="word" label={bucketNoun} value={r.target} onChange={setT} placeholder={`a ${bnoun}`} searchable options={bucketOptions(r.target)}
+      creatable={v => ({ value: v, label: `Move to “${v}”`, icon: <I.plus className="size-3.5 text-muted-foreground" /> })} />;
     if (kind === 'text') return <WordInput value={r.target} onChange={setT} placeholder={r.action === 'notify' ? 'Message (optional)' : 'Brief, Design, Review'} label={r.action === 'notify' ? 'Message' : 'Checklist items'} />;
     if (kind === 'none') return null;
     return <Select variant="word" label="Person" value={r.target} onChange={setT} placeholder="someone" searchable options={peopleOptions(r.target)} creatable={newPerson} />;
   };
+  // The trigger's own words, after it in the heading.
+  const whenFields = (g, f) => {
+    const arg = (TRIG[f.trigger] || {}).arg; if (!arg) return null;
+    const w = f.when || defaultWhen(f.trigger) || {};
+    const setW = patch => updGroup(g, { when: { ...w, ...patch } });
+    const opts = list => list.map(([v, l]) => ({ value: v, label: l }));
+    if (arg === 'statuses') return <Select variant="word" multiple className={MULTI_WORD} label="Statuses" value={w.statuses || []} onChange={v => setW({ statuses: v })} placeholder="a status" searchable={false}
+      options={statusOptions} footer={() => <div className="px-2 py-1 text-xs text-muted-foreground">Pick one or more.</div>} />;
+    if (arg === 'hours') return <Select variant="word" label="Hours" value={w.hours} onChange={v => setW({ hours: v })} searchable={false} options={opts(HOUR_OPTIONS)} />;
+    if (arg === 'days') return <Select variant="word" label="Days" value={w.days} onChange={v => setW({ days: v })} searchable={false} options={opts(DUE_IN_OPTIONS)} />;
+    if (arg === 'stale') return <>
+      <Select variant="word" label="Status" value={w.status} onChange={v => setW({ status: v })} placeholder="a status" searchable={false} options={statusOptions} />
+      <span>for</span>
+      <Select variant="word" label="Days" value={w.days} onChange={v => setW({ days: v })} searchable={false} options={opts(STALE_OPTIONS)} />
+    </>;
+    if (arg === 'priority') return <Select variant="word" label="Priority" value={w.priority} onChange={v => setW({ priority: v })} searchable={false} options={priorityOptions} />;
+    if (arg === 'person') return <Select variant="word" label="Person" value={w.person || ''} onChange={v => setW({ person: v })} searchable creatable={newPerson}
+      options={[{ value: '', label: 'anyone' }, ...peopleOptions(w.person)]} />;
+    if (arg === 'bstatus') return <Select variant="word" label={`${bucketNoun} status`} value={w.bstatus} onChange={v => setW({ bstatus: v })} searchable={false}
+      options={BUCKET_STATUSES.map(x => ({ value: x.id, label: x.label, node: <BucketStatusPill status={x.id} /> }))} />;
+    return null;
+  };
+  const condValue = (c, setC) => {
+    if (c.field === 'timer') return null;
+    if (c.field === 'status') return <Select variant="word" multiple className={MULTI_WORD} label="Statuses" value={Array.isArray(c.value) ? c.value : []} onChange={v => setC({ value: v })} placeholder="a status" searchable={false}
+      options={statusOptions} footer={() => <div className="px-2 py-1 text-xs text-muted-foreground">Pick one or more.</div>} />;
+    if (c.field === 'priority') return <Select variant="word" label="Priority" value={c.value} onChange={v => setC({ value: v })} searchable={false} options={priorityOptions} />;
+    return <Select variant="word" label="Person" value={c.value || ''} onChange={v => setC({ value: v })} searchable creatable={newPerson}
+      options={[{ value: '', label: 'nobody' }, ...peopleOptions(c.value)]} />;
+  };
+  const rowBtn = 'flex items-center gap-2 py-2 text-[13px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring';
   const onCount = draft.filter(r => r.enabled).length;
   return (
     <Dialog open={open} onClose={onClose} title="Automations" className="max-w-3xl"
@@ -3594,13 +3795,15 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
       footer={<>
         {draft.length > 0 && <span className="mr-auto self-center text-sm text-muted-foreground">{onCount} of {draft.length} on</span>}
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button disabled={!valid} onClick={() => onSave([...draft.map(r => ({ ...r, target: String(r.target || '').trim() })), ...rules.filter(isNote)])}>Save automations</Button>
+        <Button disabled={!valid} onClick={() => onSave([...draft.map(r => ({ ...r, target: String(r.target || '').trim(), ...(r.only && !r.only.length ? { only: undefined } : {}) })), ...rules.filter(isNote)])}>Save automations</Button>
       </>}>
       <div className="grid gap-3">
         {draft.length === 0 && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No automations yet. Add one, or start from an idea below.</p>}
         {groups.map(g => {
           const f = g.rules[0], isBucket = f.scope === 'bucket';
           const Icon = isBucket ? I.layers : (I[TRIGGER_ICON[f.trigger]] || I.zap);
+          const only = f.only || [], gErr = groupProblem(f);
+          const setOnly = list => updGroup(g, { only: list.length ? list : undefined });
           return (
             <div key={g.key} className="overflow-hidden rounded-lg border">
               <div className="flex items-center gap-3 bg-muted/50 py-2 pl-3.5 pr-2">
@@ -3613,12 +3816,30 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
                   </> : <>
                     <span>When a task in</span>
                     <Select variant="word" label="Project" value={f.project} onChange={v => updGroup(g, { project: v })} options={projectOptions()} />
-                    <Select variant="word" label="When the task" value={f.trigger} onChange={v => updGroup(g, { trigger: v })} searchable={false}
-                      options={TRIGGERS.map(t => ({ value: t.id, label: t.label, group: t.group }))} />
+                    <Select variant="word" label="When the task" value={f.trigger} onChange={v => updGroup(g, { trigger: v, when: defaultWhen(v) })} searchable={false} menuClassName="min-w-[16rem]"
+                      options={TRIGGERS.filter(t => !t.hidden || t.id === f.trigger).map(t => ({ value: t.id, label: (t.menu || t.label) + (t.arg ? ' …' : ''), group: t.group }))}
+                      renderValue={o => <span className="truncate">{(TRIG[o.value] || {}).label || o.label}</span>} />
+                    {whenFields(g, f)}
                   </>}
                 </div>
                 <Button variant="ghost" size="icon-sm" className={cn("text-muted-foreground", danger)} aria-label={g.rules.length > 1 ? `Delete these ${g.rules.length} automations` : 'Delete automation'} title="Delete" onClick={() => removeIds(g.rules.map(r => r.id))}><I.trash /></Button>
               </div>
+              {gErr && <p className="border-t px-3.5 py-1.5 pl-[3.25rem] text-[0.8rem] text-destructive">{gErr}</p>}
+              {only.map((c, i) => {
+                const setC = patch => setOnly(only.map((x, j) => j === i ? { ...x, ...patch } : x));
+                const def = COND[c.field] || COND_FIELDS[0];
+                return (
+                  <div key={i} className="flex items-center gap-3 border-t bg-muted/25 py-2 pl-3.5 pr-2">
+                    <span className="w-7 shrink-0 text-center text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{i ? 'and' : 'if'}</span>
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground">
+                      <span>{def.label}</span>
+                      <Select variant="word" label="Is or is not" value={c.op} onChange={v => setC({ op: v })} searchable={false} options={def.ops.map(([v, l]) => ({ value: v, label: l }))} />
+                      {condValue(c, setC)}
+                    </div>
+                    <Button variant="ghost" size="icon-sm" className={cn("text-muted-foreground", danger)} aria-label="Remove this condition" title="Remove" onClick={() => setOnly(only.filter((_, j) => j !== i))}><I.x /></Button>
+                  </div>
+                );
+              })}
               {g.rules.map(r => {
                 const err = problem(r);
                 return (
@@ -3639,7 +3860,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
                             options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l }))} />
                         </> : <>
                           <Select variant="word" label="Then" value={r.action} onChange={v => upd(r.id, { action: v, target: '' })} searchable={false}
-                            options={ACTIONS.filter(a => a.id !== 'notify').map(a => ({ value: a.id, label: a.label }))} />
+                            options={ACTIONS.filter(a => a.id !== 'notify').map(a => ({ value: a.id, label: a.label, divider: a.divider }))} />
                           {targetField(r)}
                         </>}
                       </div>
@@ -3651,10 +3872,13 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
                 );
               })}
               {isBucket && <p className="border-t px-3.5 py-2 pl-[3.25rem] text-xs text-muted-foreground">{'{bucket}'} becomes the {bnoun}’s name. The task gets the {bnoun}’s description, starts in To do, and is created once per {bnoun}.</p>}
-              <button type="button" onClick={() => addToGroup(g)}
-                className="flex w-full items-center gap-2 border-t py-2 pl-[3.25rem] pr-3 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
-                <I.plus className="size-3.5" />{isBucket ? 'Also create another task' : 'Also do something else'}
-              </button>
+              <div className="flex items-center gap-6 border-t pl-[3.25rem] pr-3">
+                <button type="button" onClick={() => addToGroup(g)} className={rowBtn}>
+                  <I.plus className="size-3.5" />{isBucket ? 'Also create another task' : 'Also do something else'}
+                </button>
+                {!isBucket && <DropdownMenu align="start" quiet trigger={t => <button type="button" {...t} className={rowBtn}><I.plus className="size-3.5" />Only if…</button>}
+                  items={COND_FIELDS.map(c => ({ label: c.label, onSelect: () => setOnly([...only, condDefault(c.id)]) }))} />}
+              </div>
             </div>
           );
         })}
@@ -4098,12 +4322,17 @@ function BucketStatusesDialog({ open, buckets, noun = 'Bucket', onClose, onSave 
 /* Buckets page: a compact list (name and description, status, progress). Click a bucket for its details. */
 /* Every page uses the same header: a title with a short summary, then one bar with filter tabs on
    the left and the page's own controls on the right. */
-const PageHead = ({ title, sub }) => (
-  <div className="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-    <h1 className="text-lg font-semibold tracking-tight">{title}</h1>
-    {sub && <span className="text-sm text-muted-foreground">{sub}</span>}
+const PageTitle = ({ title, children }) => (
+  <div className="flex min-w-0 flex-wrap items-baseline gap-x-3.5 gap-y-1">
+    <h1 className="shrink-0 text-[28px] font-semibold leading-9 tracking-tight">{title}</h1>
+    {children}
   </div>
 );
+function PageHead({ title, sub }) {
+  const slot = useHeadSlot();
+  const head = <PageTitle title={title}>{sub && <span className="min-w-0 truncate text-sm text-muted-foreground">{sub}</span>}</PageTitle>;
+  return slot ? createPortal(head, slot) : <div className="mt-6">{head}</div>;
+}
 const PageBar = ({ children, className }) => <div className={cn('mt-3 flex min-h-8 flex-wrap items-center gap-1.5', className)}>{children}</div>;
 function FilterTabs({ items, value, onChange, label }) {
   return (
@@ -4412,7 +4641,7 @@ function BucketsView({ list, tasks, scopeTasks, onSetReason, noun, onNew, onEdit
               <span className={cn('truncate text-sm font-medium', isNone && 'text-muted-foreground')}>{b.label || b.name}</span>
               {sc && sc.added.length > 0 && <ScopeChip sc={sc} />}
             </div>
-            {b.description ? <div className="truncate text-xs text-muted-foreground" title={b.description}>{b.description}</div>
+            {b.description ? <div className="truncate text-xs text-muted-foreground">{b.description}</div>
               : !isNone && <div className="text-xs text-muted-foreground/60">No description</div>}
           </div>
         </div>
@@ -5474,6 +5703,24 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.14', title: 'A new top of the window', img: 'title-bar.webp',
+    points: ['The Windows title bar is gone. A slim top row shows where you are and the cloud status, with the app’s own minimize, maximize and close buttons. Close turns red when you point at it.', 'Each page has a big title, with search, the theme button, ⋯ and Create task on the right. Drag the top row to move the window, and double-click it to maximize.'] },
+  { v: '0.19.14', title: 'Running timers, up top', img: 'timers-topbar.webp',
+    points: ['Running timers sit in a green pill next to search, so the time is never cut off. With one timer it shows the task’s name.', 'Click the pill to pause one timer or all of them.'] },
+  { v: '0.19.14', title: 'A new Filter menu', img: 'filters.webp',
+    points: ['Filter opens a search box with Bucket, Platform and Deadline below it. Each opens a list with checkboxes and counts, and typing searches all three.', 'Filters of the same kind share one chip, like “Checkout v2 +1”. Deadline has a new choice, No deadline.'] },
+  { v: '0.19.14', title: 'Sort works like Filter', img: 'sort-chips.webp',
+    points: ['Sort sits next to Filter. Once you change the sort, the button turns blue with a count, and each rule shows as a chip under the toolbar.', 'Click a chip to change its field or direction, or Reset to go back to Deadline.'] },
+  { v: '0.19.14', title: 'Move your columns', img: 'move-columns.webp',
+    points: ['Drag any heading in the task table left or right. A line shows where it will land, and Esc cancels.', 'Each heading’s menu also has Move left and Move right. The order stays on this PC.'] },
+  { v: '0.19.14', title: 'More ways to start an automation', img: 'automation-triggers.webp',
+    points: ['Automations can now start when a timer starts, when a task has stayed in a status for some days, or when a timer has run too long. They can pause a timer or set the priority.', 'Add “Only if…” to a rule so it runs only for tasks that match, like only when the status is To do.'] },
+  { v: '0.19.14', title: 'See the full text', img: 'full-text.webp',
+    points: ['Any text cut off with “…” shows in full when you point at it, after a short pause.', 'It works everywhere: task titles, buckets, platforms, chips, menus and documents.'] },
+  { v: '0.19.14', title: 'Smaller platform chips', img: 'platform-chip.webp',
+    points: ['In the task table, a platform is now just its icon, which leaves more room for the title.', 'Point at the icon and it opens to show the name.'] },
+  { v: '0.19.14', title: 'Smoother everywhere', img: 'motion.webp',
+    points: ['Menus, windows and the task panel now ease in and out instead of vanishing, always within a fifth of a second.', 'Typing, dragging and scrolling stay instant. If Windows is set to reduce motion, nothing animates.'] },
   { v: '0.19.13', title: 'Your profile', img: 'profile.webp',
     points: ['Settings has a new Profile page with your photo, display name, role, phone and status. Your time zone comes from this PC’s clock.', 'Your profile syncs to your other PCs. Members, next to it, lists everyone in your workspaces, which for now is just you.'] },
   { v: '0.19.13', title: 'Set your status', img: 'avatar-menu.webp',
@@ -5599,14 +5846,300 @@ function WhatsNewDialog({ open, items, onClose }) {
     </>, document.body);
 }
 
+/* Filters (0.19.14): the Filter button opens a search over every filter, with Bucket, Platform and Deadline
+   rows that open a side list. Active filters show as chips under the toolbar; picks of the same kind share
+   one chip ("Homepage +2"), and a chip opens its own list. Buckets and platforms take several picks.
+   Filters are a per-PC view setting (like before); nothing here syncs. */
+const DUE_OPTS = [{ v: 'overdue', label: 'Overdue', icon: 'alert' }, { v: 'week', label: 'Next 7 days', icon: 'calendar' }, { v: 'none', label: 'No deadline', muted: true }];
+const FILTER_KINDS = ['bucket', 'project', 'due'];
+const onlyPick = f => f.length === 1 && f[0] !== 'none' ? f[0] : ''; // the one bucket or platform picked, for new tasks
+const filterNoun = (kind, labels) => kind === 'bucket' ? labels.bucket : kind === 'project' ? labels.platform : labels.deadline;
+const filterIcon = { bucket: 'layers', project: 'folder', due: 'calendar' };
+function filterOptions(kind, f) {
+  const none = n => `No ${n.toLowerCase()}`;
+  if (kind === 'bucket') return [...f.buckets.map(b => ({ v: b, label: b, n: f.counts.bucket[norm(b)] || 0 })), { v: 'none', label: none(f.labels.bucket), n: f.counts.bucket[''] || 0, muted: true }];
+  if (kind === 'project') return [...f.projects.map(p => ({ v: p, label: p, n: f.counts.project[norm(p)] || 0, icon: <PIcon name={p} className="size-3.5" /> })), { v: 'none', label: none(f.labels.platform), n: f.counts.project[''] || 0, muted: true }];
+  return DUE_OPTS.map(o => ({ ...o, n: f.counts.due[o.v] || 0, icon: o.icon ? React.createElement(I[o.icon], { className: 'size-3.5' }) : null }));
+}
+const filterSel = (kind, f) => kind === 'bucket' ? f.bucketSel : kind === 'project' ? f.projSel : (f.due ? [f.due] : []);
+const filterToggle = (kind, v, f) => {
+  if (kind === 'due') return f.setDue(d => d === v ? '' : v);
+  const set = kind === 'bucket' ? f.setBucketSel : f.setProjSel;
+  set(s => s.includes(v) ? s.filter(x => x !== v) : [...s, v]);
+};
+const filterClear = (kind, f) => kind === 'bucket' ? f.setBucketSel([]) : kind === 'project' ? f.setProjSel([]) : f.setDue('');
+// "Homepage", "Homepage +2", "No bucket"
+function filterSummary(kind, f) {
+  const sel = filterSel(kind, f); if (!sel.length) return null;
+  const opts = filterOptions(kind, f); const first = opts.find(o => o.v === sel[0]) || { label: sel[0] };
+  return { first, more: sel.length - 1 };
+}
+
+function FilterRow({ o, on, multi, active, onPick }) {
+  return (
+    <button type="button" role={multi ? 'menuitemcheckbox' : 'menuitemradio'} aria-checked={on} onClick={onPick}
+      className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', active && 'bg-accent', !multi && on && 'font-medium')}>
+      {multi && <span className={cn('flex size-4 shrink-0 items-center justify-center rounded-[4px] border', on ? 'border-primary bg-primary text-primary-foreground' : 'border-input')}>{on && <I.check className="size-3" />}</span>}
+      {o.icon && <span className="shrink-0 text-muted-foreground">{o.icon}</span>}
+      <span className={cn('min-w-0 flex-1 truncate', o.muted && 'text-muted-foreground')}>{o.label}</span>
+      <span className="tnum shrink-0 text-xs text-muted-foreground">{o.n}</span>
+      {!multi && on && <I.check className="size-3.5 shrink-0" />}
+    </button>
+  );
+}
+
+// One field's list: search, options with counts, Clear. Used by the side menus and by the chips.
+function FilterList({ kind, f, className }) {
+  const [q, setQ] = useState('');
+  const multi = kind !== 'due', noun = filterNoun(kind, f.labels);
+  const sel = filterSel(kind, f), nq = norm(q);
+  const opts = filterOptions(kind, f), list = opts.filter(o => !nq || norm(o.label).includes(nq));
+  return (
+    <div className={cn('flex flex-col', className)}>
+      {opts.length > 6 && <>
+        <div className="flex h-9 items-center gap-2 px-2 text-muted-foreground"><I.search className="size-3.5 shrink-0" />
+          <input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder={`Search ${plural(noun).toLowerCase()}`} aria-label={`Search ${plural(noun).toLowerCase()}`}
+            onKeyDown={e => { if (e.key === 'Enter' && list[0]) filterToggle(kind, list[0].v, f); }}
+            className="h-full min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" /></div>
+        <div className="-mx-1 my-1 h-px bg-border" /></>}
+      <div role="menu" aria-label={noun} className="max-h-72 overflow-y-auto">
+        {list.length ? list.map(o => <FilterRow key={o.v} o={o} multi={multi} on={sel.includes(o.v)} onPick={() => filterToggle(kind, o.v, f)} />)
+          : <div className="px-2 py-1.5 text-sm text-muted-foreground">No matches</div>}
+      </div>
+      {sel.length > 0 && <><div className="-mx-1 my-1 h-px bg-border" />
+        <div className="flex h-8 items-center px-2 text-xs text-muted-foreground">
+          <span className="tnum">{multi ? `${sel.length} picked` : 'Picked'}</span>
+          <button type="button" onClick={() => filterClear(kind, f)} className="ml-auto rounded-sm px-1 hover:text-foreground hover:underline underline-offset-4">Clear</button>
+        </div></>}
+    </div>
+  );
+}
+
+// The menu behind the Filter button (side = 'left') and behind "+ Filter" (side = 'right', only unused kinds).
+function FilterMenu({ f, kinds = FILTER_KINDS, side = 'left' }) {
+  const [q, setQ] = useState('');
+  const [sub, setSub] = useState(null);
+  const nq = norm(q);
+  const hits = nq ? kinds.map(k => ({ k, list: filterOptions(k, f).filter(o => norm(o.label).includes(nq)) })) : [];
+  const flat = hits.flatMap(h => h.list.map(o => ({ k: h.k, o })));
+  return (
+    <div className="relative" onKeyDown={e => { if (e.key === 'ArrowLeft' && side === 'left' && !sub) setSub(kinds[0]); }}>
+      <div className="flex h-9 items-center gap-2 px-2 text-muted-foreground"><I.search className="size-3.5 shrink-0" />
+        <input autoFocus value={q} onChange={e => { setQ(e.target.value); setSub(null); }} aria-label="Search filters"
+          placeholder={side === 'left' ? `Filter by ${f.labels.bucket.toLowerCase()}, ${f.labels.platform.toLowerCase()}…` : 'Add a filter…'}
+          onKeyDown={e => { if (e.key === 'Enter' && flat[0]) filterToggle(flat[0].k, flat[0].o.v, f); }}
+          className="h-full min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground" />
+      </div>
+      <div className="-mx-1 my-1 h-px bg-border" />
+      {nq ? (
+        <div role="menu" aria-label="Matching filters" className="max-h-80 overflow-y-auto">
+          {hits.map(({ k, list }) => (
+            <div key={k}>
+              <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">{filterNoun(k, f.labels)}</div>
+              {list.length ? list.map((o, i) => <FilterRow key={o.v} o={o} multi={k !== 'due'} active={flat[0] && flat[0].k === k && i === 0} on={filterSel(k, f).includes(o.v)} onPick={() => filterToggle(k, o.v, f)} />)
+                : <div className="px-2 py-1 text-sm text-muted-foreground">No matches</div>}
+            </div>
+          ))}
+        </div>
+      ) : kinds.map(k => {
+        const s = filterSummary(k, f), open = sub === k;
+        return (
+          <div key={k} className="relative" onMouseEnter={() => setSub(k)}>
+            <button type="button" aria-haspopup="menu" aria-expanded={open} onClick={() => setSub(open ? null : k)}
+              onKeyDown={e => { if (e.key === (side === 'left' ? 'ArrowLeft' : 'ArrowRight')) { e.stopPropagation(); setSub(k); } }}
+              className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', open && 'bg-accent')}>
+              {side === 'left' && <I.left className="size-3.5 shrink-0 text-muted-foreground" />}
+              {React.createElement(I[filterIcon[k]], { className: 'size-3.5 shrink-0 text-muted-foreground' })}
+              <span className="flex-1">{filterNoun(k, f.labels)}</span>
+              {side === 'left' && <span className={cn('max-w-[120px] truncate text-xs', s ? 'font-medium text-foreground' : 'text-muted-foreground')}>
+                {s ? <>{s.first.label}{s.more > 0 && <span className="font-normal text-muted-foreground"> +{s.more}</span>}</> : 'Any'}</span>}
+              {side === 'right' && <I.right className="size-3.5 shrink-0 text-muted-foreground" />}
+            </button>
+            {open && <div className={cn('absolute -top-1 z-10 w-72 rounded-md border bg-popover p-1 text-popover-foreground shadow-md anim-pop', side === 'left' ? 'right-full mr-2' : 'left-full ml-2')}>
+              <FilterList key={k} kind={k} f={f} />
+            </div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* Sorting (0.19.14): a list of rules, each a field and an order. The first rule wins, the next breaks ties.
+   Saved with the view on this PC only (tasks-view-v1), like the old single sort, so it never touches sync. */
+const SORT_KEYS = ['deadline', 'priority', 'created', 'status', 'bucket', 'assignee', 'project'];
+const SORT_DEFAULT = [{ key: 'deadline', desc: false }];
+const SORT_ORDER_WORDS = { deadline: ['Soonest first', 'Latest first'], priority: ['Highest first', 'Lowest first'], created: ['Newest first', 'Oldest first'], status: ['Workflow order', 'Reverse order'] };
+const sortOrderWord = r => (SORT_ORDER_WORDS[r.key] || ['A to Z', 'Z to A'])[r.desc ? 1 : 0];
+const sortName = (key, labels) => ({ deadline: labels.deadline, priority: labels.priority, created: 'Created', status: labels.status, bucket: labels.bucket, assignee: labels.assignee, project: labels.platform })[key] || key;
+const readSorts = v => {
+  const ok = Array.isArray(v.sorts) ? v.sorts.filter((r, i, a) => r && SORT_KEYS.includes(r.key) && a.findIndex(x => x && x.key === r.key) === i).map(r => ({ key: r.key, desc: !!r.desc })) : [];
+  return ok.length ? ok : SORT_KEYS.includes(v.sortBy) ? [{ key: v.sortBy, desc: false }] : SORT_DEFAULT;
+};
+const sortIsDefault = sorts => sorts.length === 1 && sorts[0].key === 'deadline' && !sorts[0].desc;
+// Rule list edits shared by the Sort menu and the sort chips. Removing the last rule goes back to the default.
+const sortSet = (sorts, i, patch) => sorts.map((r, j) => (j === i ? { ...r, ...patch } : r));
+const sortDrop = (sorts, i) => { const n = sorts.filter((_, j) => j !== i); return n.length ? n : SORT_DEFAULT; };
+const rank = (map, k, fallback) => (map[k] || map[fallback] || { i: 99 }).i;
+
+// Builds the comparer for a list of rules. Empty values (no deadline, no bucket…) stay at the bottom
+// whichever way a rule points.
+function sortComparer(rules, stages) {
+  const statusOrder = statusList(stages).map(x => x.id);
+  const byRule = (r, a, b) => {
+    if (r.key === 'created') return (b.createdAt || 0) - (a.createdAt || 0);
+    if (r.key === 'priority') return rank(P, a.priority, 'normal') - rank(P, b.priority, 'normal');
+    if (r.key === 'status') return rank(S, a.status) - rank(S, b.status) || statusOrder.indexOf(statusDef(a, stages).id) - statusOrder.indexOf(statusDef(b, stages).id);
+    return String(a[r.key]).localeCompare(String(b[r.key]), undefined, { sensitivity: 'base', numeric: true }); // deadline (ISO dates), bucket, assignee, platform
+  };
+  const hasEmpty = r => r.key !== 'created' && r.key !== 'priority' && r.key !== 'status';
+  return (a, b) => {
+    for (const r of rules) {
+      if (hasEmpty(r) && !a[r.key] !== !b[r.key]) return a[r.key] ? -1 : 1;
+      if (hasEmpty(r) && !a[r.key]) continue;
+      const n = byRule(r, a, b);
+      if (n) return r.desc ? -n : n;
+    }
+    return 0;
+  };
+}
+
+// The rule editor behind the Sort button: one row per rule (field, order, remove), then Add sort and Reset.
+function SortEditor({ sorts, setSorts, labels }) {
+  const set = (i, patch) => setSorts(sortSet(sorts, i, patch)), drop = i => setSorts(sortDrop(sorts, i));
+  const unused = SORT_KEYS.filter(k => !sorts.some(r => r.key === k));
+  return (
+    <div role="group" aria-label="Sort">
+      <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">Sort</div>
+      {sorts.map((r, i) => {
+        const D = r.desc ? I.arrowDown : I.arrowUp;
+        const opts = SORT_KEYS.filter(k => k === r.key || unused.includes(k)).map(k => ({ value: k, label: sortName(k, labels) }));
+        return (
+          <div key={i} className="flex items-center gap-1.5 px-1 py-[3px]">
+            <span className="tnum w-4 shrink-0 text-center text-xs text-muted-foreground">{i + 1}</span>
+            <Select variant="word" value={r.key} onChange={k => set(i, { key: k, desc: false })} options={opts} searchable={false} label={`Sort ${i + 1} field`}
+              className="w-[7.5rem] max-w-none justify-between bg-background" menuClassName="min-w-[10rem]" />
+            <button type="button" onClick={() => set(i, { desc: !r.desc })} title="Flip the order" aria-label={`${sortName(r.key, labels)}: ${sortOrderWord(r)}. Flip the order`}
+              className="inline-flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border bg-background px-2 text-left text-[13px] transition-colors hover:border-foreground/20 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              <D className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{sortOrderWord(r)}</span>
+            </button>
+            {sortIsDefault(sorts) ? <span className="size-7 shrink-0" />
+              : <button type="button" onClick={() => drop(i)} title="Remove" aria-label={`Remove ${sortName(r.key, labels).toLowerCase()} sort`}
+                  className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x className="size-3.5" /></button>}
+          </div>
+        );
+      })}
+      {unused.length > 0 && <button type="button" onClick={() => setSorts([...sorts, { key: unused[0], desc: false }])}
+        className="mt-0.5 flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none">
+        <I.plus className="size-3.5" />Add sort</button>}
+      {!sortIsDefault(sorts) && <><div className="-mx-1 my-1 h-px bg-border" />
+        <button type="button" onClick={() => setSorts(SORT_DEFAULT)}
+          className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:bg-accent focus-visible:outline-none">Reset to {sortName('deadline', labels)}</button></>}
+    </div>
+  );
+}
+
+// The Sort button beside Filter. Like Filter it turns blue with a count once you change the sort from the default.
+function SortButton({ sorts, setSorts, labels }) {
+  const custom = !sortIsDefault(sorts);
+  const said = sorts.map(r => `${sortName(r.key, labels)}, ${sortOrderWord(r).toLowerCase()}`).join(', then ');
+  return (
+    <Popover align="end" className="w-[22rem] p-1"
+      trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Sorted by ${said}`} aria-label={`Sort. Sorted by ${said}`}
+        className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+          custom ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'bg-card text-muted-foreground hover:bg-muted hover:text-foreground')}>
+        <I.updown className="size-3.5" />Sort{custom ? <span className="tnum">· {sorts.length}</span> : null}</button>}>
+      <SortEditor sorts={sorts} setSorts={setSorts} labels={labels} />
+    </Popover>
+  );
+}
+
+// The sort chips in the row under the toolbar, one per rule (FilterChips shows them once the sort differs from the default).
+// Click a chip to change its field or order; the × removes it.
+function SortChips({ sorts, setSorts, labels }) {
+  const set = (i, patch) => setSorts(sortSet(sorts, i, patch)), drop = i => setSorts(sortDrop(sorts, i));
+  const row = (on, onPick, children) => (
+    <button type="button" role="menuitemradio" aria-checked={on} onClick={onPick}
+      className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', on && 'font-medium')}>
+      {children}{on && <I.check className="ml-auto size-3.5 shrink-0" />}
+    </button>
+  );
+  return sorts.map((r, i) => {
+    const A = r.desc ? I.arrowDown : I.arrowUp, name = sortName(r.key, labels);
+    const free = SORT_KEYS.filter(k => k === r.key || !sorts.some(x => x.key === k));
+    return (
+      <div key={r.key} className="group inline-flex h-7 items-center rounded-md border bg-card text-sm font-medium">
+        <Popover align="start" className="w-52 p-1"
+          trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Sort ${i + 1}: ${name}, ${sortOrderWord(r).toLowerCase()}`} aria-label={`Sort ${i + 1}: ${name}, ${sortOrderWord(r).toLowerCase()}. Change`}
+            className={cn('inline-flex h-full max-w-[200px] items-center gap-1.5 rounded-md pl-2 pr-2.5 group-hover:pr-1 group-focus-within:pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-accent')}>
+            <A className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{name}</span>
+          </button>}>
+          {close => <div role="menu" aria-label={`Sort ${i + 1}`}>
+            {row(!r.desc, () => { set(i, { desc: false }); close(); }, <><I.arrowUp className="size-3.5 shrink-0 text-muted-foreground" />{sortOrderWord({ ...r, desc: false })}</>)}
+            {row(r.desc, () => { set(i, { desc: true }); close(); }, <><I.arrowDown className="size-3.5 shrink-0 text-muted-foreground" />{sortOrderWord({ ...r, desc: true })}</>)}
+            <div className="-mx-1 my-1 h-px bg-border" />
+            {free.map(k => <React.Fragment key={k}>{row(k === r.key, () => { if (k !== r.key) set(i, { key: k, desc: false }); close(); }, sortName(k, labels))}</React.Fragment>)}
+          </div>}
+        </Popover>
+        <button type="button" onClick={() => drop(i)} aria-label={`Remove ${name.toLowerCase()} sort`} title="Remove"
+          className="mr-1 hidden size-5 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus-visible:outline-none group-hover:flex group-focus-within:flex"><I.x className="size-3" /></button>
+      </div>
+    );
+  });
+}
+
+// The chips row under the toolbar.
+function FilterChips({ f, sort }) {
+  const on = FILTER_KINDS.filter(k => filterSel(k, f).length);
+  const sorting = sort && !sortIsDefault(sort.sorts);
+  if (!on.length && !sorting) return null;
+  const unused = FILTER_KINDS.filter(k => !on.includes(k));
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {on.map(k => {
+        const s = filterSummary(k, f), noun = filterNoun(k, f.labels);
+        const names = filterSel(k, f).map(v => (filterOptions(k, f).find(o => o.v === v) || { label: v }).label).join(', ');
+        return (
+          <div key={k} className="group inline-flex h-7 items-center rounded-md border bg-card text-sm font-medium">
+            <Popover align="start" className="w-72 p-1"
+              trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`${noun}: ${names}`} aria-label={`${noun}: ${names}. Change`}
+                className={cn('inline-flex h-full max-w-[220px] items-center gap-1.5 rounded-md pl-2.5 pr-2.5 group-hover:pr-1 group-focus-within:pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-accent')}>
+                {k === 'project' && s.first.icon && <span className="shrink-0 text-muted-foreground">{s.first.icon}</span>}
+                <span className="truncate">{s.first.label}</span>
+                {s.more > 0 && <span className="tnum shrink-0 font-normal text-muted-foreground">+{s.more}</span>}
+              </button>}>
+              <FilterList kind={k} f={f} />
+            </Popover>
+            <button type="button" onClick={() => filterClear(k, f)} aria-label={`Remove ${noun.toLowerCase()} filter`} title="Remove"
+              className="mr-1 hidden size-5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none group-hover:flex group-focus-within:flex"><I.x className="size-3" /></button>
+          </div>
+        );
+      })}
+      {on.length > 0 && unused.length > 0 && <Popover align="start" className="w-60 p-1"
+        trigger={({ open: isOpen, ...p }) => <button {...p} type="button" className={cn('inline-flex h-7 items-center gap-1 rounded-md border border-dashed px-2 text-sm text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-muted text-foreground')}>
+          <I.plus className="size-3.5" />Filter</button>}>
+        <FilterMenu f={f} kinds={unused} side="right" />
+      </Popover>}
+      {on.length > 0 && <button type="button" onClick={() => FILTER_KINDS.forEach(k => filterClear(k, f))} className="ml-1 rounded-sm px-1 text-sm text-muted-foreground hover:text-foreground hover:underline underline-offset-4">Clear</button>}
+      {on.length > 0 && sorting && <span aria-hidden="true" className="mx-1 h-4 w-px bg-border" />}
+      {sorting && <SortChips {...sort} />}
+      {sorting && <button type="button" onClick={() => sort.setSorts(SORT_DEFAULT)} className="ml-1 rounded-sm px-1 text-sm text-muted-foreground hover:text-foreground hover:underline underline-offset-4">Reset</button>}
+    </div>
+  );
+}
+
 function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null }) {
   const me = prof.data.user;
   const {
-    tasks, saveMany, remove, rules, saveRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
+    tasks, saveMany, remove, rules: storedRules, saveRules: storeRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
     buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
     archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
   } = useTasks(ws);
   applyBucketStatuses(settings.bucketStatuses);
+  STAGES_NOW = stages;
+  // Automations as this version reads them (see ruleIn / ruleOut); saved back in a form older PCs skip safely.
+  const rules = useMemo(() => (storedRules || []).map(ruleIn), [storedRules]);
+  const saveRules = list => storeRules(list.map(ruleOut));
   const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
   const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
   undoHook.current = undo;
@@ -5655,7 +6188,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [up.version, loaded]);
   const openWhatsNew = () => setWhatsNew(whatsNewSince('0.19.0', up.version || '9.9.9'));
   const savedView = useMemo(() => { try { return JSON.parse(localStorage.getItem(LS_VIEW)) || {}; } catch (e) { return {}; } }, []);
-  const [projectFilter, setProjectFilter] = useState(savedView.projectFilter || 'all');
+  // 0.19.14: bucket and platform filters are lists (empty = any). An older saved single platform still loads.
+  const [projectFilter, setProjectFilter] = useState(() => { const v = savedView.projectFilter; return Array.isArray(v) ? v : v && v !== 'all' ? [v] : []; });
   // The app opens on Home.
   const [view, setView] = useState(standaloneId ? 'tasks' : 'home');
   const [bucketFocus, setBucketFocus] = useState(null);
@@ -5669,8 +6203,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const searchRef = useRef(null);
   const [, setNow] = useState(0);
   const [filter, setFilter] = useState('open'); // the app always starts on Open
-  const [sortBy, setSortBy] = useState(savedView.sortBy || 'deadline');
-  useEffect(() => { try { localStorage.setItem(LS_VIEW, JSON.stringify({ projectFilter, sortBy, showSummary, view })); } catch (e) {} }, [projectFilter, sortBy, showSummary, view]);
+  const [sorts, setSorts] = useState(() => readSorts(savedView));
+  // sortBy is still written so an older version opening this PC's settings keeps the main sort.
+  useEffect(() => { try { localStorage.setItem(LS_VIEW, JSON.stringify({ projectFilter, sortBy: sorts[0].key, sorts, showSummary, view })); } catch (e) {} }, [projectFilter, sorts, showSummary, view]);
   const [quick, setQuick] = useState('');
   const [sheet, setSheet] = useState(standaloneId ? { open: true, id: standaloneId } : { open: false, id: null });
   const [openMode, setOpenMode] = useState(() => { try { const m = localStorage.getItem('tasks-open-mode'); return m && m !== 'tab' ? m : 'side'; } catch (e) { return 'side'; } });
@@ -5730,7 +6265,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       saveRules(rules.map(r => ({ ...r,
         project: norm(r.project) === norm(old.name) ? name : r.project,
         target: (r.action === 'copy' || r.action === 'move' || r.action === 'create') && norm(r.target) === norm(old.name) ? name : r.target })));
-      if (projectFilter === old.name) setProjectFilter(name);
+      setProjectFilter(f => f.map(x => x === old.name ? name : x));
     }
     if (icon === undefined) toast(old ? `${labels.platform} renamed` : `${labels.platform} created`, name);
   };
@@ -5743,7 +6278,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     saveRules(rules.filter(r => norm(r.project) !== n && !((r.action === 'copy' || r.action === 'move') && norm(r.target) === n))
       .map(r => (r.action === 'create' && norm(r.target) === n ? { ...r, target: '' } : r)));
     saveProjects(projectList.filter(x => norm(x.name) !== n));
-    if (projectFilter === p.name) setProjectFilter('all');
+    setProjectFilter(f => f.filter(x => x !== p.name));
     toast(`${labels.platform} deleted`, p.name, { undo: true });
   };
   const ensureProject = name => {
@@ -5766,7 +6301,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     saveStages(stages.filter(x => x.id !== id));
     if (sg) toast('Status deleted', `Tasks with “${sg.name}” now show ${S[sg.group].label}.`);
   };
-  const openProject = name => { setProjectFilter(name); setFilter('all'); setView('tasks'); };
+  const openProject = name => { setProjectFilter([name]); setFilter('all'); setView('tasks'); };
   // Buckets (what the work is for): one per task, managed on the Buckets page.
   const bucketList = useMemo(() => {
     const list = storedBuckets.map(b => ({ ...b }));
@@ -5781,13 +6316,17 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     all.forEach(t => { const x = m[norm(t.bucket)]; if (x && t.status !== 'done') x.open++; });
     return m;
   }, [bucketList, all]);
-  const [bucketFilter, setBucketFilter] = useState('all');
+  const [bucketFilter, setBucketFilter] = useState([]);
   const [dueFilter, setDueFilter] = useState('');
   const [cleanUpOpen, setCleanUpOpen] = useState(false);
   const COLS_KEY = 'tasks-cols-' + ws;
-  const [cols, setCols] = useState(() => { try { const v = JSON.parse(localStorage.getItem(COLS_KEY)); return { widths: (v && v.widths) || {}, hidden: (v && v.hidden) || [] }; } catch (e) { return { widths: {}, hidden: [] }; } });
+  // Column widths, hidden columns and (0.19.14) column order are kept on this PC, like before.
+  const [cols, setCols] = useState(() => { try { const v = JSON.parse(localStorage.getItem(COLS_KEY)); return { widths: (v && v.widths) || {}, hidden: (v && v.hidden) || [], order: (v && v.order) || [] }; } catch (e) { return { widths: {}, hidden: [], order: [] }; } });
   useEffect(() => { try { localStorage.setItem(COLS_KEY, JSON.stringify(cols)); } catch (e) {} }, [cols]);
-  const visibleCols = TABLE_COLS.filter(c => c.key === 'task' || !cols.hidden.includes(c.key));
+  // Task always comes first; the rest follow the saved order, and any column not in it yet goes at the end.
+  const movableKeys = (() => { const all = TABLE_COLS.filter(c => c.key !== 'task').map(c => c.key); return [...(cols.order || []).filter(k => all.includes(k)), ...all.filter(k => !(cols.order || []).includes(k))]; })();
+  const orderedCols = [TABLE_COLS[0], ...movableKeys.map(k => TABLE_COLS.find(c => c.key === k))];
+  const visibleCols = orderedCols.filter(c => c.key === 'task' || !cols.hidden.includes(c.key));
   const colW = c => cols.widths[c.key] || c.w;
   const setColWidth = (key, w) => setCols(c => { const widths = { ...c.widths }; if (w == null) delete widths[key]; else widths[key] = w; return { ...c, widths }; });
   const hideCol = (key, hide) => setCols(c => ({ ...c, hidden: hide ? [...new Set([...c.hidden, key])] : c.hidden.filter(k => k !== key) }));
@@ -5799,6 +6338,68 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); document.body.style.cursor = ''; };
     document.body.style.cursor = 'col-resize';
     window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+  };
+  /* Rearrange columns (0.19.14): drag a heading left or right; a line shows where it will land.
+     A press without a drag still opens the heading's menu, which also has Move left / Move right. */
+  const tableWrap = useRef(null);
+  const [colDrag, setColDrag] = useState(null); // { key, label, x, y, line, at }
+  const [movedCol, setMovedCol] = useState(null);
+  const moveColTo = (key, at) => setCols(c => {
+    // `at` is the place among the visible movable columns; hidden ones keep their spots.
+    const vis = movableKeys.filter(k => !c.hidden.includes(k) && k !== key);
+    const before = vis[at];
+    const rest = movableKeys.filter(k => k !== key);
+    const i = before ? rest.indexOf(before) : rest.length;
+    return { ...c, order: [...rest.slice(0, i), key, ...rest.slice(i)] };
+  });
+  const flashMoved = key => { setMovedCol(key); setTimeout(() => setMovedCol(m => (m === key ? null : m)), 450); };
+  const nudgeCol = (key, dir) => {
+    const vis = movableKeys.filter(k => !cols.hidden.includes(k));
+    const i = vis.indexOf(key), j = i + dir;
+    if (i < 0 || j < 0 || j >= vis.length) return;
+    moveColTo(key, j); flashMoved(key);
+  };
+  const startColDrag = (e, c) => {
+    if (c.key === 'task' || e.button !== 0 || !tableWrap.current) return;
+    const x0 = e.clientX, y0 = e.clientY;
+    let on = false, at = null;
+    const wrap = tableWrap.current;
+    const heads = () => [...wrap.querySelectorAll('th[data-col]')].filter(th => th.dataset.col !== 'task');
+    const move = ev => {
+      if (!on) { if (Math.abs(ev.clientX - x0) < 5 && Math.abs(ev.clientY - y0) < 5) return; on = true; document.body.style.cursor = 'grabbing'; }
+      const ths = heads(), wr = wrap.getBoundingClientRect();
+      const others = ths.filter(th => th.dataset.col !== c.key);
+      at = others.filter(th => { const r = th.getBoundingClientRect(); return ev.clientX > r.left + r.width / 2; }).length;
+      // The line sits on the edge between the two columns it will land between.
+      const edge = at < others.length ? others[at].getBoundingClientRect().left : others.length ? others[others.length - 1].getBoundingClientRect().right : ths[0].getBoundingClientRect().left;
+      setColDrag({ key: c.key, label: labels[c.key], x: ev.clientX, y: ev.clientY, line: edge - wr.left + wrap.scrollLeft, at });
+    };
+    const end = () => {
+      window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', cancel); window.removeEventListener('keydown', esc, true);
+      document.body.style.cursor = '';
+    };
+    // Esc, or the pointer being taken away (e.g. the window losing focus), drops the drag without moving anything.
+    // Swallows the click that ends a drag, so the heading's menu doesn't open.
+    const swallowClick = () => {
+      const stop = ev => { ev.stopPropagation(); ev.preventDefault(); };
+      window.addEventListener('click', stop, true); setTimeout(() => window.removeEventListener('click', stop, true), 0);
+    };
+    const cancel = () => { end(); setColDrag(null); };
+    const esc = ev => {
+      if (ev.key !== 'Escape' || !on) return;
+      ev.stopPropagation(); cancel();
+      window.addEventListener('pointerup', swallowClick, { once: true }); // the mouse button is still down
+    };
+    const up = () => {
+      end();
+      if (!on) return;
+      swallowClick();
+      setColDrag(null);
+      if (at != null) { moveColTo(c.key, at); flashMoved(c.key); }
+    };
+    window.addEventListener('pointermove', move); window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', cancel); window.addEventListener('keydown', esc, true);
   };
   const VM_KEY = 'tasks-view-mode-' + ws, GB_KEY = 'tasks-group-by-' + ws;
   const [viewMode, setViewMode] = useState(() => { try { return localStorage.getItem(VM_KEY) || 'table'; } catch (e) { return 'table'; } });
@@ -5833,8 +6434,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         id: newId(), title: fillBucket(r.title, b), description: b.description || '', status: 'todo', assignee: r.assignee || '', deadline, priority: 'normal', checklist: [],
         project: r.target || '', bucket: b.name, createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, generatedBy: r.id,
       }, null);
-      made.push(auto.task, ...auto.created); fired[r.id] = auto.task.id;
+      made.push(auto.task, ...auto.created, ...auto.others); fired[r.id] = auto.task.id;
     });
+    made.push(...bucketTaskRules(b, status));
     return { fired, made };
   };
   const bucketRecord = (old, patch) => ({ ...(old || {}), ...patch, id: old && !String(old.id).startsWith('auto-') ? old.id : 'b-' + newId() });
@@ -5860,7 +6462,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if (old && old.name !== name) {
       const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(old.name)).map(t => ({ ...t, bucket: name, bucketJoin: { name: norm(name), at: joinedAt(t) } }));
       if (moved.length) saveMany(moved);
-      if (bucketFilter === old.name) setBucketFilter(name);
+      setBucketFilter(f => f.map(x => x === old.name ? name : x));
     }
     if (made.length) saveMany(made);
     setBucketEdit(null);
@@ -5931,10 +6533,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const moved = Object.values(tasksRef.current).filter(t => norm(t.bucket) === norm(b.name)).map(t => ({ ...t, bucket: '' }));
     if (moved.length) saveMany(moved);
     saveBuckets(bucketList.filter(x => norm(x.name) !== norm(b.name)));
-    if (bucketFilter === b.name) setBucketFilter('all');
+    setBucketFilter(f => f.filter(x => x !== b.name));
     toast(`${labels.bucket} deleted`, b.name, { undo: true });
   };
-  const openBucket = name => { setBucketFilter(name); setFilter('all'); setView('tasks'); };
+  const openBucket = name => { setBucketFilter([name]); setFilter('all'); setView('tasks'); };
   // Bucket statuses can be edited. Buckets whose status is deleted move to the first one left.
   const [bucketStatusesOpen, setBucketStatusesOpen] = useState(false);
   const saveBucketStatuses = list => {
@@ -5973,10 +6575,23 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [bucketEnds, tasks, loaded]);
   const scoped = useMemo(() => {
     const q = norm(query);
-    return all.filter(t => (projectFilter === 'all' || (projectFilter === 'none' ? !t.project : t.project === projectFilter))
-      && (bucketFilter === 'all' || (bucketFilter === 'none' ? !t.bucket : norm(t.bucket) === norm(bucketFilter)))
+    return all.filter(t => (!projectFilter.length || projectFilter.some(v => v === 'none' ? !t.project : t.project === v))
+      && (!bucketFilter.length || bucketFilter.some(v => v === 'none' ? !t.bucket : norm(t.bucket) === norm(v)))
       && (!q || [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
   }, [all, projectFilter, bucketFilter, query]);
+  // Counts beside each filter option: open tasks in this workspace.
+  const filterCounts = useMemo(() => {
+    const c = { bucket: {}, project: {}, due: {} };
+    all.forEach(t => {
+      if (t.status === 'done') return;
+      const b = norm(t.bucket), p = norm(t.project);
+      c.bucket[b] = (c.bucket[b] || 0) + 1; c.project[p] = (c.project[p] || 0) + 1;
+      const k = !t.deadline ? 'none' : dayDiff(t.deadline) < 0 ? 'overdue' : dayDiff(t.deadline) < 7 ? 'week' : null;
+      if (k) c.due[k] = (c.due[k] || 0) + 1;
+    });
+    return c;
+  }, [all]);
+  const filterCtx = { labels, buckets: bucketNames, projects, counts: filterCounts, bucketSel: bucketFilter, setBucketSel: setBucketFilter, projSel: projectFilter, setProjSel: setProjectFilter, due: dueFilter, setDue: setDueFilter };
   // Quick captures wait in the Inbox (inbox: true) and stay out of Open and the status tabs until accepted.
   const sorted = useMemo(() => scoped.filter(t => !t.inbox), [scoped]);
   const counts = useMemo(() => { const c = { all: scoped.length, inbox: scoped.length - sorted.length, open: sorted.filter(t => t.status !== 'done').length }; STATUSES.forEach(s => { c[s.id] = sorted.filter(t => t.status === s.id).length; }); return c; }, [scoped, sorted]);
@@ -5991,25 +6606,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [sorted]);
 
   const shown = useMemo(() => {
-    const by = {
-      deadline: (a, b) => (a.deadline || '9999').localeCompare(b.deadline || '9999') || b.createdAt - a.createdAt,
-      created: (a, b) => b.createdAt - a.createdAt,
-      status: (a, b) => { const o = statusList(stages).map(x => x.id); return S[a.status].i - S[b.status].i || o.indexOf(statusDef(a, stages).id) - o.indexOf(statusDef(b, stages).id) || b.createdAt - a.createdAt; },
-      assignee: (a, b) => (a.assignee || '~').localeCompare(b.assignee || '~') || b.createdAt - a.createdAt,
-      project: (a, b) => (a.project || '~').localeCompare(b.project || '~') || b.createdAt - a.createdAt,
-      bucket: (a, b) => (a.bucket || '~').localeCompare(b.bucket || '~') || b.createdAt - a.createdAt,
-      priority: (a, b) => P[a.priority || 'normal'].i - P[b.priority || 'normal'].i || (a.deadline || '9999').localeCompare(b.deadline || '9999'),
-    }[sortBy] || ((a, b) => b.createdAt - a.createdAt);
+    // Each rule in turn, then the deadline and the newest as quiet tie-breakers.
+    const tail = [{ key: 'deadline', desc: false }, { key: 'created', desc: false }].filter(t => !sorts.some(r => r.key === t.key));
+    const by = sortComparer([...sorts, ...tail], stages);
     // While searching, look through every task (finished ones too, in any project).
     const q = norm(query);
     const base = q ? all.filter(t => [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q)))
       : scoped.filter(t => filter === 'all' || (filter === 'inbox' ? t.inbox : !t.inbox && (filter === 'open' ? t.status !== 'done' : t.status === filter)))
-        .filter(t => !dueFilter || (t.deadline && t.status !== 'done' && (dueFilter === 'overdue' ? dayDiff(t.deadline) < 0 : dayDiff(t.deadline) >= 0 && dayDiff(t.deadline) < 7)));
+        .filter(t => !dueFilter || (dueFilter === 'none' ? !t.deadline : t.deadline && t.status !== 'done' && (dueFilter === 'overdue' ? dayDiff(t.deadline) < 0 : dayDiff(t.deadline) >= 0 && dayDiff(t.deadline) < 7)));
     return base.sort((a, b) => {
-      if (sortBy !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
+      if (sorts[0].key !== 'status' && (a.status === 'done') !== (b.status === 'done')) return a.status === 'done' ? 1 : -1;
       return by(a, b);
     });
-  }, [scoped, all, query, filter, sortBy, stages, dueFilter]);
+  }, [scoped, all, query, filter, sorts, stages, dueFilter]);
 
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
@@ -6024,24 +6633,37 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   };
   // Automations. Each rule: for tasks in [project], when the task [trigger], [action] [target].
   const ruleMatches = (r, t) => r.enabled && r.scope !== 'bucket' && (!r.project || norm(r.project) === norm(t.project));
-  const triggered = (trigger, next, prev) => {
+  const sKey = t => taskStatusKey(t, stages);
+  // "Only if" lines: all must hold.
+  const condOk = (r, t) => (r.only || []).every(c => condHolds(c, t, stages));
+  const triggered = (r, next, prev) => {
+    const trigger = r.trigger, w = r.when || {};
     if (trigger === 'created') return !prev;
     if (trigger === 'started') return next.status === 'doing' && (!prev || prev.status !== 'doing');
     if (trigger === 'blocked') return next.status === 'blocked' && (!prev || prev.status !== 'blocked');
     if (trigger === 'done') return next.status === 'done' && (!prev || prev.status !== 'done');
     if (trigger === 'unblocked') return !!prev && prev.status === 'blocked' && next.status !== 'blocked';
     if (trigger === 'reopened') return !!prev && prev.status === 'done' && next.status !== 'done';
-    if (trigger === 'assigned') return !!(next.assignee || '').trim() && (!prev || norm(prev.assignee) !== norm(next.assignee));
+    if (trigger === 'assigned' || (trigger === 'assigned_to' && !w.person)) return !!(next.assignee || '').trim() && (!prev || norm(prev.assignee) !== norm(next.assignee));
+    if (trigger === 'assigned_to') return norm(next.assignee) === norm(w.person) && (!prev || norm(prev.assignee) !== norm(w.person));
     if (trigger === 'high') return next.priority === 'high' && (!prev || prev.priority !== 'high');
+    if (trigger === 'priority_to') { const v = w.priority || 'high'; return (next.priority || 'normal') === v && (!prev || (prev.priority || 'normal') !== v); }
     if (trigger === 'file_added') return (next.files || []).length > ((prev && prev.files) || []).length;
     if (trigger === 'moved') return !!prev && !!next.project && norm(prev.project) !== norm(next.project);
+    if (trigger === 'timer_started') return !!next.timerStartedAt && !(prev && prev.timerStartedAt);
+    if (trigger === 'timer_paused') return !!prev && !!prev.timerStartedAt && !next.timerStartedAt;
+    if (trigger === 'status_to') { const k = sKey(next); return (w.statuses || []).includes(k) && (!prev || sKey(prev) !== k); }
+    if (trigger === 'status_from') return !!prev && (w.statuses || []).includes(sKey(prev)) && sKey(next) !== sKey(prev);
+    if (trigger === 'deadline_changed') return !!prev && !!next.deadline && next.deadline !== (prev.deadline || '');
+    if (trigger === 'bucket_added') return !!(next.bucket || '').trim() && (!prev || norm(prev.bucket) !== norm(next.bucket));
     if (trigger === 'checklist') {
       const c = next.checklist || [], pc = (prev && prev.checklist) || [];
       return c.length > 0 && c.every(x => x.done) && !(pc.length > 0 && pc.every(x => x.done));
     }
     return false;
   };
-  const runActions = (task, list) => {
+  // opts.noStart: don't start timers (used for tasks paused by "One task at a time", so they can't restart).
+  const runActions = (task, list, opts = {}) => {
     let t = { ...task }; const created = [], notes = [];
     for (const r of list) {
       if (r.action === 'copy') {
@@ -6057,14 +6679,22 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         created.push(c);
         t = { ...t, followUps: { ...(t.followUps || {}), [r.id]: c.id } };
       } else if (r.action === 'move' && r.target) t = { ...t, project: r.target };
-      else if (r.action === 'status' && S[r.target]) {
-        t = { ...t, status: r.target };
-        if (r.target === 'done' || r.target === 'blocked') t = stopT(t);
-        if (r.target !== 'blocked') t.blockedBy = null;
+      else if (r.action === 'status' && r.target) {
+        // "doing" is the main In progress status; "doing|review" is one of your own in that group.
+        const [group, stage] = String(r.target).split('|');
+        if (!S[group]) continue;
+        t = { ...t, status: group, stage: stage || '' };
+        if (group === 'done' || group === 'blocked') t = stopT(t);
+        if (group !== 'blocked') t.blockedBy = null;
       } else if (r.action === 'priority' && P[r.target]) t = { ...t, priority: r.target };
       else if (r.action === 'assign' && r.target) t = { ...t, assignee: r.target };
       else if (r.action === 'unassign') t = { ...t, assignee: '' };
       else if (r.action === 'stop_timer') t = stopT(t);
+      else if (r.action === 'start_timer') {
+        if (opts.noStart || t.timerStartedAt || t.status === 'done') continue;
+        t = { ...t, status: t.status === 'todo' ? 'doing' : t.status, timerStartedAt: Date.now() };
+      } else if (r.action === 'bucket' && r.target) t = { ...t, bucket: r.target };
+      else if (r.action === 'unblock') t = { ...t, blockedBy: null };
       else if (r.action === 'deadline' && r.target) {
         // On "is created", only fill in a missing date; never overwrite one you chose.
         if (r.trigger === 'created' && t.deadline) continue;
@@ -6080,17 +6710,45 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   };
   // A change made by one automation can set off others (a finished checklist marks the task done,
   // which then copies it), but each automation runs at most once per change, so nothing can loop.
-  const automate = (next, prev) => {
+  // "Only if" lines are checked on the task as it was just before the change.
+  // With "One task at a time", a timer that starts here (by hand or by an automation) pauses the others;
+  // those tasks, and any that blockOthers() marked Blocked (opts.blocked), run their own automations
+  // once more, one level deep, and are returned in `others`. They can't start timers.
+  const automate = (next, prev, opts = {}) => {
+    const depth = opts.depth || 0;
     let task = next, before = prev;
-    const created = [], fired = [], notes = [];
+    const created = [], fired = [], notes = [], others = [];
     for (let pass = 0; pass < 3; pass++) {
-      const list = rules.filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r.trigger, task, before));
+      const list = rules.filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r, task, before) && condOk(r, before || task));
       if (!list.length) break;
-      const res = runActions(task, list);
+      const res = runActions(task, list, { noStart: depth > 0 });
       before = task; task = res.task;
       created.push(...res.created); fired.push(...list); notes.push(...res.notes);
     }
-    return { task, created, fired, notes };
+    if (depth === 0) {
+      const pre = Object.fromEntries((opts.blocked || []).map(o => [o.id, o]));
+      const ids = new Set(Object.keys(pre));
+      if (prefsRef.current.oneAtATime && task.timerStartedAt && !(prev && prev.timerStartedAt))
+        Object.values(tasksRef.current).forEach(o => { if (o.id !== task.id && o.timerStartedAt) ids.add(o.id); });
+      ids.forEach(id => {
+        const was = tasksRef.current[id]; if (!was) return;
+        const sub = automate(stopT(pre[id] || was), was, { depth: 1 });
+        others.push(sub.task, ...sub.created); fired.push(...sub.fired); notes.push(...sub.notes);
+      });
+    }
+    return { task, created, fired, notes, others };
+  };
+  // "Its bucket moves to [status]": run those automations on every task in the bucket.
+  const bucketTaskRules = (b, status) => {
+    const list = rules.filter(r => r.enabled && r.scope !== 'bucket' && r.trigger === 'bucket_moved' && (r.when || {}).bstatus === status);
+    if (!list.length) return [];
+    return Object.values(tasksRef.current).filter(t => !t.inbox && norm(t.bucket) === norm(b.name)).flatMap(t => {
+      const fire = list.filter(r => ruleMatches(r, t) && condOk(r, t));
+      if (!fire.length) return [];
+      const res = runActions(t, fire, { noStart: !!prefsRef.current.oneAtATime });
+      const sub = automate(res.task, t, { depth: 1 });
+      return [sub.task, ...res.created, ...sub.created];
+    });
   };
   // Returns true if it showed a message about the automation.
   const notifyAuto = auto => {
@@ -6103,34 +6761,54 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if (visible.length) { toast('Automation ran', describeRule(visible[0]) + '.'); return true; }
     return false;
   };
-  // Date-based automations ("is due tomorrow", "becomes overdue") are checked when the app opens
-  // and every minute after. Each fires once per task, again only if you change its deadline.
+  // Time-based automations ("is due in", "becomes overdue", "has been in a status for", "timer runs longer than")
+  // are checked when the app opens and every minute after. Each fires once per task: deadline ones again only
+  // if you change the deadline, "has been in" again after the status changes, "timer runs longer" once per run.
   useEffect(() => {
-    if (!loaded || standaloneId) return; // only the main window runs date-based automations
+    if (!loaded || standaloneId) return; // only the main window runs time-based automations
     const scan = () => {
-      const list = rules.filter(r => r.enabled && TIME_TRIGGERS.includes(r.trigger));
+      const list = rules.filter(r => r.enabled && r.scope !== 'bucket' && TIME_TRIGGERS.includes(r.trigger));
       if (!list.length) return;
+      const now = Date.now();
       const updates = [], made = [], notes = [];
       Object.values(tasksRef.current).forEach(t => {
-        if (!t.deadline || t.status === 'done') return;
-        const days = dayDiff(t.deadline);
-        const fire = list.filter(r => ruleMatches(r, t) && !(t.autoFired || {})[r.id]
-          && ((r.trigger === 'overdue' && days < 0) || (r.trigger === 'due_soon' && days >= 0 && days <= 1)));
+        if (t.inbox) return;
+        const days = t.deadline ? dayDiff(t.deadline) : null, open = t.status !== 'done';
+        const fire = [], keys = {};
+        list.forEach(r => {
+          if (!ruleMatches(r, t) || !condOk(r, t)) return;
+          const w = r.when || {};
+          let key = r.id, hit = false;
+          if (r.trigger === 'overdue') hit = open && days != null && days < 0;
+          else if (r.trigger === 'due_soon') hit = open && days != null && days >= 0 && days <= 1;
+          else if (r.trigger === 'due_in') hit = open && days != null && days >= 0 && days <= Number(w.days || 1);
+          else if (r.trigger === 'stale') {
+            const since = t.statusAt || t.updatedAt || t.createdAt || now;
+            hit = !!w.status && sKey(t) === w.status && now - since >= Number(w.days || 3) * 864e5;
+            key = `${r.id}@${since}`;
+          } else if (r.trigger === 'timer_long') {
+            hit = !!t.timerStartedAt && timerHere(t) && now - t.timerStartedAt >= Number(w.hours || 4) * 36e5;
+            key = `${r.id}@${t.timerStartedAt}`;
+          }
+          if (hit && !(t.autoFired || {})[key]) { fire.push(r); keys[key] = true; }
+        });
         if (!fire.length) return;
-        const res = runActions(t, fire);
-        const autoFired = { ...(res.task.autoFired || {}) }; fire.forEach(r => { autoFired[r.id] = true; });
-        updates.push({ ...res.task, autoFired }); made.push(...res.created); notes.push(...res.notes);
+        const res = runActions(t, fire, { noStart: !!prefsRef.current.oneAtATime });
+        // What the change sets off ("timer is paused", "status changes to"…) runs too.
+        const sub = automate(res.task, t, { depth: 1 });
+        updates.push({ ...sub.task, autoFired: { ...(sub.task.autoFired || {}), ...keys } });
+        made.push(...res.created, ...sub.created); notes.push(...res.notes, ...sub.notes);
       });
       if (updates.length) {
         saveMany([...updates, ...made]);
         notes.forEach(queueNote);
-        if (!notes.length) toast(updates.length === 1 ? `Automation ran for “${updates[0].title}”` : `Automations ran for ${updates.length} tasks`, 'Because of their deadlines.');
+        if (!notes.length) toast(updates.length === 1 ? `Automation ran for “${updates[0].title}”` : `Automations ran for ${updates.length} tasks`, 'Because of their dates or timers.');
       }
     };
     scan();
     const i = setInterval(scan, 60000);
     return () => clearInterval(i);
-  }, [loaded, rules]);
+  }, [loaded, rules, stages]);
   // Changes made directly in the table go through the same rules as the task panel.
   const updateTask = (id, p) => {
     const t = tasksRef.current[id]; if (!t) return;
@@ -6143,27 +6821,27 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if ('deadline' in p && p.deadline !== t.deadline) next.autoFired = {};
     if (t.inbox && 'project' in p && p.project) next.inbox = false;
     const blocked = blockOthers(next, t);
-    const auto = automate(next, t);
-    saveMany(merge([...blocked, auto.task, ...auto.created]));
+    const auto = automate(next, t, { blocked });
+    saveMany(merge([...blocked, auto.task, ...auto.created, ...auto.others]));
     if (!notifyAuto(auto) && blocked.length) notifyBlocked(blocked, auto.task);
   };
   const openCell = (id, field, el) => setCellEdit(c => (c && c.id === id && c.field === field ? null : { id, field, el }));
   const toggleTimer = id => {
     const t = tasks[id]; if (!t) return;
-    if (t.timerStartedAt) { saveMany([stopT(t)]); return; }
-    const others = prefsRef.current.oneAtATime ? Object.values(tasks).filter(o => o.id !== id && o.timerStartedAt).map(stopT) : [];
+    if (t.timerStartedAt) { const auto = automate(stopT(t), t); saveMany([auto.task, ...auto.created, ...auto.others]); notifyAuto(auto); return; }
+    // With "One task at a time", automate() pauses the other timers and runs their automations too.
     const next = { ...t, status: t.status === 'todo' ? 'doing' : t.status, timerStartedAt: Date.now() };
     const blocked = blockOthers(next, t);
-    const auto = automate(next, t);
-    saveMany(merge([...others, ...blocked, auto.task, ...auto.created]));
+    const auto = automate(next, t, { blocked });
+    saveMany(merge([...blocked, auto.task, ...auto.created, ...auto.others]));
     if (!notifyAuto(auto)) notifyBlocked(blocked, next);
   };
-  const pauseAll = () => { const list = Object.values(tasksRef.current).filter(t => t.timerStartedAt); if (list.length) { saveMany(list.map(stopT)); toast(list.length === 1 ? 'Timer paused' : `${list.length} timers paused`, list.map(t => t.title || 'Untitled').join(', ')); } };
+  const pauseAll = () => { const list = Object.values(tasksRef.current).filter(t => t.timerStartedAt); if (list.length) { const autos = list.map(t => automate(stopT(t), t, { depth: 1 })); saveMany(merge(autos.flatMap(x => [x.task, ...x.created]))); autos.forEach(x => (x.notes || []).forEach(queueNote)); toast(list.length === 1 ? 'Timer paused' : `${list.length} timers paused`, list.map(t => t.title || 'Untitled').join(', ')); } };
   const resetTimer = id => { const t = tasks[id]; if (t) saveMany([{ ...t, timeSpent: 0, timerStartedAt: null, sessions: [] }]); };
   const markDone = id => {
     const t = tasks[id]; if (!t) return;
     const auto = automate({ ...stopT(t), status: 'done', blockedBy: null }, t);
-    saveMany([auto.task, ...auto.created]);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     if (!notifyAuto(auto)) toast('Marked as done', t.title);
   };
   const addQuick = e => {
@@ -6171,8 +6849,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const v = quick.trim();
     if (!v) { createTask(); return; }
     const auto = automate({ id: newId(), title: v, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal',
-      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : '', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
-    saveMany([auto.task, ...auto.created]);
+      project: onlyPick(projectFilter), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null }, null);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     setQuick('');
   };
   // The task panel saves each change as you make it, through the same rules as the table.
@@ -6185,10 +6863,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     let lastPlat = ''; try { lastPlat = localStorage.getItem('tasks-last-platform') || ''; } catch (e) {}
     const auto = automate({
       id: newId(), title: '', status: S[filter] && filter !== 'done' ? filter : 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [],
-      project: projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : lastPlat, bucket: bucketFilter !== 'all' && bucketFilter !== 'none' ? bucketFilter : '',
+      project: onlyPick(projectFilter) || lastPlat, bucket: onlyPick(bucketFilter),
       ...(opts && opts.preset ? opts.preset : {}), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     }, null);
-    saveMany([auto.task, ...auto.created]);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     openTask(auto.task.id);
   };
   const createRef = useRef(createTask); createRef.current = createTask;
@@ -6198,7 +6876,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const t = tasks[confirmId]; trashTasks([confirmId]); setConfirmId(null); setSheet({ open: false, id: null });
     toast('Moved to Trash', `You can restore “${(t && t.title) || 'Untitled'}” from the Trash for ${TRASH_DAYS} days.`, { undo: true });
   };
-  const closeSheet = useCallback(() => setSheet({ open: false, id: null }), []);
+  const closeSheet = useCallback(() => setSheet(s => ({ open: false, id: s.id })), []); // keeps the id so the panel can animate closed (0.19.14)
   // Closing the window keeps Tasks running in the tray (unless turned off in Settings).
   const prefsRef = useRef(prefs); prefsRef.current = prefs;
   // Closing Tasks (the window, Quit in the tray, or an update) always stops every running timer, and
@@ -6266,7 +6944,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const now = Date.now();
     const list = ids.map(id => tasksRef.current[id]).filter(t => t && !t.timerStartedAt)
       .map(t => ({ ...t, status: t.status === 'todo' || t.status === 'done' ? 'doing' : t.status, timerStartedAt: now }));
-    if (list.length) saveMany(list);
+    if (list.length) saveMany(merge(list.flatMap(t => { const x = automate(t, tasksRef.current[t.id], { depth: 1 }); return [x.task, ...x.created]; })));
   };
   // The global quick capture shortcut, and tasks typed into the quick capture window.
   useEffect(() => {
@@ -6283,7 +6961,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   captureRef.current = (title, extra = {}) => {
     const bucket = (extra.bucket || '').trim(), project = (extra.project || '').trim();
     const auto = automate({ id: newId(), title, status: 'todo', assignee: me.name || '', deadline: '', description: '', priority: 'normal', checklist: [], project, bucket, createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, inbox: !project }, null);
-    saveMany([auto.task, ...auto.created]);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     toast(project ? 'Saved to Open' : 'Saved to Inbox', [title, bucket && `@${bucket}`, project && `#${project}`].filter(Boolean).join('  '));
   };
   // Keep the quick capture window's @ and # lists current.
@@ -6363,7 +7041,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const patch = (id, p) => {
     const t = tasksRef.current[id]; if (!t) return;
     const auto = automate({ ...t, ...p }, t);
-    saveMany([auto.task, ...auto.created]);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     notifyAuto(auto);
   };
 
@@ -6571,7 +7249,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const attach = (taskId, metas) => {
     const t = tasksRef.current[taskId]; if (!t) return;
     const auto = automate({ ...t, files: [...(t.files || []), ...metas] }, t);
-    saveMany([auto.task, ...auto.created]);
+    saveMany([auto.task, ...auto.created, ...auto.others]);
     notifyAuto(auto);
     toast(metas.length === 1 ? 'Document linked' : `${metas.length} documents linked`, t.title);
   };
@@ -6589,7 +7267,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           id: newId(), title: m.name.replace(/\.[^.]+$/, ''), status: 'todo', assignee: me.name || '', deadline: '', description: '',
           project, priority: 'normal', checklist: [], files: [m], createdAt: now + i, timeSpent: 0, timerStartedAt: null,
         }, null);
-        return [auto.task, ...auto.created];
+        return [auto.task, ...auto.created, ...auto.others];
       }));
       toast(metas.length === 1 ? 'Document added as a new task' : `${metas.length} documents added as new tasks`, 'Open a task to add details.');
     } else if (target === '__none') {
@@ -6654,7 +7332,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     };
     const auto = automate(c, null);
-    saveMany([auto.task, ...auto.created]); openTask(c.id); toast('Task duplicated', 'Edit the copy, then save.');
+    saveMany([auto.task, ...auto.created, ...auto.others]); openTask(c.id); toast('Task duplicated', 'Edit the copy, then save.');
   };
   useEffect(() => {
     const k = e => {
@@ -6708,6 +7386,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     ...bucketList.map(b => ({ id: 'b-' + b.name, group: 'Buckets', groupLabel: plural(labels.bucket), label: b.name, icon: <I.layers />, run: () => openBucket(b.name) })),
     ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setView('docs'); setDocFocus(d.id); } })),
   ];
+  const pageName = { home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', report: 'Weekly report', archive: 'Archive', trash: 'Trash' }[view] || '';
   const primary = view === 'tasks' || view === 'home' ? { label: 'Create task', run: () => createTask() }
     : view === 'projects' ? { label: `Create ${labels.bucket.toLowerCase()}`, run: () => setBucketEdit({ bucket: null }) }
     : view === 'docs' ? { label: 'Add documents', run: () => setAddDocs({ open: true, files: [] }) }
@@ -6725,7 +7404,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -6790,57 +7469,63 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           </button>
         ))}
         <div className="flex-1" />
-        {running && (() => {
-          const mm = t => (m => m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`)(Math.floor(elapsed(t) / 60000));
-          const ring = 'group relative flex size-9 shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950';
-          const longest = runs.reduce((x, t) => elapsed(t) > elapsed(x) ? t : x, running);
-          const info = (
-            <span aria-hidden={!railOpen} className={cn('flex min-w-0 flex-1 flex-col transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0')}>
-              <span className="truncate whitespace-nowrap text-[12.5px] font-medium">{runs.length === 1 ? (running.title || 'Untitled') : `${runs.length} timers running`}</span>
-              <span className="tnum font-mono text-xs text-emerald-700 dark:text-emerald-300">{fmt(elapsed(runs.length === 1 ? running : longest))}</span>
-            </span>
-          );
-          if (runs.length === 1) return (
-            <div className="mb-1 flex shrink-0 items-center gap-3 pl-[2px]">
-              <button type="button" onClick={() => toggleTimer(running.id)} onContextMenu={e => { e.preventDefault(); openTask(running.id); }}
-                aria-label={`Pause timer: ${running.title || 'Untitled'}, ${fmt(elapsed(running))}`} title={`${running.title || 'Untitled'}\n${fmt(elapsed(running))}\nClick to pause, right-click to open`} className={ring}>
-                <span className="tnum font-mono text-[10px] font-medium group-hover:hidden">{mm(running)}</span>
-                <I.pause className="hidden size-3.5 group-hover:block" />
-              </button>
-              {info}
-            </div>
-          );
-          return (
-            <div className="mb-1 flex shrink-0 items-center gap-3 pl-[2px]">
-            <DropdownMenu align="start"
-              trigger={p => (
-                <button {...p} type="button" aria-label={`${runs.length} timers running`} title={runs.map(t => `${t.title || 'Untitled'}  ${fmt(elapsed(t))}`).join('\n')} className={ring}>
-                  <span className="tnum font-mono text-[10px] font-medium">{mm(longest)}</span>
-                  <span className="tnum absolute -right-1 -top-1 min-w-[18px] rounded-full bg-emerald-600 px-1 text-center text-[10px] font-semibold leading-[18px] text-white ring-2 ring-card">{runs.length}</span>
-                </button>
-              )}
-              items={[
-                ...runs.map(t => ({ icon: <I.pause className="size-3.5 text-emerald-600 dark:text-emerald-400" />, label: <span className="flex min-w-0 flex-1 items-center gap-3"><span className="max-w-[14rem] truncate">{t.title || 'Untitled'}</span><span className="tnum ml-auto font-mono text-xs text-muted-foreground">{fmt(elapsed(t))}</span></span>, onSelect: () => toggleTimer(t.id) })),
-                'sep',
-                { icon: <I.pause className="size-3.5" />, label: `Pause all ${runs.length}`, onSelect: pauseAll },
-              ]} />
-            {info}
-            </div>
-          );
-        })()}
         <AccountMenu me={me} wsName={wsName} workspaces={workspaces} ws={ws} railOpen={railOpen} onStatus={patch => prof.updateUser(patch)}
           onProfile={() => setSettingsOpen('profile')} onSettings={() => setSettingsOpen(true)} onSwitchWorkspace={id => onSwitchWorkspace(id)} onSignOut={() => prof.update({ user: null })} />
       </nav>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4 md:px-6">
-        <div className="flex min-w-0 items-center gap-2 text-sm">
-          <span className="truncate text-muted-foreground">{wsName}</span>
-          <span className="text-muted-foreground/50">/</span>
-          <span className="shrink-0 truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', report: 'Weekly report', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
-          <CloudNote onOpen={() => setCloudOpen(true)} />
+      <header className="shrink-0 border-b">
+        {/* Slim top row (0.19.14): where you are, cloud sync and the window buttons. Drag it to move the window,
+            double-click to maximize. Page actions stay in the page header below, away from Close. */}
+        <div data-tauri-drag-region className="flex h-10 items-center pl-4 md:pl-6">
+          <div data-tauri-drag-region className="flex min-w-0 flex-1 items-center gap-1.5 text-xs">
+            <span className="pointer-events-none truncate text-muted-foreground">{wsName}</span>
+            <span className="pointer-events-none text-muted-foreground/50">/</span>
+            <span className="pointer-events-none shrink-0 truncate text-foreground/80">{pageName}</span>
+          </div>
+          <div className="mr-2 flex min-w-0 shrink items-center"><CloudNote onOpen={() => setCloudOpen(true)} /></div>
+          <WindowControls />
         </div>
-        <div className="ml-auto flex min-w-0 items-center gap-2">
+        <div data-tauri-drag-region className="flex min-h-[60px] items-center gap-4 px-4 pb-4 pt-1 md:px-6">
+          <div data-tauri-drag-region className="min-w-[8rem] flex-1">
+            <div ref={setHeadSlot} className="min-w-0" />
+            {view === 'tasks' && (
+              <PageTitle title={pageName}>
+                <span className="text-sm text-muted-foreground">{query ? `Searching for “${query}”` : `${overview.open} open${viewMode === 'list' ? `, grouped by ${(labels[groupBy === 'project' ? 'platform' : groupBy] || '').toLowerCase()}` : ''}`}</span>
+          {!query && overview.overdue > 0 && <button type="button" aria-pressed={dueFilter === 'overdue'} onClick={() => setDueFilter(d => d === 'overdue' ? '' : 'overdue')} title="Show only overdue tasks"
+            className={cn('rounded-sm text-sm text-red-600 underline-offset-4 hover:underline dark:text-red-400', dueFilter === 'overdue' && 'font-medium underline')}>{overview.overdue} overdue</button>}
+          {!query && overview.week > 0 && <button type="button" aria-pressed={dueFilter === 'week'} onClick={() => setDueFilter(d => d === 'week' ? '' : 'week')} title="Show only tasks due in the next 7 days"
+            className={cn('rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline', dueFilter === 'week' && 'font-medium text-foreground underline')}>{overview.week} due this week</button>}
+              </PageTitle>
+            )}
+            {(view === 'home' || view === 'archive' || view === 'trash') && <PageTitle title={pageName} />}
+          </div>
+          <div className="flex min-w-0 items-center gap-2">
+          {/* Running timers live in the top bar (0.19.13). The old sidebar circle was too small for long times like 134h05. */}
+          {running && (() => {
+            const longest = runs.reduce((x, t) => elapsed(t) > elapsed(x) ? t : x, running);
+            const one = runs.length === 1, name = running.title || 'Untitled';
+            return (
+              <DropdownMenu align="end" quiet className="w-72"
+                trigger={p => (
+                  <button {...p} type="button" onContextMenu={one ? e => { e.preventDefault(); openTask(running.id); } : undefined}
+                    aria-label={one ? `Timer running: ${name}, ${fmt(elapsed(running))}` : `${runs.length} timers running, longest ${fmt(elapsed(longest))}`}
+                    className="inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-emerald-300 bg-emerald-50 pl-3 pr-2 text-emerald-700 transition-colors hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:border-emerald-800 dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950">
+                    <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-emerald-500 ring-[3px] ring-emerald-200 dark:ring-emerald-800" />
+                    <span className="hidden min-w-0 max-w-[12rem] truncate text-[13px] font-medium lg:inline">{one ? name : `${runs.length} timers`}</span>
+                    <span aria-hidden="true" className="hidden h-4 w-px shrink-0 bg-emerald-300 dark:bg-emerald-800 lg:block" />
+                    <span className="tnum shrink-0 font-mono text-[13px]">{fmt(elapsed(one ? running : longest))}</span>
+                    <I.down className="size-3.5 shrink-0 opacity-70" />
+                  </button>
+                )}
+                items={[
+                  ...runs.map(t => ({ icon: <I.pause className="size-3.5 text-emerald-600 dark:text-emerald-400" />, label: <span className="flex min-w-0 flex-1 items-center gap-3"><span className="min-w-0 truncate">{t.title || 'Untitled'}</span><span className="tnum ml-auto shrink-0 font-mono text-xs text-muted-foreground">{fmt(elapsed(t))}</span></span>, onSelect: () => toggleTimer(t.id) })),
+                  'sep',
+                  one ? { icon: <I.arrowRight className="size-3.5" />, label: 'Open task', onSelect: () => openTask(running.id) }
+                      : { icon: <I.pause className="size-3.5" />, label: `Pause all ${runs.length}`, onSelect: pauseAll },
+                ]} />
+            );
+          })()}
           {searchOpen || query ? (
             <div className="relative w-56">
               <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -6852,8 +7537,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             </div>
           ) : (
             <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search all tasks (/)"
-              className="hidden h-9 w-56 items-center gap-2 rounded-lg border bg-card px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex">
-              <I.search className="size-4" /><span className="flex-1 text-left">Search tasks</span><kbd className="font-mono text-[11px]">/</kbd>
+              className="hidden h-9 w-56 min-w-[8.5rem] items-center gap-2 whitespace-nowrap rounded-lg border bg-card px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex">
+              <I.search className="size-4 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">Search tasks</span><kbd className="font-mono text-[11px]">/</kbd>
             </button>
           )}
           <ThemeToggle />
@@ -6874,20 +7559,11 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: 'What’s new', icon: <I.sparkles />, onSelect: openWhatsNew },
             ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
+          </div>
         </div>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="w-full px-4 pb-10 md:px-6">
-      {view === 'tasks' && (
-        <div className="mt-6 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-          <h1 className="text-lg font-semibold tracking-tight">Tasks</h1>
-          <span className="text-sm text-muted-foreground">{query ? `Searching for “${query}”` : `${overview.open} open${viewMode === 'list' ? `, grouped by ${(labels[groupBy === 'project' ? 'platform' : groupBy] || '').toLowerCase()}` : ''}`}</span>
-          {!query && overview.overdue > 0 && <button type="button" aria-pressed={dueFilter === 'overdue'} onClick={() => setDueFilter(d => d === 'overdue' ? '' : 'overdue')} title="Show only overdue tasks"
-            className={cn('rounded-sm text-sm text-red-600 underline-offset-4 hover:underline dark:text-red-400', dueFilter === 'overdue' && 'font-medium underline')}>{overview.overdue} overdue</button>}
-          {!query && overview.week > 0 && <button type="button" aria-pressed={dueFilter === 'week'} onClick={() => setDueFilter(d => d === 'week' ? '' : 'week')} title="Show only tasks due in the next 7 days"
-            className={cn('rounded-sm text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline', dueFilter === 'week' && 'font-medium text-foreground underline')}>{overview.week} due this week</button>}
-        </div>
-      )}
 
       {view === 'projects' ? (
         <BucketsView list={bucketList} tasks={all} scopeTasks={scopeTasks} onSetReason={setAddedReason} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
@@ -6935,63 +7611,22 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ) : (<>
       {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
 
-      {/* One row: status tabs, then Filter, Sort and the view switch. Active filters show in a strip below. */}
+      {/* One row: status tabs, then Filter, Sort, the view switch and Columns (or Group by). Active filters and a changed sort show as chips below. */}
       <div className="mt-3 flex min-h-9 flex-wrap items-center gap-1.5">
         <FilterTabs label="Task status" value={query ? null : filter} onChange={id => { setFilter(id); if (query) setQuery(''); }}
           items={[{ id: 'inbox', label: 'Inbox', count: counts.inbox, badge: true, icon: <I.inbox className="size-3.5" /> }, { id: 'open', label: 'Open', count: counts.open }, ...STATUSES.map(st => ({ id: st.id, label: GROUP_HEAD[st.id], count: counts[st.id], dot: st.dot })), { id: 'all', label: 'All', count: counts.all }]} />
         <div className="ml-auto flex items-center gap-1.5">
           {(() => {
-            const nOn = (bucketFilter !== 'all') + (projectFilter !== 'all') + !!dueFilter;
-            const Opt = ({ on, onPick, children }) => (
-              <button type="button" role="menuitemradio" aria-checked={on} onClick={onPick}
-                className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', on && 'font-medium')}>
-                <span className="min-w-0 flex-1 truncate">{children}</span>{on && <I.check className="size-3.5 shrink-0" />}
-              </button>
-            );
-            const Head = ({ children }) => <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">{children}</div>;
+            const nOn = (bucketFilter.length > 0) + (projectFilter.length > 0) + !!dueFilter;
             return (<>
               <Popover align="end" className="w-64 p-1"
-                trigger={p => <button {...p} type="button" title="Filter by bucket, platform or deadline"
+                trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Filter by ${labels.bucket.toLowerCase()}, ${labels.platform.toLowerCase()} or ${labels.deadline.toLowerCase()}`}
                   className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     nOn ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'bg-card text-muted-foreground hover:bg-muted hover:text-foreground')}>
                   <I.sliders className="size-3.5" />Filter{nOn ? <span className="tnum">· {nOn}</span> : null}</button>}>
-                <div role="menu" aria-label="Filters" className="max-h-[70vh] overflow-y-auto">
-                  <Head>{labels.bucket}</Head>
-                  <Opt on={bucketFilter === 'all'} onPick={() => setBucketFilter('all')}>Any {labels.bucket.toLowerCase()}</Opt>
-                  {bucketNames.map(b => <Opt key={b} on={bucketFilter === b} onPick={() => setBucketFilter(b)}>{b}</Opt>)}
-                  <Opt on={bucketFilter === 'none'} onPick={() => setBucketFilter('none')}><span className="text-muted-foreground">No {labels.bucket.toLowerCase()}</span></Opt>
-                  <div className="-mx-1 my-1 h-px bg-border" />
-                  <Head>{labels.platform}</Head>
-                  <Opt on={projectFilter === 'all'} onPick={() => setProjectFilter('all')}>Any {labels.platform.toLowerCase()}</Opt>
-                  {projects.map(x => <Opt key={x} on={projectFilter === x} onPick={() => setProjectFilter(x)}>{x}</Opt>)}
-                  <Opt on={projectFilter === 'none'} onPick={() => setProjectFilter('none')}><span className="text-muted-foreground">No {labels.platform.toLowerCase()}</span></Opt>
-                  <div className="-mx-1 my-1 h-px bg-border" />
-                  <Head>{labels.deadline}</Head>
-                  <Opt on={!dueFilter} onPick={() => setDueFilter('')}>Any time</Opt>
-                  <Opt on={dueFilter === 'overdue'} onPick={() => setDueFilter('overdue')}>Overdue</Opt>
-                  <Opt on={dueFilter === 'week'} onPick={() => setDueFilter('week')}>Due in the next 7 days</Opt>
-                  {nOn > 0 && <><div className="-mx-1 my-1 h-px bg-border" />
-                  <button type="button" onClick={() => { setBucketFilter('all'); setProjectFilter('all'); setDueFilter(''); }} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Clear all filters</button></>}
-                </div>
+                <FilterMenu f={filterCtx} />
               </Popover>
-              <Popover align="end" className="w-60 p-1"
-                trigger={p => <button {...p} type="button" aria-label={`Sort and display. Sorted by ${(({ deadline: labels.deadline, priority: labels.priority, created: 'Newest', status: labels.status, bucket: labels.bucket, assignee: labels.assignee, project: labels.platform })[sortBy] || '').toLowerCase()}`}
-                  title="Sort and display"
-                  className="inline-flex size-9 items-center justify-center rounded-lg border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><I.updown className="size-4" /></button>}>
-                <div role="menu" aria-label="Sort and display" className="max-h-[70vh] overflow-y-auto">
-                  <Head>Sort by</Head>
-                  {[['deadline', labels.deadline], ['priority', labels.priority], ['created', 'Newest'], ['status', labels.status], ['bucket', labels.bucket], ['assignee', labels.assignee], ['project', labels.platform]].map(([v, l]) => <Opt key={v} on={sortBy === v} onPick={() => setSortBy(v)}>{l}</Opt>)}
-                  {viewMode === 'list' && <><div className="-mx-1 my-1 h-px bg-border" /><Head>Group by</Head>
-                    {GROUP_OPTIONS.map(k => <Opt key={k} on={groupBy === k} onPick={() => setGroupBy(k)}>{labels[k === 'project' ? 'platform' : k]}</Opt>)}</>}
-                  {viewMode === 'table' && <><div className="-mx-1 my-1 h-px bg-border" /><Head>Columns</Head>
-                    {TABLE_COLS.filter(c => c.key !== 'task').map(c => (
-                      <label key={c.key} className="flex h-8 cursor-default items-center gap-2.5 rounded-sm px-2 text-sm hover:bg-accent">
-                        <Checkbox checked={!cols.hidden.includes(c.key)} onChange={v => hideCol(c.key, !v)} label={labels[c.key]} />{labels[c.key]}
-                      </label>
-                    ))}
-                    <button type="button" onClick={() => setCols({ widths: {}, hidden: [] })} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Show all and reset widths</button></>}
-                </div>
-              </Popover>
+              <SortButton sorts={sorts} setSorts={setSorts} labels={labels} />
             </>);
           })()}
           <div role="group" aria-label="View" className="flex h-9 items-center gap-0.5 rounded-lg bg-muted p-1">
@@ -7001,15 +7636,45 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 viewMode === id ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground')}>{icon}</button>
           ))}
           </div>
+          {/* Columns (table) or Group by (grouped) sit beside the view switch; sorting moved to the chip row. */}
+          {viewMode !== 'board' && (() => {
+            const isTable = viewMode === 'table';
+            const shownCols = TABLE_COLS.filter(c => c.key !== 'task' && !cols.hidden.includes(c.key)).length;
+            const tip = isTable ? 'Columns' : `Group by ${labels[groupBy === 'project' ? 'platform' : groupBy].toLowerCase()}`;
+            return (
+              <Popover align="end" className="w-56 p-1"
+                trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={tip} aria-label={isTable ? `Columns, ${shownCols} shown` : tip}
+                  className={cn('inline-flex size-9 items-center justify-center rounded-lg border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-muted text-foreground')}>
+                  {isTable ? <I.columns className="size-4" /> : <I.layers className="size-4" />}</button>}>
+                {isTable ? (
+                  <div role="group" aria-label="Columns">
+                    <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">Columns</div>
+                    {orderedCols.filter(c => c.key !== 'task').map(c => (
+                      <label key={c.key} className="flex h-8 cursor-default items-center gap-2.5 rounded-sm px-2 text-sm hover:bg-accent">
+                        <Checkbox checked={!cols.hidden.includes(c.key)} onChange={v => hideCol(c.key, !v)} label={labels[c.key]} />{labels[c.key]}
+                      </label>
+                    ))}
+                    <div className="-mx-1 my-1 h-px bg-border" />
+                    <button type="button" onClick={() => setCols({ widths: {}, hidden: [], order: [] })} className="flex h-8 w-full items-center rounded-sm px-2 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground">Show all, reset widths and order</button>
+                  </div>
+                ) : (
+                  <div role="menu" aria-label="Group by">
+                    <div className="px-2 pb-1 pt-2 text-xs font-medium text-muted-foreground">Group by</div>
+                    {GROUP_OPTIONS.map(k => (
+                      <button key={k} type="button" role="menuitemradio" aria-checked={groupBy === k} onClick={() => setGroupBy(k)}
+                        className={cn('flex h-8 w-full items-center gap-2 rounded-sm px-2 text-left text-sm hover:bg-accent focus-visible:bg-accent focus-visible:outline-none', groupBy === k && 'font-medium')}>
+                        <span className="min-w-0 flex-1 truncate">{labels[k === 'project' ? 'platform' : k]}</span>{groupBy === k && <I.check className="size-3.5 shrink-0" />}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+            );
+          })()}
         </div>
       </div>
-      {(query || bucketFilter !== 'all' || projectFilter !== 'all' || dueFilter) && (() => {
-        const Chip = ({ children, onRemove, label }) => (
-          <span className="inline-flex h-6 items-center gap-1 rounded-md border bg-card pl-2 pr-0.5 text-xs">
-            {children}<button type="button" onClick={onRemove} aria-label={`Remove ${label} filter`} className="flex size-5 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3" /></button>
-          </span>
-        );
-        const nm = (v, noun) => v === 'none' ? `No ${noun.toLowerCase()}` : v;
+      {!query && <FilterChips f={filterCtx} sort={{ sorts, setSorts, labels }} />}
+      {query && (() => {
         return (
           <div className="mt-2 flex min-h-9 flex-wrap items-center gap-1.5 rounded-lg border border-dashed px-3 py-1.5 text-xs text-muted-foreground">
             {query ? (
@@ -7018,13 +7683,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 <label className="inline-flex items-center gap-1.5"><Checkbox checked={incArchived} onChange={setIncArchived} label="Include archived" />Include archived</label>
                 {workspaces.length > 1 && <label className="inline-flex items-center gap-1.5"><Checkbox checked={allWs} onChange={setAllWs} label="All workspaces" />All workspaces</label>}
               </span>
-            ) : <>
-              <span className="mr-0.5">Filtered:</span>
-              {bucketFilter !== 'all' && <Chip label={labels.bucket.toLowerCase()} onRemove={() => setBucketFilter('all')}>{labels.bucket}: <span className="font-medium text-foreground">{nm(bucketFilter, labels.bucket)}</span></Chip>}
-              {projectFilter !== 'all' && <Chip label={labels.platform.toLowerCase()} onRemove={() => setProjectFilter('all')}>{labels.platform}: <span className="font-medium text-foreground">{nm(projectFilter, labels.platform)}</span></Chip>}
-              {dueFilter && <Chip label="deadline" onRemove={() => setDueFilter('')}><span className="font-medium text-foreground">{dueFilter === 'overdue' ? 'Overdue' : 'Due in the next 7 days'}</span></Chip>}
-              <button type="button" onClick={() => { setBucketFilter('all'); setProjectFilter('all'); setDueFilter(''); }} className="ml-1 rounded-sm px-1 hover:text-foreground hover:underline underline-offset-4">Clear</button>
-            </>}
+            ) : null}
           </div>
         );
       })()}
@@ -7045,10 +7704,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           </Empty>
         ) : shown.length === 0 ? (
           <Empty icon={<I.clipboard />} title={filter === 'all' ? 'Nothing here yet' : filter === 'inbox' ? 'Inbox is empty' : filter === 'open' ? 'Nothing open' : `Nothing in ${GROUP_HEAD[filter].toLowerCase()}`} description="Try another filter or project to see the rest of your tasks.">
-            <Button variant="outline" size="sm" onClick={() => { setFilter('all'); setProjectFilter('all'); }}>Show all tasks</Button>
+            <Button variant="outline" size="sm" onClick={() => { setFilter('all'); setProjectFilter([]); setBucketFilter([]); setDueFilter(''); }}>Show all tasks</Button>
           </Empty>
         ) : (
-          <div className="overflow-x-auto">
+          <div ref={tableWrap} className="relative overflow-x-auto">
+            {colDrag && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 rounded-full bg-foreground/60 transition-[left] duration-150 ease-in-out" style={{ left: colDrag.line }} />}
+            {colDrag && <div aria-hidden="true" className="pointer-events-none fixed z-[90] inline-flex h-7 items-center rounded-md border bg-popover px-2.5 text-xs font-medium text-popover-foreground shadow-md" style={{ left: colDrag.x + 12, top: colDrag.y + 10 }}>{colDrag.label}</div>}
             <table className="w-full table-fixed border-collapse text-[13px]" style={{ minWidth: visibleCols.reduce((n, c) => n + (c.key === 'task' ? 320 : colW(c)), 36) }}>
               <colgroup>
                 {visibleCols.map(c => <col key={c.key} style={c.key === 'task' ? undefined : { width: colW(c) }} />)}
@@ -7059,16 +7720,24 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                   {visibleCols.map(c => {
                     const icon = { task: <span className="text-[11px] font-semibold">Aa</span>, status: <I.loader />, bucket: <I.layers />, assignee: <I.user />, deadline: <I.calendar />, priority: <I.flag />, time: <I.timer /> }[c.key];
                     return (
-                      <th key={c.key} className="relative h-8 border-r p-0 font-normal">
+                      <th key={c.key} data-col={c.key} className={cn('relative h-8 border-r p-0 font-normal transition-[background-color,opacity] duration-200 ease-in-out', colDrag && colDrag.key === c.key && 'bg-muted opacity-50', movedCol === c.key && 'bg-muted text-foreground')}>
                         <DropdownMenu align="start"
                           trigger={p => (
-                            <button {...p} type="button" title={`${labels[c.key]}: rename, hide or resize`}
-                              className="flex h-8 w-full items-center gap-1.5 px-2.5 text-left hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:bg-muted/60 [&_svg]:size-3.5">
+                            <button {...p} type="button" title={c.key === 'task' ? `${labels[c.key]}: rename` : `${labels[c.key]}: drag to move, click to rename, hide or resize`}
+                              onPointerDown={e => startColDrag(e, c)}
+                              className={cn('flex h-8 w-full items-center gap-1.5 px-2.5 text-left hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:bg-muted/60 [&_svg]:size-3.5', c.key !== 'task' && 'active:cursor-grabbing')}>
                               {icon}<span className="truncate">{labels[c.key]}</span>
                             </button>
                           )}
                           items={[
                             { label: 'Rename', icon: <I.pencil />, onSelect: () => setLabelEdit(c.key) },
+                            ...(c.key === 'task' ? [] : (() => {
+                              const vis = movableKeys.filter(k => !cols.hidden.includes(k)), i = vis.indexOf(c.key);
+                              return [
+                                ...(i > 0 ? [{ label: 'Move left', icon: <I.left />, onSelect: () => nudgeCol(c.key, -1) }] : []),
+                                ...(i < vis.length - 1 ? [{ label: 'Move right', icon: <I.right />, onSelect: () => nudgeCol(c.key, 1) }] : []),
+                              ];
+                            })()),
                             ...(c.key === 'task' ? [] : [
                               { label: 'Hide column', icon: <I.eye />, onSelect: () => hideCol(c.key, true) },
                               ...(cols.widths[c.key] ? [{ label: 'Reset width', icon: <I.reset />, onSelect: () => setColWidth(c.key, null) }] : []),
@@ -7107,7 +7776,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                                 {on ? <I.pause /> : <I.play className="translate-x-px" />}
                               </button>
                             )}
-                            <button type="button" title={t.title}
+                            <button type="button"
                               onClick={() => openTask(t.id)}
                               onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openTask(t.id); } }}
                               onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
@@ -7115,10 +7784,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                             {(() => {
                               const editing = cellEdit && cellEdit.id === t.id && cellEdit.field === 'project';
                               return t.project ? (
-                                <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Change ${labels.platform.toLowerCase()}`}
-                                  className={cn('inline-flex h-5 max-w-[11rem] shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 text-[11px] text-foreground/75 transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 bg-muted')}>
-                                  <PIcon name={t.project} className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{t.project}</span>
-                                </button>
+                                // 0.19.14: icon only. The name floats open over the row on hover or focus (see .pchip in index.css).
+                                <span className="pchip-slot">
+                                  <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Change ${labels.platform.toLowerCase()}`} aria-label={`${labels.platform}: ${t.project}`} data-open={editing ? '' : undefined}
+                                    className={cn('pchip inline-flex h-5 items-center rounded-md border bg-background px-1 text-[11px] text-foreground/75 hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 text-foreground')}>
+                                    <PIcon name={t.project} className="size-3 shrink-0 text-muted-foreground" /><span className="pchip-name"><span><span>{t.project}</span></span></span>
+                                  </button>
+                                </span>
                               ) : t.inbox ? null : (
                                 <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Add a ${labels.platform.toLowerCase()}`}
                                   className={cn('inline-flex h-5 shrink-0 items-center rounded-md border border-dashed px-1.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 [@media(hover:none)]:opacity-100', editing && 'opacity-100')}>
@@ -7153,20 +7825,24 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           : <span className="text-muted-foreground/60">Empty</span>],
                         ['deadline', t.deadline ? <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', dueCls[d.tone])} title={deadlineLock(t) ? lockText(deadlineLock(t), labels.bucket, t.deadline !== deadlineLock(t).end) : undefined}>{d.text}{deadlineLock(t) && t.deadline === deadlineLock(t).end && <I.layers className="size-3 shrink-0 opacity-50" aria-label={`${labels.bucket} end date`} />}</span> : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
-                      ].filter(([field]) => !cols.hidden.includes(field)).map(([field, content]) => {
+                        ['time', null],
+                      ].filter(([field]) => !cols.hidden.includes(field)).sort((a, b) => movableKeys.indexOf(a[0]) - movableKeys.indexOf(b[0])).map(([field, content]) => {
+                        const dim = colDrag && colDrag.key === field && 'opacity-50';
+                        if (field === 'time') return (
+                          <td key="time" className={cn(cell, 'px-1 transition-opacity duration-150', dim)}>
+                            <span className={cn('tnum inline-flex h-6 w-full items-center px-1.5 text-xs', on ? 'font-semibold text-emerald-600 dark:text-emerald-400' : elapsed(t) ? 'text-foreground/80' : 'text-muted-foreground/60')}>{fmt(elapsed(t))}</span>
+                          </td>
+                        );
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
                         return (
                           <td key={field} tabIndex={0} role="button" aria-label={`Change ${(labels[field] || field).toLowerCase()} of ${t.title || 'Untitled'}`}
                             onClick={e => openCell(t.id, field, e.currentTarget)}
                             onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openCell(t.id, field, e.currentTarget); } }}
-                            className={cn(cell, 'cursor-pointer transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring))]', active && 'bg-muted/60 shadow-[inset_0_0_0_1px_hsl(var(--ring))]')}>
+                            className={cn(cell, 'cursor-pointer transition-[background-color,opacity] duration-150 hover:bg-muted/60 focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_hsl(var(--ring))]', active && 'bg-muted/60 shadow-[inset_0_0_0_1px_hsl(var(--ring))]', dim)}>
                             <div className="flex min-w-0 items-center">{content}</div>
                           </td>
                         );
                       })}
-                      {!cols.hidden.includes('time') && <td className={cn(cell, 'px-1')}>
-                        <span className={cn('tnum inline-flex h-6 w-full items-center px-1.5 text-xs', on ? 'font-semibold text-emerald-600 dark:text-emerald-400' : elapsed(t) ? 'text-foreground/80' : 'text-muted-foreground/60')}>{fmt(elapsed(t))}</span>
-                      </td>}
                       <td className="h-[34px] px-0.5 text-center">
                         <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                           <DropdownMenu
@@ -7221,7 +7897,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </>
 
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -7266,7 +7942,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No ${labels.platform.toLowerCase()}”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this ${labels.platform.toLowerCase()} will be removed.` : ''}`;
         })() : ''}
         confirmLabel={`Delete ${labels.platform.toLowerCase()}`} onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
-      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} onOpenNotifications={() => { setRulesOpen(false); setSettingsOpen('notifications'); }} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket}
+      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} onOpenNotifications={() => { setRulesOpen(false); setSettingsOpen('notifications'); }} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket} stages={stages} buckets={bucketNames}
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
       <ShortcutsDialog open={false} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
@@ -7340,7 +8016,7 @@ function UpdateCard({ up }) {
       <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><I.download className="size-3.5" /></span>
       <div className="min-w-0 flex-1">
         <div className="font-medium">Version {up.update.version} is ready</div>
-        {up.update.body && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground" title={up.update.body}>{up.update.body}</div>}
+        {up.update.body && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{up.update.body}</div>}
         {up.progress === null ? (
           <div className="mt-2 flex gap-2">
             <Button size="sm" className="h-7 px-2.5" onClick={up.install}>Install and restart</Button>

@@ -1,3 +1,17 @@
+A new top of the window, new Filter and Sort, movable columns, more automations, and smoother motion.
+- Title bar: the Windows title bar is gone. A slim top row shows the workspace and page, the cloud status, and the app's own minimize, maximize and close buttons (close turns red on hover). Drag the row to move the window and double-click it to maximize. Close still hides to the tray when that setting is on. Pointing at maximize no longer shows the Windows 11 snap layouts; Win + Z and dragging to a screen edge still snap.
+- Page header: every page has a big title and summary, with search, the theme button, ⋯ and Create task on the right. The theme button switches light and dark in one click; Match Windows is in Settings > Appearance.
+- Timers: running timers moved from the sidebar to a green pill next to search, so long times are no longer cut off. Click it to pause one timer or all of them. With one timer it shows the task's name, and the menu adds Open task. In a narrow window the pill keeps just the dot, the time and the arrow.
+- Filter: a new menu with a search box and Bucket, Platform and Deadline, each with checkboxes and open-task counts. Typing searches all three and Enter picks the top match. Filters of the same kind share one chip, like "Homepage +2", and + Filter offers only the ones you aren't using. Deadline has a new choice, No deadline.
+- Sort: works like Filter. The button turns blue with a count once you change the sort, and each rule is a chip under the toolbar that you can click to change, with Reset to go back to Deadline.
+- Columns: drag a heading in the task table left or right to move it (Esc cancels), or use Move left / Move right in the heading's menu. The Columns button lists them in their order, and "Show all, reset widths and order" puts everything back.
+- Automations: new triggers (a timer starts, a timer runs longer than some hours, a task has been in a status for some days), new actions (pause its timer, set its priority), and "Only if…" lines so a rule runs only for matching tasks. New ideas at the bottom use them.
+- Full text on hover: any text cut off with "…" shows in full in a tooltip after a short pause, everywhere in the app. An item's own hint shows as a second line.
+- Platform chips: in the task table a platform is just its icon, and opens to show the name when you point at it.
+- Motion: menus, dialogs, the task panel, toasts and the light/dark switch ease in and out over 150–200ms. Typing, dragging and scrolling stay instant, and nothing animates when Windows is set to reduce motion.
+- Supabase: no SQL changes. Filters, sort and column order stay on each PC, as before. New automations sync like the others, but a PC still on 0.19.13 shows them switched off and doesn't run them, so update all your PCs and switch the new automations on or off only on updated ones.
+- Not yet tested on real Windows: the new window buttons and dragging the top row. Please check them after updating.
+
 A new Settings with your profile and status, platform icons, and time summary tiles.
 - Profile: a new Profile page in Settings, with your photo, display name, role, phone, status and time zone (from this PC's clock). It syncs to your other PCs. Members, beside it, lists everyone in your workspaces, which for now is just you.
 - Status: click your photo at the bottom of the sidebar for the new menu with your status, Profile, Settings, workspace switching and Sign out. Pick Available, Busy, Do not disturb or Away, add a note and choose when it clears. Do not disturb mutes alerts.

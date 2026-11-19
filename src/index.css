@@ -56,10 +56,21 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 @keyframes zoom-in{from{opacity:0;transform:translate(-50%,-48%) scale(.96)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
 @keyframes pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
 @keyframes ping{75%,100%{transform:scale(2);opacity:0}}
-.anim-sheet{animation:sheet-in .3s cubic-bezier(.32,.72,0,1)}
-.anim-fade{animation:fade-in .15s ease-out}
-.anim-zoom{animation:zoom-in .15s ease-out}
-.anim-pop{animation:pop-in .12s ease-out}
+/* Motion (0.19.14): everything that opens, closes, appears or changes eases in and out over 150-200ms, never longer.
+   Opening uses the *-in animations; .anim-out swaps in the matching *-out one while it closes (see usePresence in App.jsx). */
+.anim-sheet{animation:sheet-in .2s cubic-bezier(.4,0,.2,1) both}
+.anim-fade{animation:fade-in .15s cubic-bezier(.4,0,.2,1) both}
+.anim-zoom{animation:zoom-in .15s cubic-bezier(.4,0,.2,1) both}
+.anim-pop{animation:pop-in .15s cubic-bezier(.4,0,.2,1) both}
+@keyframes fade-out{from{opacity:1}to{opacity:0}}
+@keyframes pop-out{from{opacity:1;transform:scale(1)}to{opacity:0;transform:scale(.96)}}
+@keyframes zoom-out{from{opacity:1;transform:translate(-50%,-50%) scale(1)}to{opacity:0;transform:translate(-50%,-48%) scale(.96)}}
+@keyframes sheet-out{from{transform:translateX(0)}to{transform:translateX(100%)}}
+.anim-out{pointer-events:none!important}
+.anim-fade.anim-out{animation:fade-out .15s cubic-bezier(.4,0,.2,1) both}
+.anim-pop.anim-out{animation:pop-out .15s cubic-bezier(.4,0,.2,1) both}
+.anim-zoom.anim-out{animation:zoom-out .15s cubic-bezier(.4,0,.2,1) both}
+.anim-sheet.anim-out{animation:sheet-out .15s cubic-bezier(.4,0,.2,1) both}
 .anim-ping{animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite}
 @keyframes cloud-sync{0%,100%{transform:translateY(0);opacity:1}50%{transform:translateY(-1.5px);opacity:.55}}
 .anim-cloud-sync{animation:cloud-sync 1.6s ease-in-out infinite}
@@ -79,7 +90,7 @@ html,body,#root{height:100%}
 .capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:inset 0 0 0 1px hsl(var(--border))}
 
 /* Quiet menus (0.19.12): grey icons that brighten on the row you point at. */
-.menu-quiet>button>svg{color:hsl(var(--muted-foreground));transition:color .15s}
+.menu-quiet>button>svg{color:hsl(var(--muted-foreground));transition:color .15s cubic-bezier(.4,0,.2,1)}
 .menu-quiet>button:hover>svg,.menu-quiet>button:focus>svg{color:hsl(var(--foreground))}
 
 /* Scroll bars (0.19.12): a thin, faint line that follows the theme. It widens and brightens a little
@@ -88,7 +99,7 @@ html,body,#root{height:100%}
    keeps its own state. */
 @property --sb-a{syntax:'<number>';inherits:true;initial-value:.14}
 @property --sb-pad{syntax:'<length>';inherits:true;initial-value:4.5px}
-*{--sb-a:.14;--sb-pad:4.5px;transition:--sb-a .25s ease,--sb-pad .2s ease}
+*{--sb-a:.14;--sb-pad:4.5px;transition:--sb-a .2s ease-in-out,--sb-pad .2s ease-in-out}
 [data-sb-scroll]{--sb-a:.3;--sb-pad:3.5px;transition:--sb-a .12s ease,--sb-pad .12s ease}
 [data-sb-hover]{--sb-a:.5;--sb-pad:2px;transition:--sb-a .12s ease,--sb-pad .12s ease}
 ::-webkit-scrollbar{width:12px;height:12px;background:transparent}
@@ -100,7 +111,43 @@ html,body,#root{height:100%}
 /* Edge fades (0.19.12): a scrolling area with .scroll-fade softens the edge that has more content past it. */
 @property --fade-t{syntax:'<length>';inherits:false;initial-value:0px}
 @property --fade-b{syntax:'<length>';inherits:false;initial-value:0px}
-.scroll-fade{--fade-t:0px;--fade-b:0px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);transition:--fade-t .2s ease,--fade-b .2s ease,--sb-a .25s ease,--sb-pad .2s ease}
+.scroll-fade{--fade-t:0px;--fade-b:0px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);transition:--fade-t .2s ease-in-out,--fade-b .2s ease-in-out,--sb-a .2s ease-in-out,--sb-pad .2s ease-in-out}
 .scroll-fade[data-fade-top]{--fade-t:28px}
 .scroll-fade[data-fade-bottom]{--fade-b:28px}
 @media (prefers-reduced-motion:reduce){*,.scroll-fade{transition:none}}
+
+/* Full-text tooltips: cut-off text shows all of it on hover, after a short pause.
+   src/truncation-tips.js decides when. Same look as the app's label tooltips (bg-foreground, text-background, text-xs). */
+.trunc-tip{position:fixed;z-index:200;display:none;flex-direction:column;gap:2px;max-width:min(360px,calc(100vw - 16px));
+  padding:4px 8px;border-radius:calc(var(--radius) - 2px);background:hsl(var(--foreground));color:hsl(var(--background));
+  font-size:12px;line-height:1.375;font-weight:400;letter-spacing:normal;text-align:left;white-space:normal;overflow-wrap:anywhere;
+  pointer-events:none;user-select:none;opacity:0;transition:opacity .15s ease-in-out}
+.trunc-tip[data-open]{opacity:1}
+.trunc-tip-note{opacity:.65}
+@media (prefers-reduced-motion:reduce){.trunc-tip{transition:none}}
+
+/* Platform chip in the task table (0.19.14): only the platform's icon shows. On hover or keyboard focus,
+   and while its picker is open, the name eases open over whatever sits to its right, so the row never moves. */
+.pchip-slot{position:relative;display:inline-block;width:22px;height:20px;flex-shrink:0}
+.pchip{position:absolute;left:0;top:0;z-index:1;width:max-content;white-space:nowrap;
+  transition:border-color .2s ease-in-out,color .2s ease-in-out,box-shadow .2s ease-in-out}
+.pchip:hover,.pchip:focus-visible,.pchip[data-open]{z-index:20;box-shadow:0 4px 12px hsl(0 0% 0% / .16)}
+.pchip-name{display:grid;grid-template-columns:0fr;opacity:0;margin-left:0;
+  transition:grid-template-columns .2s ease-in-out,opacity .2s ease-in-out,margin-left .2s ease-in-out}
+.pchip-name>span{min-width:0;overflow:hidden} /* clips the name cleanly while it opens */
+.pchip-name>span>span{display:block;width:max-content;max-width:9.5rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap} /* "…" only for a name that is really too long */
+.pchip:hover .pchip-name,.pchip:focus-visible .pchip-name,.pchip[data-open] .pchip-name{grid-template-columns:1fr;opacity:1;margin-left:4px}
+/* The row's rename pencil steps aside while the chip is open, so the two never overlap. */
+td:has(.pchip:hover,.pchip:focus-visible,.pchip[data-open]) button[aria-label^="Rename"]{opacity:0;pointer-events:none}
+
+/* Motion (0.19.14): hover, pressed and selected colours fade over 150ms instead of snapping, on every
+   button, link, menu item, table cell and field. :where() keeps this at zero weight, so any element
+   that sets its own transition keeps it. Focus rings (box-shadow, outline) stay instant on purpose. */
+:where(button,a,summary,label,input,select,textarea,th,td,tr,[role=button],[role=menuitem],[role=menuitemcheckbox],[role=menuitemradio],[role=option],[role=tab],[role=checkbox],[role=switch],[role=radio]){
+  transition-property:color,background-color,border-color,text-decoration-color,fill,stroke,opacity,--sb-a,--sb-pad;
+  transition-duration:.15s;transition-timing-function:cubic-bezier(.4,0,.2,1)}
+/* Tailwind's transition helpers ease in and out too, and never run longer than 200ms. */
+.transition,.transition-all,.transition-colors,.transition-opacity,.transition-transform,.transition-shadow{transition-timing-function:cubic-bezier(.4,0,.2,1)}
+/* Toasts (Sonner): same look, but they slide and stack over 200ms instead of 400ms. */
+[data-sonner-toaster] [data-sonner-toast]:not([data-swiping=true]){transition-duration:.2s!important;transition-timing-function:cubic-bezier(.4,0,.2,1)!important}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important}.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-out{animation:none!important}}

@@ -63,7 +63,7 @@ export function setTheme(mode, from) {
     vt.ready.then(() => {
       root.animate(
         { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${r}px at ${x}px ${y}px)`] },
-        { duration: 520, easing: 'cubic-bezier(.45,0,.2,1)', pseudoElement: '::view-transition-new(root)' },
+        { duration: 200, easing: 'cubic-bezier(.4,0,.2,1)', pseudoElement: '::view-transition-new(root)' },
       );
     }).catch(() => {});
     vt.finished.finally(() => root.classList.remove('theme-switching'));
