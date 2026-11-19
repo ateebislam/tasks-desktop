@@ -1,6 +1,6 @@
 [package]
 name = "tasks"
-version = "0.19.11"
+version = "0.19.12"
 description = "A simple personal task manager"
 edition = "2021"
 

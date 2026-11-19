@@ -1,3 +1,19 @@
+Status and priority chips, a hover sidebar, no tabs, and grouped Automations.
+- Status and priority: both are colored chips in the table, list and board. Status has a colored dot, and priority has bars, with High in red.
+- Sidebar: the left rail is a slim row of icons that opens with page names when you point at it and closes when you move away. The panel button at the top keeps it open; that choice stays on this PC.
+- Tabs: the tab bar is gone. A task opens in the side panel, and Ctrl+click or middle-click does the same. An old "open in new tab" setting now opens the panel.
+- Cloud sync note: beside the page title, a quiet note says when your work was last saved to the cloud, or that you're offline. Point at it to sync again now; click it to open cloud sync.
+- ⋯ menu: grouped into Automations, Statuses and Platforms; Time summary, Archive and Trash; then Settings, Keyboard shortcuts and What's new. Automations shows how many are on, and Time summary is a switch.
+- Automations: grouped by the event that sets them off, written as a sentence. One event can do several things, each step can be switched on or off, and Ideas at the bottom add common ones.
+- Notifications: several of the same kind arriving together become one, like "12 tasks are overdue", naming the first few.
+- Messages (toasts) now use Sonner for their animation and stacking, and look exactly as before. Undo is still on the message, and the update card has its own spot at the bottom left.
+- Scroll bars: a thin, faint line that follows the theme, a little wider while scrolling and wider still when you point at it. Long windows fade at the edge when there's more to see.
+- Fixed: Automations can assign to a new person again (type a name and pick Assign to it), on task and bucket automations.
+- Fixed: the time summary showed twice on the Tasks page.
+- Fixed: a scroll bar could stay wide and bright after the pointer left the window.
+- Fixed (sync): when a PC came back online, an older copy of a task or setting could arrive after a newer one and be kept, leaving that PC out of date, and an edit there could put the old content back everywhere. Each PC now ignores any copy older than the newest it has seen.
+- Nothing new to set up in Supabase: no SQL changes, and nothing new is synced. The sidebar pin stays on each PC.
+
 Quick capture is a plain solid panel, with no glass.
 - Quick capture: the frosted glass is gone. The window is a solid panel in the app's colors, with a thin border and rounded corners, so it reads the same over any background.
 - Everything else works the same: the Bucket and Platform buttons, @ and #, the Inbox or Open hint, and Enter to save.

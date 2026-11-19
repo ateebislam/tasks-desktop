@@ -8,8 +8,10 @@ import '@fontsource/geist-mono/500.css';
 import './index.css';
 import Root from './App.jsx';
 import { applyTheme, readTheme, installThemeShortcut } from './theme.js';
+import { installScrollbars } from './scrollbars.js';
 
 applyTheme(readTheme());
 installThemeShortcut();
+installScrollbars();
 
 createRoot(document.getElementById('root')).render(<Root />);

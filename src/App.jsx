@@ -9,10 +9,12 @@ import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
 import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow, LogicalSize } from '@tauri-apps/api/window';
+import { updateFade } from './scrollbars.js';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { applyTheme, readTheme, saveTheme } from './theme.js';
+import { Toaster, toast as sonner } from './components/ui/sonner.jsx';
 import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc } from './cloud.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
@@ -25,6 +27,7 @@ const Icon = ({ children, className }) => (
 const I = {
   plus: p => <Icon {...p}><path d="M5 12h14"/><path d="M12 5v14"/></Icon>,
   play: p => <Icon {...p}><polygon points="6 3 20 12 6 21 6 3"/></Icon>,
+  panelLeft: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></Icon>,
   pause: p => <Icon {...p}><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></Icon>,
   more: p => <Icon {...p}><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></Icon>,
   calendar: p => <Icon {...p}><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></Icon>,
@@ -40,6 +43,8 @@ const I = {
   clipboard: p => <Icon {...p}><rect width="8" height="4" x="8" y="2" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/><path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></Icon>,
   timer: p => <Icon {...p}><line x1="10" x2="14" y1="2" y2="2"/><line x1="12" x2="15" y1="14" y2="11"/><circle cx="12" cy="14" r="8"/></Icon>,
   cloud: p => <Icon {...p}><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></Icon>,
+  cloudCheck: p => <Icon {...p}><path d="m17 15-5.5 5.5L9 18"/><path d="M5 17.743A7 7 0 1 1 15.71 10h1.79a4.5 4.5 0 0 1 1.5 8.742"/></Icon>,
+  cloudOff: p => <Icon {...p}><path d="m2 2 20 20"/><path d="M5.782 5.782A7 7 0 0 0 9 19h8.5a4.5 4.5 0 0 0 1.307-.193"/><path d="M21.532 16.5A4.5 4.5 0 0 0 17.5 10h-1.79A7.008 7.008 0 0 0 10 5.07"/></Icon>,
   hdd: p => <Icon {...p}><line x1="22" x2="2" y1="12" y2="12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/><line x1="6" x2="6.01" y1="16" y2="16"/><line x1="10" x2="10.01" y1="16" y2="16"/></Icon>,
   zap: p => <Icon {...p}><path d="M4 14a1 1 0 0 1-.78-1.63l9.9-10.2a.5.5 0 0 1 .86.46l-1.92 6.02A1 1 0 0 0 13 10h7a1 1 0 0 1 .78 1.63l-9.9 10.2a.5.5 0 0 1-.86-.46l1.92-6.02A1 1 0 0 0 11 14z"/></Icon>,
   folder: p => <Icon {...p}><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></Icon>,
@@ -75,12 +80,15 @@ const I = {
   panelCenter: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><rect width="10" height="10" x="7" y="7" rx="1"/></Icon>,
   maximize: p => <Icon {...p}><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></Icon>,
   home: p => <Icon {...p}><path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8"/><path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></Icon>,
-  tab: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 3v6"/></Icon>,
   table: p => <Icon {...p}><path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/></Icon>,
   rows: p => <Icon {...p}><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></Icon>,
   kanban: p => <Icon {...p}><path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/></Icon>,
   refresh: p => <Icon {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></Icon>,
   user: p => <Icon {...p}><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></Icon>,
+  gear: p => <Icon {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></Icon>,
+  sparkles: p => <Icon {...p}><path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/></Icon>,
+  archive: p => <Icon {...p}><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></Icon>,
+  circleDot: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></Icon>,
 };
 
 /* =========================================================
@@ -233,7 +241,9 @@ function Floating({ anchorRef, open, align = 'start', matchWidth, minMatch, clas
     </div>, document.body);
 }
 
-function DropdownMenu({ trigger, items, align = 'end' }) {
+/* quiet: grey icons that brighten on hover, as in the more-tools menu (0.19.12).
+   An item with `toggle` (true/false) shows a switch and keeps the menu open. */
+function DropdownMenu({ trigger, items, align = 'end', quiet = false, className }) {
   const [open, setOpen] = useState(false);
   const a = useRef(null), p = useRef(null);
   useDismiss(open, setOpen, [a, p]);
@@ -247,14 +257,20 @@ function DropdownMenu({ trigger, items, align = 'end' }) {
   return (
     <>
       {trigger({ ref: a, open, onClick: e => { e.stopPropagation(); setOpen(o => !o); }, 'aria-haspopup': 'menu', 'aria-expanded': open })}
-      <Floating anchorRef={a} panelRef={p} open={open} align={align} className="min-w-[10rem] p-1">
-        <div role="menu" onKeyDown={onKey} onClick={e => e.stopPropagation()}>
+      <Floating anchorRef={a} panelRef={p} open={open} align={align} className={cn('min-w-[10rem] p-1', className)}>
+        <div role="menu" className={quiet ? 'menu-quiet' : undefined} onKeyDown={onKey} onClick={e => e.stopPropagation()}>
           {items.map((it, i) => it === 'sep'
             ? <div key={i} className="-mx-1 my-1 h-px bg-muted" />
-            : <button key={i} role="menuitem" type="button" onClick={() => { setOpen(false); it.onSelect(); }}
-                className={cn('relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent focus:bg-accent focus:text-accent-foreground', it.destructive && 'text-destructive hover:text-destructive focus:text-destructive')}>
+            : <button key={i} role={it.toggle !== undefined ? 'menuitemcheckbox' : 'menuitem'} aria-checked={it.toggle !== undefined ? !!it.toggle : undefined} type="button"
+                onClick={() => { if (it.toggle === undefined) setOpen(false); it.onSelect(); }}
+                className={cn('group relative flex w-full cursor-default select-none items-center gap-2 rounded-sm px-2 py-1.5 text-sm outline-none transition-colors hover:bg-accent focus:bg-accent focus:text-accent-foreground',
+                  quiet && 'gap-2.5 rounded-md',
+                  it.destructive && 'text-destructive hover:text-destructive focus:text-destructive')}>
                 {it.icon}{it.label}
-                {it.shortcut && <span className="ml-auto text-xs tracking-widest opacity-60">{it.shortcut}</span>}
+                {it.toggle !== undefined
+                  ? <span aria-hidden="true" className={cn('ml-auto inline-flex h-4 w-7 shrink-0 items-center rounded-full p-0.5 transition-colors', it.toggle ? 'bg-primary' : 'bg-input')}>
+                      <span className={cn('block size-3 rounded-full bg-background shadow-sm transition-transform', it.toggle && 'translate-x-3')} /></span>
+                  : it.shortcut && <span className={cn('ml-auto text-xs', quiet ? 'tnum text-muted-foreground' : 'tracking-widest opacity-60')}>{it.shortcut}</span>}
               </button>)}
         </div>
       </Floating>
@@ -264,7 +280,7 @@ function DropdownMenu({ trigger, items, align = 'end' }) {
 
 /* Select: the app's own dropdown, used everywhere instead of the system one.
    options: [{ value, label, node?, icon?, group?, divider? }] */
-function Select({ value, onChange, options, placeholder = 'Choose…', variant = 'field', className, id, label, footer, searchable, renderValue, icon, menuClassName }) {
+function Select({ value, onChange, options, placeholder = 'Choose…', variant = 'field', className, id, label, footer, searchable, renderValue, icon, menuClassName, creatable }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [hi, setHi] = useState(0);
@@ -273,7 +289,9 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
   const sel = options.find(o => o.value === value);
   const canSearch = searchable ?? options.length > 8;
   const nq = norm(q);
-  const list = options.filter(o => !nq || norm(o.label).includes(nq));
+  // creatable(text) returns an option for what you typed when nothing matches it exactly (e.g. a new person).
+  const list = [...options.filter(o => !nq || norm(o.label).includes(nq)),
+    ...(creatable && nq && !options.some(o => norm(o.label) === nq) ? [creatable(q.trim())] : [])];
   useEffect(() => {
     if (!open) return;
     setQ('');
@@ -298,6 +316,8 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
     field: 'flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-left text-base md:text-sm transition-colors hover:border-foreground/20',
     ghost: 'inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-left text-sm transition-colors hover:bg-muted',
     chip: 'inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-border bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground',
+    // A dropdown that reads as one word in a sentence (Automations, 0.19.12).
+    word: 'inline-flex h-7 max-w-[16rem] items-center gap-1 rounded-md border border-border bg-secondary px-2 text-left text-[13px] font-medium text-foreground transition-colors hover:border-foreground/20',
   }[variant];
   let lastGroup = null;
   return (
@@ -307,10 +327,10 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
         onKeyDown={e => { if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.preventDefault(); setOpen(true); } }}
         className={cn(triggerCls, 'focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', open && variant !== 'chip' && 'border-input', className)}>
         {icon}
-        <span className={cn('flex min-w-0 flex-1 items-center truncate', !sel && 'text-muted-foreground')}>
+        <span className={cn('flex min-w-0 items-center truncate', variant !== 'word' && 'flex-1', !sel && 'text-muted-foreground')}>
           {sel ? (renderValue ? renderValue(sel) : (sel.node || <span className="truncate">{sel.label}</span>)) : placeholder}
         </span>
-        <I.down className={cn('shrink-0 opacity-50 transition-transform', variant === 'chip' ? 'size-3' : 'size-4', open && 'rotate-180')} />
+        <I.down className={cn('shrink-0 opacity-50 transition-transform', variant === 'chip' || variant === 'word' ? 'size-3' : 'size-4', open && 'rotate-180')} />
       </button>
       <Floating anchorRef={a} panelRef={p} open={open} minMatch className={cn('p-1 min-w-[14rem]', menuClassName)}>
         <div onKeyDown={onKey}>
@@ -490,6 +510,18 @@ function Combobox({ id, value, onChange, options, placeholder, createLabel = v =
 }
 
 /* Sheet & Alert Dialog */
+// Keeps a .scroll-fade element's edge fades right when its size or content changes (scrolling is handled globally).
+function useEdgeFade(ref, on = true) {
+  useLayoutEffect(() => {
+    const el = ref.current; if (!on || !el) return;
+    updateFade(el);
+    const ro = new ResizeObserver(() => updateFade(el));
+    ro.observe(el); [...el.children].forEach(c => ro.observe(c));
+    const mo = new MutationObserver(() => { updateFade(el); [...el.children].forEach(c => ro.observe(c)); });
+    mo.observe(el, { childList: true, subtree: true });
+    return () => { ro.disconnect(); mo.disconnect(); };
+  }, [on]);
+}
 function useLockScroll(on) {
   useEffect(() => { if (!on) return; const o = document.body.style.overflow; document.body.style.overflow = 'hidden'; return () => { document.body.style.overflow = o; }; }, [on]);
 }
@@ -573,50 +605,56 @@ function Dialog({ open, onClose, title, description, children, footer, className
     return () => document.removeEventListener('keydown', k, true);
   }, [open, onClose]);
   if (!open) return null;
+  // The title and the buttons stay put; only the middle scrolls, with faded edges (0.19.12).
   return createPortal(
     <>
       <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" onClick={onClose} />
       <div role="dialog" aria-modal="true" aria-labelledby="dlg-title"
-        className={cn('fixed left-1/2 top-1/2 z-[70] grid max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] gap-5 overflow-y-auto rounded-lg border bg-background p-6 shadow-lg anim-zoom', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
-        <div className="flex flex-col space-y-1.5 pr-6 text-left">
+        className={cn('fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col gap-5 overflow-hidden rounded-lg border bg-background p-6 shadow-lg anim-zoom', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
+        <div className="flex shrink-0 flex-col space-y-1.5 pr-6 text-left">
           <h2 id="dlg-title" className="text-lg font-semibold leading-none tracking-tight break-words">{title}</h2>
           {description && <p className="text-sm text-muted-foreground">{description}</p>}
         </div>
-        {children}
-        {footer && <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">{footer}</div>}
+        <DialogBody>{children}</DialogBody>
+        {footer && <div className="flex shrink-0 flex-col-reverse gap-2 sm:flex-row sm:justify-end">{footer}</div>}
         <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x /></button>
       </div>
     </>, document.body);
 }
 
-/* Toast (Sonner style) */
-const toastSubs = new Set();
-const toast = (title, description, opts = {}) => toastSubs.forEach(f => f({ title, description, undo: !!opts.undo }));
+// The scrolling middle of a dialog. The negative margins give focus rings and the scroll bar room at the edges.
+function DialogBody({ children }) {
+  const ref = useRef(null);
+  useEdgeFade(ref);
+  return <div ref={ref} className="scroll-fade -mx-6 -my-1 grid min-h-0 flex-1 gap-5 overflow-y-auto px-6 py-1">{children}</div>;
+}
+
+/* Toasts: shadcn/ui Sonner for the motion and stacking, drawn with the app's own toast design.
+   Every message in the app goes through toast(title, description, opts); opts.undo adds an Undo button. */
 // Set by the app, so a message's "Undo" button can undo the change it describes.
 const undoHook = { current: null };
-function Toaster() {
-  const [items, setItems] = useState([]);
-  useEffect(() => {
-    const f = t => { const id = Math.random(); setItems(p => [...p.slice(-2), { ...t, id }]); setTimeout(() => setItems(p => p.filter(x => x.id !== id)), t.undo ? 6000 : 3000); };
-    toastSubs.add(f); return () => toastSubs.delete(f);
-  }, []);
+function ToastCard({ id, title, description, undo }) {
   return (
-    <div aria-live="polite" className="fixed right-4 z-[100] flex w-[calc(100%-2rem)] max-w-[356px] flex-col gap-2" style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom,0px))' }}>
-      {items.map(t => (
-        <div key={t.id} className="anim-toast flex items-start gap-3 rounded-lg border bg-background p-4 text-sm shadow-lg">
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">{t.title}</div>
-            {t.description && <div className="text-muted-foreground mt-0.5">{t.description}</div>}
-          </div>
-          {t.undo && undoHook.current && (
-            <button type="button" onClick={() => { undoHook.current(); setItems(p => p.filter(x => x.id !== t.id)); }}
-              className="shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted">Undo</button>
-          )}
-        </div>
-      ))}
+    <div className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-background p-4 text-sm text-foreground shadow-lg">
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">{title}</div>
+        {description && <div className="text-muted-foreground mt-0.5">{description}</div>}
+      </div>
+      {undo && (
+        <button type="button" onClick={() => { undoHook.current && undoHook.current(); sonner.dismiss(id); }}
+          className="shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted">Undo</button>
+      )}
     </div>
   );
 }
+const toast = (title, description, opts = {}) => {
+  const undo = !!opts.undo && !!undoHook.current;
+  return sonner.custom(id => <ToastCard id={id} title={title} description={description} undo={undo} />,
+    { ...(opts.id ? { id: opts.id } : {}), duration: opts.duration != null ? opts.duration : undo ? 6000 : 3000 });
+};
+// Errors and successes look the same as any other message.
+toast.error = toast;
+toast.success = toast;
 
 /* =========================================================
    Data
@@ -798,7 +836,7 @@ function persist(name, obj) {
     while (w.next !== null) {
       const content = w.next; w.next = null;
       try { await invoke('write_store', { name, content }); }
-      catch (e) { toast('Couldn’t save your changes', String(e)); }
+      catch (e) { toast.error('Couldn’t save your changes', String(e)); }
     }
     w.busy = false;
   })();
@@ -907,7 +945,7 @@ function useTasks(ws = 'product') {
       try {
         const raw = await invoke('read_store', { name: storeFor('data', ws) });
         if (raw) { d = JSON.parse(raw); apply(d); }
-      } catch (e) { toast('Couldn’t read your saved tasks', String(e)); }
+      } catch (e) { toast.error('Couldn’t read your saved tasks', String(e)); }
       setLoaded(true);
       cloudUn.current.push(cloudLive(storeFor('data', ws), cloudData, d));
       try {
@@ -1102,6 +1140,55 @@ async function notifyDesktop(title, body) {
   toast(title, body);
 }
 
+/* Grouped notifications: everything of the same kind that arrives within a moment of each other
+   becomes one message, like "12 tasks are overdue", instead of twelve. One task reads "1 task is overdue". */
+const NOTE_VERBS = {
+  created: ['was created', 'were created'], started: ['was started', 'were started'], blocked: ['is blocked', 'are blocked'],
+  unblocked: ['is no longer blocked', 'are no longer blocked'], done: ['was marked done', 'were marked done'],
+  reopened: ['was reopened', 'were reopened'], due_soon: ['is due tomorrow', 'are due tomorrow'], overdue: ['is overdue', 'are overdue'],
+  checklist: ['has its checklist finished', 'have their checklists finished'], assigned: ['got a new assignee', 'got new assignees'],
+  high: ['was set to High priority', 'were set to High priority'], file_added: ['got a document attached', 'got documents attached'],
+  moved: ['was moved into its project', 'were moved into their projects'],
+};
+const countTasks = (n, [one, many]) => `${n} ${n === 1 ? 'task' : 'tasks'} ${n === 1 ? one : many}`;
+// “Login page”, “Checkout”, “Search” and 9 more
+const nameList = (titles, max = 3) => {
+  const q = titles.map(t => `“${t || 'Untitled'}”`);
+  if (q.length <= max) return q.length > 1 ? q.slice(0, -1).join(', ') + ' and ' + q[q.length - 1] : q[0] || '';
+  return q.slice(0, max).join(', ') + ` and ${q.length - max} more`;
+};
+const noteQueue = { items: [], timer: null };
+// n: { kind: an automation trigger (overdue, due_soon, ...) or 'conflict', message: the automation's own text, taskId, taskTitle }
+function queueNote(n) {
+  noteQueue.items.push(n);
+  clearTimeout(noteQueue.timer);
+  noteQueue.timer = setTimeout(flushNotes, 800);
+}
+function flushNotes() {
+  const items = noteQueue.items; noteQueue.items = []; noteQueue.timer = null;
+  const groups = new Map();
+  items.forEach(n => {
+    const key = n.kind + '|' + norm(n.message);
+    const g = groups.get(key) || { ...n, tasks: [] };
+    // The same task twice in one moment counts once.
+    if (!n.taskId || !g.tasks.some(t => t.id === n.taskId)) g.tasks.push({ id: n.taskId, title: n.taskTitle, kept: n.kept });
+    groups.set(key, g);
+  });
+  groups.forEach(g => {
+    const n = g.tasks.length, names = nameList(g.tasks.map(t => t.title));
+    if (g.kind === 'conflict') {
+      if (n === 1) toast('Changed on two PCs at once', `${names} was also edited on your other PC. ${g.tasks[0].kept === 'other' ? 'Its newer edit was kept.' : 'Your newer edit here was kept.'}`);
+      else toast(`${n} tasks were changed on two PCs at once`, `The newer edit was kept for each: ${names}.`);
+      return;
+    }
+    const verbs = NOTE_VERBS[g.kind] || ['needs a look', 'need a look'];
+    const msg = (g.message || '').trim();
+    // The automation's own text ("Ping the PO") stays, unless it only repeats the kind ("Overdue", "Due tomorrow").
+    const custom = msg && !verbs[0].includes(norm(msg)) && norm(msg) !== norm((TRIG[g.kind] || {}).short);
+    notifyDesktop(countTasks(n, verbs), custom ? `${msg} · ${names}` : names);
+  });
+}
+
 /* Self-updating: new versions are published as GitHub releases.
    The app checks a few seconds after it starts, and whenever you ask it to. */
 function useUpdater() {
@@ -1114,7 +1201,7 @@ function useUpdater() {
       if (u) setUpdate(u);
       else if (manual) toast('You’re up to date', `You have the latest version, ${await getVersion()}.`);
     } catch (e) {
-      if (manual) toast('Couldn’t check for updates', 'Check your internet connection and try again.');
+      if (manual) toast.error('Couldn’t check for updates', 'Check your internet connection and try again.');
     }
   }, []);
   useEffect(() => {
@@ -1138,7 +1225,7 @@ function useUpdater() {
       await relaunch();
     } catch (e) {
       setProgress(null);
-      toast('The update didn’t install', String(e));
+      toast.error('The update didn’t install', String(e));
     }
   };
   return { version, update, progress, look, install, dismiss: () => setUpdate(null) };
@@ -1159,38 +1246,6 @@ function useTheme() {
   useEffect(() => { const on = e => setMode(e.detail); window.addEventListener('tasks-theme', on); return () => window.removeEventListener('tasks-theme', on); }, []);
   const dark = mode === 'dark' || (mode === 'system' && systemDark);
   return { mode, dark, choose, toggle: () => choose(dark ? 'light' : 'dark') };
-}
-
-/* The tab strip: Home first, then each task you opened in a tab. */
-function TabStrip({ list, active, tasks, stages, onSelect, onClose, onNew }) {
-  return (
-    <div role="tablist" aria-label="Open tabs" className="flex h-10 shrink-0 items-end gap-0.5 overflow-x-auto overflow-y-hidden px-2 [scrollbar-width:none]" style={{ background: 'hsl(var(--strip))' }}>
-      {['home', ...list].map(id => {
-        const t = id === 'home' ? null : tasks[id];
-        if (id !== 'home' && !t) return null;
-        const on = active === id, name = t ? (t.title || 'Untitled') : 'Home';
-        return (
-          <div key={id} role="tab" tabIndex={0} aria-selected={on} title={name}
-            onClick={() => onSelect(id)}
-            onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelect(id); } }}
-            onAuxClick={e => { if (e.button === 1 && t) { e.preventDefault(); onClose(id); } }}
-            onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
-            className={cn('flex h-[34px] min-w-0 cursor-default items-center gap-2 rounded-t-lg pl-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring',
-              t ? 'min-w-[7rem] flex-[0_1_13rem] pr-1.5' : 'shrink-0 pr-3', on ? 'font-medium text-foreground' : 'text-muted-foreground hover:bg-background/40 hover:text-foreground')}
-            style={on ? { background: 'hsl(var(--page))' } : undefined}>
-            {t ? <span className={cn('size-2 shrink-0 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} /> : <I.home className="size-3.5 shrink-0" />}
-            <span className="min-w-0 flex-1 truncate">{name}</span>
-            {t && (
-              <button type="button" aria-label={`Close ${name}`} title="Close tab (Ctrl+W)" onClick={e => { e.stopPropagation(); onClose(id); }}
-                className="flex size-5 shrink-0 items-center justify-center rounded opacity-60 hover:bg-muted hover:opacity-100"><I.x className="size-3" /></button>
-            )}
-          </div>
-        );
-      })}
-      <button type="button" aria-label="New task in a new tab" title="New task in a new tab" onClick={onNew}
-        className="mb-1 ml-1 flex size-7 shrink-0 items-center justify-center self-center rounded-md text-muted-foreground hover:bg-background/50 hover:text-foreground"><I.plus className="size-3.5" /></button>
-    </div>
-  );
 }
 
 function ThemeToggle() {
@@ -1219,7 +1274,7 @@ async function openCaptureWindow() {
     if (existing) { await existing.show(); await existing.setFocus(); return; }
     new WebviewWindow('capture', { url: 'index.html#capture=1', title: 'Quick capture', width: CAPTURE_W, height: 132, center: true, resizable: false, decorations: false, alwaysOnTop: true, skipTaskbar: true, focus: true,
       transparent: true, shadow: false });
-  } catch (e) { toast('Couldn’t open quick capture', String(e)); }
+  } catch (e) { toast.error('Couldn’t open quick capture', String(e)); }
 }
 
 // The main window keeps a short copy of the bucket and platform lists here, so the quick capture window can offer them.
@@ -1607,8 +1662,8 @@ async function openTaskWindow(id, title, ws = 'product') {
     const existing = await WebviewWindow.getByLabel(label);
     if (existing) { await existing.setFocus(); return; }
     const w = new WebviewWindow(label, { url: 'index.html#task=' + encodeURIComponent(id) + '&ws=' + encodeURIComponent(ws), title: title || 'Task', width: 780, height: 880, minWidth: 480, minHeight: 480 });
-    w.once('tauri://error', e => toast('Couldn’t open a new window', String(e && e.payload)));
-  } catch (e) { toast('Couldn’t open a new window', String(e)); }
+    w.once('tauri://error', e => toast.error('Couldn’t open a new window', String(e && e.payload)));
+  } catch (e) { toast.error('Couldn’t open a new window', String(e)); }
 }
 
 function useProfile() {
@@ -1714,11 +1769,11 @@ async function downloadFile(f) {
     await haveDoc(f.file);
     await invoke('export_document', { file: f.file, dest });
     toast('Copy saved', dest);
-  } catch (e) { toast(`Couldn’t save “${f.name}”`, String(e)); }
+  } catch (e) { toast.error(`Couldn’t save “${f.name}”`, String(e)); }
 }
 async function openExternal(f) {
   try { await haveDoc(f.file); await invoke('open_document', { file: f.file }); }
-  catch (e) { toast(`Couldn’t open “${f.name}”`, 'There may be no app on this computer for this file type.'); }
+  catch (e) { toast.error(`Couldn’t open “${f.name}”`, 'There may be no app on this computer for this file type.'); }
 }
 async function deleteDoc(f) { try { await invoke('delete_document', { file: f.file }); } catch (e) {} cloudDeleteDoc(f.file); }
 const fileInfos = paths => invoke('file_info', { paths });
@@ -2403,10 +2458,25 @@ function StatusBadge({ status, className }) {
     </span>
   );
 }
-const PRI_DOT = { high: 'bg-red-500', normal: 'bg-orange-400', low: 'bg-slate-400' };
-const PriorityPill = ({ priority }) => (
-  <span className="inline-flex h-5 items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs text-foreground/80">
-    <span className={cn('size-1.5 rounded-full', PRI_DOT[priority || 'normal'])} />{P[priority || 'normal'].label}
+// Priority reads by shape, not color: 3 bars for High, 2 for Medium, 1 for Low.
+// Only High gets color, so urgent work stands out and Medium never looks like "To do".
+const PriorityBars = ({ priority, className }) => {
+  const n = { high: 3, normal: 2, low: 1 }[priority || 'normal'];
+  return (
+    <svg viewBox="0 0 12 12" aria-hidden="true" className={cn('size-2.5 shrink-0', className)}>
+      {[0, 1, 2].map(i => <rect key={i} x={1 + i * 3.75} y={8 - i * 3} width="2.5" height={3 + i * 3} rx="0.75" fill="currentColor" opacity={i < n ? 1 : 0.25} />)}
+    </svg>
+  );
+};
+// Only High is filled; Medium and Low stay outlined like the other tags.
+const PRI_CHIP = {
+  high: 'border border-transparent bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-300 font-medium',
+  normal: 'border text-foreground/80',
+  low: 'border text-muted-foreground',
+};
+const PriorityPill = ({ priority, className }) => (
+  <span className={cn('inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-xs', PRI_CHIP[priority || 'normal'], className)}>
+    <PriorityBars priority={priority} />{P[priority || 'normal'].label}
   </span>
 );
 // Subtle outlined chips, like a database table.
@@ -2444,11 +2514,19 @@ const statusDef = (t, stages) => {
   const all = statusList(stages), group = S[t.status] ? t.status : 'todo';
   return (t.stage && all.find(x => x.id === t.stage && x.group === group && !x.builtin)) || all.find(x => x.id === group);
 };
-const StatusPill = ({ status, label, color }) => {
+// Status keeps the outlined chip; its text takes the status color (mixed toward the text color so
+// it stays readable in light and dark), so it no longer looks like the platform and bucket tags.
+const StatusPill = ({ status, label, color, className }) => {
   const st = S[status] || S.todo;
-  return <span className="inline-flex h-5 max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs text-foreground/80"><span className={cn('size-1.5 shrink-0 rounded-full', color ? STATUS_COLORS[color] : st.dot)} /><span className="truncate">{label || st.label}</span></span>;
+  const hex = STATUS_HEX[color || BUILTIN_COLOR[st.id]] || STATUS_HEX.gray;
+  return (
+    <span className={cn('inline-flex h-5 max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs font-medium', className)}
+      style={{ color: `color-mix(in srgb, ${hex} 78%, hsl(var(--foreground)))` }}>
+      <span className="size-1.5 shrink-0 rounded-full" style={{ background: hex }} /><span className="truncate">{label || st.label}</span>
+    </span>
+  );
 };
-const DefPill = ({ def }) => <StatusPill status={def.group} label={def.name || '…'} color={def.color} />;
+const DefPill = ({ def, className }) => <StatusPill status={def.group} label={def.name || '…'} color={def.color} className={className} />;
 const stageOf = (t, stages) => { const d = statusDef(t, stages); return d && !d.builtin ? d : null; };
 const statusLabel = (t, stages) => statusDef(t, stages).name;
 const Tag = ({ color, children }) => (
@@ -2759,10 +2837,8 @@ const OPEN_MODES = [
   { id: 'side', label: 'Side panel', icon: <I.panelRight className="size-3.5" /> },
   { id: 'center', label: 'Centered', icon: <I.panelCenter className="size-3.5" /> },
   { id: 'full', label: 'Full screen', icon: <I.maximize className="size-3.5" /> },
-  { id: 'tab', label: 'New tab', icon: <I.tab className="size-3.5" /> },
 ];
 function SheetFrame({ mode, open, onClose, children, onPick }) {
-  if (mode === 'tab') return <div className="flex min-h-0 flex-1 flex-col bg-background" role="tabpanel" aria-labelledby="sheet-title">{children}</div>;
   if (mode === 'window') return <div className="flex h-screen flex-col bg-background" role="main" aria-labelledby="sheet-title">{children}</div>;
   return <Sheet open={open} onClose={onClose} labelledBy="sheet-title" variant={mode} onPick={onPick}>{children}</Sheet>;
 }
@@ -2774,7 +2850,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, onNewTab, onHome, closeRef, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -2819,7 +2895,6 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
     commit(); onClose();
   };
   const submit = e => { e && e.preventDefault(); close(); };
-  if (closeRef) closeRef.current = close;
   const on = task && !!task.timerStartedAt;
   // Documents on a saved task are stored right away; on a new task they wait in the form until Save.
   const files = task ? (task.files || []) : (form.files || []);
@@ -2859,19 +2934,12 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
           if (el.tagName === 'BUTTON' && fid !== 't-priority') el.click();
         }}>
         {/* Header */}
-        <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && mode !== 'tab' && 'pr-12', mode === 'tab' && 'px-5')}>
-          {mode === 'tab' && (
-            <>
-              <button type="button" onClick={onHome} className="text-sm text-muted-foreground hover:text-foreground hover:underline underline-offset-4">Home</button>
-              <span className="text-sm text-muted-foreground/60">/</span>
-            </>
-          )}
-          {mode !== 'window' && mode !== 'tab' && (
+        <div className={cn('flex h-12 shrink-0 items-center gap-2 border-b px-3 text-xs text-muted-foreground', mode !== 'window' && 'pr-12')}>
+          {mode !== 'window' && (
             <>
               <DropdownMenu align="start"
                 trigger={p => <button {...p} type="button" aria-label="How tasks open" title="How tasks open" className="flex size-7 items-center justify-center rounded-md hover:bg-muted hover:text-foreground">{(OPEN_MODES.find(m => m.id === mode) || OPEN_MODES[0]).icon}</button>}
                 items={[
-                  { label: 'Open in new tab', icon: <I.tab />, onSelect: () => { commit(); onNewTab(); } },
                   { label: 'Open in new window', icon: <I.external />, onSelect: () => { commit(); onPopOut(); } },
                   'sep',
                   ...OPEN_MODES.map(m => ({ label: m.label, icon: m.icon, shortcut: mode === m.id ? '✓' : undefined, onSelect: () => onMode(m.id) })),
@@ -2881,13 +2949,9 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
               <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
             </>
           )}
-          <span id="sheet-title" className={cn('text-sm font-medium text-foreground', mode === 'tab' && 'min-w-0 truncate')}>{mode === 'tab' ? (form.title || 'Untitled') : (task.title || form.title ? 'Task' : 'New task')}</span>
+          <span id="sheet-title" className="text-sm font-medium text-foreground">{task.title || form.title ? 'Task' : 'New task'}</span>
           {task && <span className="shrink-0">Created {fmtDay(task.createdAt)}</span>}
           {generatedFrom && <span className="inline-flex shrink-0 items-center gap-1"><I.zap className="size-3" />Auto</span>}
-          {mode === 'tab' && (
-            <button type="button" onClick={() => { commit(); onPopOut(); }} aria-label="Open in new window" title="Open in new window"
-              className="ml-auto flex size-8 shrink-0 items-center justify-center rounded-md hover:bg-muted hover:text-foreground"><I.external className="size-4" /></button>
-          )}
         </div>
 
         {/* Body */}
@@ -3048,7 +3112,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
           {task && <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={onDelete} aria-label="Delete task"><I.trash /></Button>}
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><I.check className="size-3.5" />Changes save automatically</span>
           <div className="flex-1" />
-          <Button type="submit" variant="outline" size="sm">{mode === 'tab' ? 'Close tab' : 'Close'}</Button>
+          <Button type="submit" variant="outline" size="sm">Close</Button>
         </div>
       </form>
     </SheetFrame>
@@ -3140,7 +3204,7 @@ function TimeSummary({ tasks, onHide }) {
   );
 }
 
-const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Quick add (in the app)', '`'], ['Quick capture (anywhere in Windows)', 'Ctrl + Shift + Space'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Open a task in a new tab', 'Ctrl + click'], ['Close tab', 'Ctrl + W'], ['Next tab', 'Ctrl + Tab'], ['Back to Home', 'Ctrl + 1'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
+const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Quick add (in the app)', '`'], ['Quick capture (anywhere in Windows)', 'Ctrl + Shift + Space'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
 function ShortcutsDialog({ open, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} title="Keyboard shortcuts">
@@ -3155,10 +3219,25 @@ function ShortcutsDialog({ open, onClose }) {
   );
 }
 
+/* Automations (0.19.12): grouped by what sets them off. Each group's heading is the event
+   ("When a task in Any project becomes overdue"), and each thing it does is a line under it.
+   Every word in a box is a dropdown. Grouping is only how the list is shown: rules are stored
+   and synced exactly as before, one rule per action. Changing a heading changes every rule in it. */
+const TRIGGER_ICON = { created: 'plus', started: 'play', blocked: 'ban', unblocked: 'refresh', done: 'check', reopened: 'reset', due_soon: 'calendar', overdue: 'alert', checklist: 'listCheck', assigned: 'user', high: 'flag', file_added: 'paperclip', moved: 'arrowRight' };
+const ruleGroupKey = r => r.scope === 'bucket' ? `b|${r.status}` : `t|${norm(r.project)}|${r.trigger}`;
+// A box you can type in, sized to its text, that sits in a sentence next to the dropdown words.
+const WordInput = ({ value, onChange, placeholder, label, className }) => (
+  <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} aria-label={label}
+    style={{ width: `calc(${Math.min(Math.max(String(value || '').length, (placeholder || '').length, 4), 30)}ch + 1.25rem)` }}
+    className={cn('h-7 max-w-full rounded-md border border-border bg-transparent px-2 text-[13px] text-foreground placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', className)} />
+);
 function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave, bucketNoun = 'Bucket' }) {
   const [draft, setDraft] = useState(rules);
   useEffect(() => { if (open) setDraft(rules); }, [open]);
+  const bnoun = bucketNoun.toLowerCase();
   const upd = (id, patch) => setDraft(d => d.map(r => r.id === id ? { ...r, ...patch } : r));
+  const updGroup = (g, patch) => { const ids = new Set(g.rules.map(r => r.id)); setDraft(d => d.map(r => ids.has(r.id) ? { ...r, ...patch } : r)); };
+  const removeIds = ids => setDraft(d => d.filter(r => !ids.includes(r.id)));
   const problem = r => {
     if (r.scope === 'bucket') return (r.title || '').trim() ? null : 'Type a title for the task.';
     const a = ACT[r.action] || {};
@@ -3168,8 +3247,9 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   };
   const valid = draft.every(r => !problem(r));
   const helpPlatform = projects.find(p => /help/i.test(p)) || '';
+  const bucketRule = (status = 'ready') => ({ scope: 'bucket', trigger: 'bucket_status', status, action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' });
   const ideas = [
-    { title: `Hand off when ${bucketNoun.toLowerCase()} is ready`, text: `Create a task for the ${bucketNoun.toLowerCase()} when it moves to ${BS.ready ? BS.ready.label : 'Ready for dev'}.`, rule: { scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' } },
+    { title: `Hand off when ${bnoun} is ready`, text: `Create a task for the ${bnoun} when it moves to ${BS.ready ? BS.ready.label : 'Ready for dev'}.`, rule: bucketRule('ready') },
     { title: 'Finish tasks automatically', text: 'Mark a task done when its checklist is finished.', rule: { trigger: 'checklist', action: 'status', target: 'done' } },
     { title: 'Flag overdue work', text: 'Make a task High priority when it becomes overdue.', rule: { trigger: 'overdue', action: 'priority', target: 'high' } },
     { title: 'Assign new tasks to me', text: 'Every new task starts assigned to you.', rule: { trigger: 'created', action: 'assign', target: me } },
@@ -3183,102 +3263,123 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
     { title: 'Reopened work goes to the top', text: 'Make a task High priority when it’s reopened.', rule: { trigger: 'reopened', action: 'priority', target: 'high' } },
   ].filter(i => !draft.some(r => !r.project && r.trigger === i.rule.trigger && r.action === i.rule.action && (i.rule.scope === 'bucket' ? r.status === i.rule.status : r.target === i.rule.target)));
   const add = (rule = {}) => setDraft(d => [...d, { id: 'r-' + newId(), enabled: true, project: '', trigger: 'done', action: 'copy', target: '', ...rule }]);
+  // Groups, in the order their first rule appears.
+  const groups = [];
+  { const byKey = {}; draft.forEach(r => { const k = ruleGroupKey(r); if (!byKey[k]) groups.push(byKey[k] = { key: k, rules: [] }); byKey[k].rules.push(r); }); }
+  const usedGroup = k => groups.some(g => g.key === k);
+  // A new task automation starts on an event that isn't in the list yet, so it gets its own group.
+  const addTask = () => { const t = TRIGGERS.find(x => !usedGroup(`t||${x.id}`)) || TRIGGERS[0]; add({ trigger: t.id, action: 'notify', target: '' }); };
+  const addBucket = () => { const s = BUCKET_STATUSES.find(x => !usedGroup(`b|${x.id}`)) || BUCKET_STATUSES[0]; add(bucketRule(s.id)); };
+  const addToGroup = g => {
+    const f = g.rules[0];
+    if (f.scope === 'bucket') return add(bucketRule(f.status));
+    const free = ACTIONS.find(a => !g.rules.some(r => r.action === a.id) && a.id === 'notify') || ACTIONS.find(a => !g.rules.some(r => r.action === a.id)) || ACTIONS[0];
+    add({ project: f.project, trigger: f.trigger, action: free.id, target: '' });
+  };
+  const projectOptions = (none = 'Any project') => [
+    { value: '', label: none },
+    ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+  ];
+  // Typing a name that isn't on any task yet offers it, as the old person box did.
+  const newPerson = v => ({ value: v, label: `Assign to “${v}”`, icon: <Avatar name={v} className="h-5 w-5" /> });
+  const peopleOptions = v => [...new Set([...(people || []), ...(v ? [v] : [])])].map(p => ({ value: p, label: p, icon: <Avatar name={p} className="h-5 w-5" /> }));
   const targetField = r => {
     const kind = (ACT[r.action] || ACT.copy).target;
     const setT = v => upd(r.id, { target: v });
-    if (kind === 'project') return <Select label="Project" value={r.target} onChange={setT} placeholder="Choose a project…"
-      options={projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> }))} />;
-    if (kind === 'status') return <Select label="Status" value={r.target} onChange={setT} placeholder="Choose a status…"
+    if (kind === 'project') return <Select variant="word" label="Project" value={r.target} onChange={setT} placeholder="a project" options={projectOptions().slice(1)} />;
+    if (kind === 'status') return <Select variant="word" label="Status" value={r.target} onChange={setT} placeholder="a status" searchable={false}
       options={STATUSES.map(x => ({ value: x.id, label: x.label, node: <StatusPill status={x.id} /> }))} />;
-    if (kind === 'priority') return <Select label="Priority" value={r.target} onChange={setT} placeholder="Choose a priority…"
+    if (kind === 'priority') return <Select variant="word" label="Priority" value={r.target} onChange={setT} placeholder="a priority" searchable={false}
       options={['high', 'normal', 'low'].map(x => ({ value: x, label: P[x].label, node: <PriorityPill priority={x} /> }))} />;
-    if (kind === 'days') return <Select label="Deadline" value={r.target} onChange={setT} placeholder="Choose a date…"
-      options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l[0].toUpperCase() + l.slice(1) }))} />;
-    if (kind === 'text') return <Input value={r.target} onChange={e => upd(r.id, { target: e.target.value })} placeholder={ACT[r.action].placeholder} aria-label="Text" />;
-    if (kind === 'none') return <div className="flex h-9 items-center text-xs text-muted-foreground">Nothing else to choose</div>;
-    return <Combobox id={`t-${r.id}`} value={r.target} onChange={v => upd(r.id, { target: v })} options={people} placeholder="Person" />;
+    if (kind === 'days') return <Select variant="word" label="Deadline" value={r.target} onChange={setT} placeholder="a date" searchable={false}
+      options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l }))} />;
+    if (kind === 'text') return <WordInput value={r.target} onChange={setT} placeholder={r.action === 'notify' ? 'Message (optional)' : 'Brief, Design, Review'} label={r.action === 'notify' ? 'Message' : 'Checklist items'} />;
+    if (kind === 'none') return null;
+    return <Select variant="word" label="Person" value={r.target} onChange={setT} placeholder="someone" searchable options={peopleOptions(r.target)} creatable={newPerson} />;
   };
+  const onCount = draft.filter(r => r.enabled).length;
   return (
     <Dialog open={open} onClose={onClose} title="Automations" className="max-w-3xl"
-      description="Let the app do routine steps for you. Each automation reads like a sentence: when something happens to a task, do something."
+      description="Click any word in a box to change it. One event can do several things."
       footer={<>
+        {draft.length > 0 && <span className="mr-auto self-center text-sm text-muted-foreground">{onCount} of {draft.length} on</span>}
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button disabled={!valid} onClick={() => onSave(draft.map(r => ({ ...r, target: String(r.target || '').trim() })))}>Save automations</Button>
       </>}>
       <div className="grid gap-3">
         {draft.length === 0 && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No automations yet. Add one, or start from an idea below.</p>}
-        {draft.map(r => {
-          const err = problem(r);
-          const bucketRule = r.scope === 'bucket';
+        {groups.map(g => {
+          const f = g.rules[0], isBucket = f.scope === 'bucket';
+          const Icon = isBucket ? I.layers : (I[TRIGGER_ICON[f.trigger]] || I.zap);
           return (
-            <Card key={r.id} className={cn('p-4 shadow-none', !r.enabled && 'opacity-60')}>
-              <div className="mb-3 flex items-center gap-3">
-                <Switch checked={r.enabled} onChange={v => upd(r.id, { enabled: v })} label="Turn automation on or off" />
-                <p className="min-w-0 flex-1 truncate text-sm font-medium" title={describeRule(r)}>{describeRule(r)}</p>
-                <Button variant="ghost" size="icon-sm" aria-label="Delete automation" onClick={() => setDraft(d => d.filter(x => x.id !== r.id))}><I.trash /></Button>
-              </div>
-              {bucketRule ? (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
-                  <Field className="lg:col-span-2" label={`When a ${bucketNoun.toLowerCase()} moves to`} htmlFor={`bs-${r.id}`}>
-                    <Select id={`bs-${r.id}`} value={r.status} onChange={v => upd(r.id, { status: v })} searchable={false}
+            <div key={g.key} className="overflow-hidden rounded-lg border">
+              <div className="flex items-center gap-3 bg-muted/50 py-2 pl-3.5 pr-2">
+                <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent text-muted-foreground"><Icon className="size-3.5" /></span>
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
+                  {isBucket ? <>
+                    <span>When a {bnoun} moves to</span>
+                    <Select variant="word" label={`${bucketNoun} status`} value={f.status} onChange={v => updGroup(g, { status: v })} searchable={false}
                       options={BUCKET_STATUSES.map(x => ({ value: x.id, label: x.label, node: <BucketStatusPill status={x.id} /> }))} />
-                  </Field>
-                  <Field className="sm:col-span-1 lg:col-span-4" label="Create a task called" htmlFor={`bt-${r.id}`}>
-                    <Input id={`bt-${r.id}`} value={r.title || ''} onChange={e => upd(r.id, { title: e.target.value })} placeholder="{bucket}" />
-                  </Field>
-                  <Field className="lg:col-span-2" label="In" htmlFor={`bp-${r.id}`}>
-                    <Select id={`bp-${r.id}`} value={r.target || ''} onChange={v => upd(r.id, { target: v })} options={[
-                      { value: '', label: 'No platform' },
-                      ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
-                    ]} />
-                  </Field>
-                  <Field className="lg:col-span-2" label="Assign to" htmlFor={`ba-${r.id}`}><Combobox id={`ba-${r.id}`} value={r.assignee || ''} onChange={v => upd(r.id, { assignee: v })} options={people} placeholder="Nobody" /></Field>
-                  <Field className="lg:col-span-2" label="Due" htmlFor={`bd-${r.id}`}>
-                    <Select id={`bd-${r.id}`} value={r.days || 'none'} onChange={v => upd(r.id, { days: v })} searchable={false}
-                      options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l[0].toUpperCase() + l.slice(1) }))} />
-                  </Field>
+                  </> : <>
+                    <span>When a task in</span>
+                    <Select variant="word" label="Project" value={f.project} onChange={v => updGroup(g, { project: v })} options={projectOptions()} />
+                    <Select variant="word" label="When the task" value={f.trigger} onChange={v => updGroup(g, { trigger: v })} searchable={false}
+                      options={TRIGGERS.map(t => ({ value: t.id, label: t.label, group: t.group }))} />
+                  </>}
                 </div>
-              ) : (
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <Field label="For tasks in" htmlFor={`p-${r.id}`}>
-                  <Select id={`p-${r.id}`} value={r.project} onChange={v => upd(r.id, { project: v })} options={[
-                    { value: '', label: 'Any project' },
-                    ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
-                  ]} />
-                </Field>
-                <Field label="When the task" htmlFor={`w-${r.id}`}>
-                  <Select id={`w-${r.id}`} value={r.trigger} onChange={v => upd(r.id, { trigger: v })} searchable={false}
-                    options={TRIGGERS.map(t => ({ value: t.id, label: t.label, group: t.group }))} />
-                </Field>
-                <Field label="Then" htmlFor={`a-${r.id}`}>
-                  <Select id={`a-${r.id}`} value={r.action} onChange={v => upd(r.id, { action: v, target: '' })} searchable={false}
-                    options={ACTIONS.map(a => ({ value: a.id, label: a.label[0].toUpperCase() + a.label.slice(1) }))} />
-                </Field>
-                <div className="grid gap-2"><Label>&nbsp;</Label>{targetField(r)}</div>
+                <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={g.rules.length > 1 ? `Delete these ${g.rules.length} automations` : 'Delete automation'} title="Delete" onClick={() => removeIds(g.rules.map(r => r.id))}><I.trash /></Button>
               </div>
-              )}
-              {bucketRule && <p className="mt-2 text-xs text-muted-foreground">{'{bucket}'} becomes the {bucketNoun.toLowerCase()}’s name. The task gets the {bucketNoun.toLowerCase()}’s description, starts in To do, and is created once per {bucketNoun.toLowerCase()}.</p>}
-              {err && <p className="mt-2 text-[0.8rem] text-destructive">{err}</p>}
-            </Card>
+              {g.rules.map(r => {
+                const err = problem(r);
+                return (
+                  <div key={r.id} className="border-t py-2 pl-3.5 pr-2">
+                    <div className="flex items-center gap-3">
+                      <span aria-hidden="true" className="w-7 shrink-0 text-center text-sm text-muted-foreground/60">↳</span>
+                      <div className={cn('flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm text-muted-foreground transition-opacity', !r.enabled && 'opacity-50')}>
+                        {isBucket ? <>
+                          <span>create</span>
+                          <WordInput value={r.title} onChange={v => upd(r.id, { title: v })} placeholder="{bucket}" label="Task title" />
+                          <span>in</span>
+                          <Select variant="word" label="Platform" value={r.target || ''} onChange={v => upd(r.id, { target: v })} options={projectOptions('No platform')} />
+                          <span>for</span>
+                          <Select variant="word" label="Assign to" value={r.assignee || ''} onChange={v => upd(r.id, { assignee: v })} searchable creatable={newPerson}
+                            options={[{ value: '', label: 'Nobody' }, ...peopleOptions(r.assignee)]} />
+                          <span>due</span>
+                          <Select variant="word" label="Due" value={r.days || 'none'} onChange={v => upd(r.id, { days: v })} searchable={false}
+                            options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l }))} />
+                        </> : <>
+                          <Select variant="word" label="Then" value={r.action} onChange={v => upd(r.id, { action: v, target: '' })} searchable={false}
+                            options={ACTIONS.map(a => ({ value: a.id, label: a.label }))} />
+                          {targetField(r)}
+                        </>}
+                      </div>
+                      <Switch checked={r.enabled} onChange={v => upd(r.id, { enabled: v })} label="Turn automation on or off" />
+                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Remove this action" title="Remove" onClick={() => removeIds([r.id])}><I.x /></Button>
+                    </div>
+                    {err && <p className="ml-10 mt-1 text-[0.8rem] text-destructive">{err}</p>}
+                  </div>
+                );
+              })}
+              {isBucket && <p className="border-t px-3.5 py-2 pl-[3.25rem] text-xs text-muted-foreground">{'{bucket}'} becomes the {bnoun}’s name. The task gets the {bnoun}’s description, starts in To do, and is created once per {bnoun}.</p>}
+              <button type="button" onClick={() => addToGroup(g)}
+                className="flex w-full items-center gap-2 border-t py-2 pl-[3.25rem] pr-3 text-left text-[13px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring">
+                <I.plus className="size-3.5" />{isBucket ? 'Also create another task' : 'Also do something else'}
+              </button>
+            </div>
           );
         })}
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Button variant="outline" className="justify-start border-dashed" onClick={() => add()}><I.plus />Add task automation</Button>
-          <Button variant="outline" className="justify-start border-dashed" onClick={() => add({ scope: 'bucket', trigger: 'bucket_status', status: 'ready', action: 'create', title: '{bucket}', target: helpPlatform, assignee: '', days: '7' })}><I.layers />Add {bucketNoun.toLowerCase()} automation</Button>
+        <div className="flex flex-wrap gap-1">
+          <Button variant="ghost" className="text-muted-foreground" onClick={addTask}><I.plus />Task automation</Button>
+          <Button variant="ghost" className="text-muted-foreground" onClick={addBucket}><I.layers />{bucketNoun} automation</Button>
         </div>
         {ideas.length > 0 && (
-          <div className="mt-2">
-            <div className="mb-2 text-sm font-medium text-muted-foreground">Ideas</div>
-            <div className="grid max-h-64 gap-2 overflow-y-auto sm:grid-cols-2">
+          <div className="mt-1">
+            <div className="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">Ideas</div>
+            <div className="flex flex-wrap gap-2">
               {ideas.map(i => (
-                <button key={i.title} type="button" onClick={() => add(i.rule)}
-                  className="flex items-start gap-3 rounded-lg border bg-card p-3 text-left transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-                  <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent text-accent-foreground"><I.zap className="size-3.5" /></span>
-                  <span className="min-w-0">
-                    <span className="block text-sm font-medium">{i.title}</span>
-                    <span className="block text-xs text-muted-foreground">{i.text}</span>
-                  </span>
-                  <I.plus className="ml-auto mt-1 text-muted-foreground" />
+                <button key={i.title} type="button" title={i.text} onClick={() => add(i.rule)}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                  <I.plus className="size-3.5 text-muted-foreground" />{i.title}
                 </button>
               ))}
             </div>
@@ -4081,7 +4182,7 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
       {groups.map(g => (
         <Card key={g.key || '_none'} className="mb-3 break-inside-avoid overflow-hidden">
           <div className="flex h-12 items-center gap-2 px-4 text-sm font-semibold">
-            {groupBy === 'status' ? <DefPill def={statusList(stages).find(x => x.id === g.key)} />
+            {groupBy === 'status' ? <DefPill def={statusList(stages).find(x => x.id === g.key)} /> : groupBy === 'priority' ? <PriorityPill priority={g.key} />
               : <>{groupBy === 'project' ? <I.folder className="size-3.5 text-muted-foreground" /> : groupBy === 'bucket' ? <I.layers className="size-3.5 text-muted-foreground" /> : groupBy === 'assignee' ? <Avatar name={g.key} className="h-5 w-5 [&_span]:text-[9px]" /> : <I.flag className="size-3.5 text-muted-foreground" />}<span className="truncate">{g.name}</span></>}
             <span className="font-normal text-muted-foreground">{g.tasks.length}</span>
             <button type="button" onClick={() => onAdd(presetFor(g))} className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 font-normal text-muted-foreground hover:bg-muted hover:text-foreground"><I.plus className="size-3.5" />Add</button>
@@ -4103,10 +4204,10 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
                     {t.deadline && !done && <span className={cn('shrink-0 whitespace-nowrap text-xs', dueCls[d.tone])}>{d.text}</span>}
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
-                    {groupBy !== 'status' && <span className="inline-flex h-[22px] items-center gap-1.5 rounded-md border px-1.5 text-foreground/85"><span className="size-1.5 rounded-full" style={{ background: STATUS_HEX[def.color] }} />{def.name}</span>}
+                    {groupBy !== 'status' && <DefPill def={def} className="h-[22px] text-[11.5px]" />}
                     {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.folder className="size-3 text-muted-foreground" />{t.project}</span>}
                     {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
-                    {groupBy !== 'priority' && <span className="inline-flex h-[22px] items-center gap-1.5 rounded-md border px-1.5 text-foreground/85"><span className={cn('size-1.5 rounded-full', PRI_DOT[t.priority || 'normal'])} />{P[t.priority || 'normal'].label}</span>}
+                    {groupBy !== 'priority' && <PriorityPill priority={t.priority} className="h-[22px] text-[11.5px]" />}
                     <span className="ml-auto flex items-center gap-2.5 text-muted-foreground">
                       <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(t))}</span>
                       {groupBy !== 'assignee' && t.assignee && <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" />}
@@ -4831,13 +4932,13 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
   const copy = async kind => {
     const o = out();
     const ok = await copyToClipboard(kind === 'md' ? o.md : o.text, kind === 'rich' ? o.html : null);
-    toast(ok ? (kind === 'md' ? 'Copied as Markdown' : kind === 'rich' ? 'Copied with formatting' : 'Copied as text') : 'Couldn’t copy the report', ok ? (kind === 'rich' ? 'Paste it into an email, Teams or Word.' : 'Paste it wherever you send your update.') : undefined);
+    (ok ? toast : toast.error)(ok ? (kind === 'md' ? 'Copied as Markdown' : kind === 'rich' ? 'Copied with formatting' : 'Copied as text') : 'Couldn’t copy the report', ok ? (kind === 'rich' ? 'Paste it into an email, Teams or Word.' : 'Paste it wherever you send your update.') : undefined);
   };
   const saveMd = async () => {
     const dest = await saveDialog({ defaultPath: `Weekly update ${startISO}.md`, filters: [{ name: 'Markdown', extensions: ['md'] }, { name: 'Text', extensions: ['txt'] }] });
     if (!dest) return;
     const o = out();
-    try { await invoke('write_text_file', { dest, content: /\.txt$/i.test(dest) ? o.text : o.md }); toast('Report saved', dest); } catch (e) { toast('Couldn’t save the report', String(e)); }
+    try { await invoke('write_text_file', { dest, content: /\.txt$/i.test(dest) ? o.text : o.md }); toast('Report saved', dest); } catch (e) { toast.error('Couldn’t save the report', String(e)); }
   };
   const hide = k => setE(x => ({ ...x, hidden: [...x.hidden, k] }));
   const unhide = sec => setE(x => ({ ...x, hidden: x.hidden.filter(k => !k.startsWith(sec + ':')) }));
@@ -4992,6 +5093,26 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.12', title: 'Status and priority at a glance', img: 'status-priority.webp',
+    points: ['Status and priority are now colored chips in every view: a dot for the status, and bars for the priority, with High in red.', 'They look the same in the table, the list and the board.'] },
+  { v: '0.19.12', title: 'A sidebar that gets out of the way', img: 'sidebar-hover.webp',
+    points: ['The sidebar is a slim row of icons. Point at it and it opens with the page names, then closes when you move away.', 'Click the panel button at the top to keep it open. That choice stays on this PC.'] },
+  { v: '0.19.12', title: 'No more tabs', img: 'task-panel.webp',
+    points: ['The tab bar is gone, so pages get more room. A task opens in the side panel, and Ctrl+click or middle-click does the same.', 'If you had tasks set to open in a new tab, they now open in the panel.'] },
+  { v: '0.19.12', title: 'Sync status by the page title', img: 'sync-note.webp',
+    points: ['A quiet note beside the page title says when your work was last saved to the cloud, or if you are offline.', 'Point at it to sync again now, and click it to open cloud sync.'] },
+  { v: '0.19.12', title: 'A tidier ⋯ menu', img: 'more-menu.webp',
+    points: ['The ⋯ menu is grouped: Automations, Statuses and Platforms first, then Time summary, Archive and Trash, then Settings and help.', 'Automations shows how many are on, and Time summary is a switch.'] },
+  { v: '0.19.12', title: 'Automations, grouped by event', img: 'automations.webp',
+    points: ['Automations read like a sentence and are grouped by what sets them off. One event can do several things.', 'Click any word in a box to change it, switch single steps on or off, or start from an idea at the bottom.'] },
+  { v: '0.19.12', title: 'Notifications come grouped', img: 'notif-grouped.webp',
+    points: ['When several tasks need you at once, you get one notification instead of a pile: “12 tasks are overdue”, with the first few named.', 'Each kind of event, such as overdue, due tomorrow or marked done, gets its own.'] },
+  { v: '0.19.12', title: 'Smoother messages', img: 'toasts.webp',
+    points: ['Messages at the bottom right slide in and stack neatly when several arrive. They look just like before.', 'Undo is still on the message, and the update card keeps its own spot at the bottom left.'] },
+  { v: '0.19.12', title: 'Slim scroll bars', img: 'scrollbars.webp',
+    points: ['Scroll bars are a thin, faint line that follows the theme. They widen a little while you scroll, and more when you point at them.', 'Long windows fade softly at the edge when there is more to see.'] },
+  { v: '0.19.12', title: 'Fixes', img: 'assign-new.webp',
+    points: ['Automations can assign to anyone again: type a new name and pick Assign to it.', 'The time summary shows once on Tasks, a scroll bar no longer stays bright after the pointer leaves the window, and a PC that comes back online no longer keeps an old copy of a task or setting.'] },
   { v: '0.19.11', title: 'Quick capture, plain and simple', img: 'capture-solid.webp',
     points: ['Quick capture is a plain solid panel again: no glass, no blur, readable over anything.', 'Bucket and Platform buttons, the Inbox or Open hint and Enter to save all work the same. The Frostiness and Translucency sliders are gone from Settings.'] },
   { v: '0.19.10', title: 'Frostiness you can see', img: 'capture-frost.webp',
@@ -5114,6 +5235,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [renaming, setRenaming] = useState(null);
   const [statusesOpen, setStatusesOpen] = useState(false);
   const up = useUpdater();
+  // Update available: the bottom-left snackbar, shown through its own Sonner toaster. It stays until you act on it.
+  const upRef = useRef(up); upRef.current = up;
+  useEffect(() => {
+    if (!up.update) { sonner.dismiss('update'); return; }
+    sonner.custom(() => <UpdateCard up={upRef.current} />, { id: 'update', toasterId: 'update', duration: Infinity, dismissible: false });
+  }, [up.update, up.progress]);
   // What's new: opens once after an update. A brand-new install starts from the current version.
   const [whatsNew, setWhatsNew] = useState(null);
   useEffect(() => {
@@ -5145,29 +5272,25 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   useEffect(() => { try { localStorage.setItem(LS_VIEW, JSON.stringify({ projectFilter, sortBy, showSummary, view })); } catch (e) {} }, [projectFilter, sortBy, showSummary, view]);
   const [quick, setQuick] = useState('');
   const [sheet, setSheet] = useState(standaloneId ? { open: true, id: standaloneId } : { open: false, id: null });
-  const [openMode, setOpenMode] = useState(() => { try { return localStorage.getItem('tasks-open-mode') || 'side'; } catch (e) { return 'side'; } });
+  const [openMode, setOpenMode] = useState(() => { try { const m = localStorage.getItem('tasks-open-mode'); return m && m !== 'tab' ? m : 'side'; } catch (e) { return 'side'; } });
   const chooseMode = m => { setOpenMode(m); try { localStorage.setItem('tasks-open-mode', m); } catch (e) {} };
-  // Tabs: Home plus tasks you opened in a tab. Remembered between sessions (main window only).
-  const [tabs, setTabs] = useState(() => {
-    if (standaloneId) return { list: [], active: 'home' };
-    try { const v = JSON.parse(localStorage.getItem((ws === 'product' ? 'tasks-tabs' : 'tasks-tabs-' + ws))); if (v && Array.isArray(v.list)) return { list: v.list, active: v.active || 'home' }; } catch (e) {}
-    return { list: [], active: 'home' };
-  });
-  useEffect(() => { if (!standaloneId) { try { localStorage.setItem((ws === 'product' ? 'tasks-tabs' : 'tasks-tabs-' + ws), JSON.stringify(tabs)); } catch (e) {} } }, [tabs]);
-  const openTab = id => setTabs(t => ({ list: t.list.includes(id) ? t.list : [...t.list, id], active: id }));
-  const closeTab = id => setTabs(t => {
-    const i = t.list.indexOf(id), list = t.list.filter(x => x !== id);
-    return { list, active: t.active === id ? (list[i] || list[i - 1] || 'home') : t.active };
-  });
-  const setActiveTab = id => setTabs(t => ({ ...t, active: id }));
-  const tabsRef = useRef(tabs); tabsRef.current = tabs;
-  const tabClose = useRef(null), tabDrop = useRef(null);
-  // Opens a task the way you chose: side panel, centered, full screen, or a new tab.
-  const openTask = id => { if (!standaloneId && openMode === 'tab') openTab(id); else setSheet({ open: true, id }); };
+  // The tab system was removed: everything stays on the main window, and a task opens in the panel you chose.
+  // A Ctrl+click or middle-click that used to open a tab now just opens the task. Old saved tabs are cleared.
+  useEffect(() => { try { localStorage.removeItem('tasks-tabs'); localStorage.removeItem('tasks-tabs-' + ws); } catch (e) {} }, []);
+  // Opens a task the way you chose: side panel, centered or full screen.
+  const openTask = id => setSheet({ open: true, id });
   const [confirmId, setConfirmId] = useState(null);
   const storageOk = true;
   const [profileOpen, setProfileOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
+  // Sidebar: a slim rail that opens over the page on hover. Pinning keeps it open (remembered on this PC only).
+  const [railPinned, setRailPinned] = useState(() => { try { return localStorage.getItem('tasks-rail-pinned') === '1'; } catch (e) { return false; } });
+  const [railHover, setRailHover] = useState(false);
+  const railTimer = useRef(null);
+  const railOpen = railPinned || railHover;
+  const railEnter = () => { clearTimeout(railTimer.current); railTimer.current = setTimeout(() => setRailHover(true), 120); };
+  const railLeave = () => { clearTimeout(railTimer.current); setRailHover(false); };
+  const toggleRailPin = () => setRailPinned(p => { const n = !p; try { localStorage.setItem('tasks-rail-pinned', n ? '1' : '0'); } catch (e) {} if (!n) setRailHover(false); return n; });
   const [restoreSrc, setRestoreSrc] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const sheetDrop = useRef(null);
@@ -5278,7 +5401,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [viewMode, setViewMode] = useState(() => { try { return localStorage.getItem(VM_KEY) || 'table'; } catch (e) { return 'table'; } });
   const [groupBy, setGroupBy] = useState(() => { try { return localStorage.getItem(GB_KEY) || 'project'; } catch (e) { return 'project'; } });
   useEffect(() => { try { localStorage.setItem(VM_KEY, viewMode); localStorage.setItem(GB_KEY, groupBy); } catch (e) {} }, [viewMode, groupBy]);
-  const openFromView = (id, e) => { if (e && (e.ctrlKey || e.metaKey)) openTab(id); else openTask(id); };
+  const openFromView = id => openTask(id);
   const moveToColumn = (id, colId) => {
     const d = statusList(stages).find(x => x.id === colId); if (!d) return;
     const t = tasksRef.current[id]; if (!t || statusDef(t, stages).id === colId) return;
@@ -5548,7 +5671,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         const have = new Set((t.checklist || []).map(c => norm(c.text)));
         const add = r.target.split(/[,\n]/).map(x => x.trim()).filter(x => x && !have.has(norm(x))).map(text => ({ id: newId(), text, done: false }));
         if (add.length) t = { ...t, checklist: [...(t.checklist || []), ...add] };
-      } else if (r.action === 'notify') notes.push({ title: r.target || TRIG[r.trigger].short, body: t.title });
+      } else if (r.action === 'notify') notes.push({ kind: r.trigger, message: r.target || '', taskId: t.id, taskTitle: t.title });
     }
     return { task: t, created, notes };
   };
@@ -5568,7 +5691,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   };
   // Returns true if it showed a message about the automation.
   const notifyAuto = auto => {
-    (auto.notes || []).forEach(n => notifyDesktop(n.title, n.body));
+    (auto.notes || []).forEach(queueNote);
     if (auto.created.length) {
       toast(auto.created.length === 1 ? `Follow-up created in ${auto.created[0].project}` : `${auto.created.length} follow-up tasks created`, `“${auto.created[0].title}” is waiting in To do.`);
       return true;
@@ -5597,7 +5720,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       });
       if (updates.length) {
         saveMany([...updates, ...made]);
-        notes.forEach(n => notifyDesktop(n.title, n.body));
+        notes.forEach(queueNote);
         if (!notes.length) toast(updates.length === 1 ? `Automation ran for “${updates[0].title}”` : `Automations ran for ${updates.length} tasks`, 'Because of their deadlines.');
       }
     };
@@ -5663,7 +5786,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ...(opts && opts.preset ? opts.preset : {}), createdAt: Date.now(), timeSpent: 0, timerStartedAt: null,
     }, null);
     saveMany([auto.task, ...auto.created]);
-    if (opts && opts.tab === true) openTab(auto.task.id); else openTask(auto.task.id);
+    openTask(auto.task.id);
   };
   const createRef = useRef(createTask); createRef.current = createTask;
   // A new task you close without typing anything is removed again.
@@ -5673,15 +5796,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     toast('Moved to Trash', `You can restore “${(t && t.title) || 'Untitled'}” from the Trash for ${TRASH_DAYS} days.`, { undo: true });
   };
   const closeSheet = useCallback(() => setSheet({ open: false, id: null }), []);
-  // Close tabs whose task was deleted.
-  useEffect(() => {
-    if (!loaded) return;
-    setTabs(t => {
-      const list = t.list.filter(id => tasks[id]);
-      if (list.length === t.list.length) return t;
-      return { list, active: t.active === 'home' || list.includes(t.active) ? t.active : 'home' };
-    });
-  }, [tasks, loaded]);
   // Closing the window keeps Tasks running in the tray (unless turned off in Settings).
   const prefsRef = useRef(prefs); prefsRef.current = prefs;
   // Closing Tasks (the window, Quit in the tray, or an update) always stops every running timer, and
@@ -5757,7 +5871,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const key = accel(prefs.captureKey);
     setShortcutError('');
     registerShortcut(key, ev => { if (!ev || ev.state === 'Pressed') openCaptureWindow(); })
-      .catch(() => { setShortcutError(`${showShortcut(prefs.captureKey)} is already used by Windows or another app. Choose another.`); toast('Couldn’t set the quick capture shortcut', `${showShortcut(prefs.captureKey)} is already in use.`); });
+      .catch(() => { setShortcutError(`${showShortcut(prefs.captureKey)} is already used by Windows or another app. Choose another.`); toast.error('Couldn’t set the quick capture shortcut', `${showShortcut(prefs.captureKey)} is already in use.`); });
     return () => { unregisterShortcut(key).catch(() => {}); };
   }, [prefs.captureKey]);
   const captureRef = useRef(null);
@@ -5840,23 +5954,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   useEffect(() => {
     if (standaloneId) return;
     const k = e => { if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen(o => !o); } };
-    document.addEventListener('keydown', k, true);
-    return () => document.removeEventListener('keydown', k, true);
-  }, []);
-  // Ctrl+W closes the tab, Ctrl+Tab moves to the next one, Ctrl+1 goes Home.
-  useEffect(() => {
-    if (standaloneId) return;
-    const k = e => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      const t = tabsRef.current, ids = ['home', ...t.list];
-      if (e.key.toLowerCase() === 'w') {
-        if (t.active !== 'home') { e.preventDefault(); if (tabClose.current) tabClose.current(); else closeTab(t.active); }
-      } else if (e.key === 'Tab') {
-        e.preventDefault();
-        const i = ids.indexOf(t.active);
-        setActiveTab(ids[(i + (e.shiftKey ? -1 : 1) + ids.length) % ids.length]);
-      } else if (e.key === '1') { e.preventDefault(); setActiveTab('home'); }
-    };
     document.addEventListener('keydown', k, true);
     return () => document.removeEventListener('keydown', k, true);
   }, []);
@@ -5992,7 +6089,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const addWatchFolder = async () => {
     const sel = await openDialog({ directory: true, multiple: false });
     const dir = Array.isArray(sel) ? sel[0] : sel; if (!dir) return;
-    let files = []; try { files = await invoke('list_folder', { path: dir, recursive: false }); } catch (e) { toast('Couldn’t open that folder', String(e)); return; }
+    let files = []; try { files = await invoke('list_folder', { path: dir, recursive: false }); } catch (e) { toast.error('Couldn’t open that folder', String(e)); return; }
     const seen = readJSON(SEEN_KEY, {}); seen[dir] = Object.fromEntries(files.map(f => [f.path, f.modified]));
     try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) {}
     saveSettings(x => ({ ...x, watchFolders: [...(x.watchFolders || []).filter(w => w.path !== dir), { path: dir, subfolders: false, added: Date.now() }] }));
@@ -6056,14 +6153,14 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const bad = files.filter(f => !ALLOWED.includes(extOf(f.name)));
     const big = files.filter(f => ALLOWED.includes(extOf(f.name)) && f.size > MAX_FILE);
     const ok = files.filter(f => ALLOWED.includes(extOf(f.name)) && f.size <= MAX_FILE);
-    if (bad.length) toast(bad.length === 1 ? `“${bad[0].name}” isn’t a supported file type` : `${bad.length} files aren’t a supported type`, 'Use PDF, Word (.docx), HTML, Excel, PowerPoint, images, text or zip. Save old .doc files as .docx first.');
-    if (big.length) toast(big.length === 1 ? `“${big[0].name}” is too large` : `${big.length} files are too large`, 'Each file can be up to 200 MB.');
+    if (bad.length) toast.error(bad.length === 1 ? `“${bad[0].name}” isn’t a supported file type` : `${bad.length} files aren’t a supported type`, 'Use PDF, Word (.docx), HTML, Excel, PowerPoint, images, text or zip. Save old .doc files as .docx first.');
+    if (big.length) toast.error(big.length === 1 ? `“${big[0].name}” is too large` : `${big.length} files are too large`, 'Each file can be up to 200 MB.');
     if (!ok.length) return [];
     setBusy(true);
     const metas = [];
     for (const f of ok) {
       try { metas.push(await importDoc(f)); }
-      catch (e) { toast(`Couldn’t add “${f.name}”`, String(e)); }
+      catch (e) { toast.error(`Couldn’t add “${f.name}”`, String(e)); }
     }
     setBusy(false);
     return metas;
@@ -6107,7 +6204,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     toast('Document removed', file.name);
   };
   // Files dragged onto the window (from WhatsApp, File Explorer…) arrive as file paths.
-  const dropState = useRef({}); dropState.current = { sheetOpen: sheet.open, addOpen: addDocs.open, tab: tabs.active };
+  const dropState = useRef({}); dropState.current = { sheetOpen: sheet.open, addOpen: addDocs.open };
   useEffect(() => {
     let un = null, dead = false;
     getCurrentWebview().onDragDropEvent(async ev => {
@@ -6123,7 +6220,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         const s = dropState.current;
         if (s.addOpen) setAddDocs(a => ({ ...a, files: [...a.files, ...infos] }));
         else if (s.sheetOpen && sheetDrop.current) sheetDrop.current(infos);
-        else if (s.tab !== 'home' && tabDrop.current) tabDrop.current(infos);
         else setAddDocs({ open: true, files: infos });
       }
     }).then(f => { if (dead) f(); else un = f; });
@@ -6135,7 +6231,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const dest = await saveDialog({ defaultPath: `Tasks backup ${toISO(new Date())}.zip`, filters: [{ name: 'Backup', extensions: ['zip'] }] });
     if (!dest) return;
     try { await flushAll(); await invoke('backup', { dest }); toast('Backup saved', dest); }
-    catch (e) { toast('Backup failed', String(e)); }
+    catch (e) { toast.error('Backup failed', String(e)); }
   };
   const chooseRestore = async () => {
     const src = await openDialog({ multiple: false, filters: [{ name: 'Backup', extensions: ['zip'] }] });
@@ -6144,7 +6240,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const doRestore = async () => {
     const src = restoreSrc; setRestoreSrc(null);
     try { await flushAll(); await invoke('restore', { src }); window.location.reload(); }
-    catch (e) { toast('Restore failed', String(e)); }
+    catch (e) { toast.error('Restore failed', String(e)); }
   };
 
   const duplicate = id => {
@@ -6163,8 +6259,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       const el = document.activeElement;
       if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
       if (document.querySelector('[role=dialog],[role=alertdialog]') || standaloneId) return;
-      if ((e.key === 'n' || e.key === 'N') && tabsRef.current.active === 'home') { e.preventDefault(); if (primaryRef.current) primaryRef.current.run(); }
-      else if (e.key === '/' && tabsRef.current.active === 'home' && document.getElementById('home-cmd-in')) { e.preventDefault(); document.getElementById('home-cmd-in').focus(); }
+      if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (primaryRef.current) primaryRef.current.run(); }
+      else if (e.key === '/' && document.getElementById('home-cmd-in')) { e.preventDefault(); document.getElementById('home-cmd-in').focus(); }
       else if (e.key === '/') { e.preventDefault(); setSearchOpen(true); setTimeout(() => searchRef.current && searchRef.current.focus(), 0); }
       else if (e.key === '?') { e.preventDefault(); setKeysOpen(true); }
     };
@@ -6186,13 +6282,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-docs', group: 'Actions', label: 'Add documents', icon: <I.upload />, run: () => setAddDocs({ open: true, files: [] }) },
     ...runs.map(t => ({ id: 'a-pause-' + t.id, group: 'Actions', label: `Pause timer: ${t.title || 'Untitled'}`, icon: <I.pause />, run: () => toggleTimer(t.id) })),
     ...(runs.length > 1 ? [{ id: 'a-pause-all', group: 'Actions', label: `Pause all ${runs.length} timers`, icon: <I.pause />, run: pauseAll }] : []),
-    { id: 'v-home', group: 'Actions', label: 'Go to Home', icon: <I.home />, run: () => { setActiveTab('home'); setView('home'); } },
-    { id: 'v-tasks', group: 'Actions', label: 'Go to Tasks', icon: <I.listCheck />, run: () => { setActiveTab('home'); setView('tasks'); } },
-    { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setActiveTab('home'); setView('projects'); } },
-    { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); } },
-    { id: 'v-time', group: 'Actions', label: 'Go to Timesheet', icon: <I.timer />, run: () => { setActiveTab('home'); setView('time'); } },
+    { id: 'v-home', group: 'Actions', label: 'Go to Home', icon: <I.home />, run: () => { setView('home'); } },
+    { id: 'v-tasks', group: 'Actions', label: 'Go to Tasks', icon: <I.listCheck />, run: () => { setView('tasks'); } },
+    { id: 'v-buckets', group: 'Actions', label: `Go to ${plural(labels.bucket)}`, icon: <I.layers />, run: () => { setView('projects'); } },
+    { id: 'v-docs', group: 'Actions', label: 'Go to Documents', icon: <I.file />, run: () => { setView('docs'); } },
+    { id: 'v-time', group: 'Actions', label: 'Go to Timesheet', icon: <I.timer />, run: () => { setView('time'); } },
     { id: 'a-whatsnew', group: 'Actions', label: 'What’s new', keywords: 'release notes changes update version', icon: <I.zap />, run: openWhatsNew },
-    { id: 'v-report', group: 'Actions', label: 'Go to Weekly report', keywords: 'status update product owner', icon: <I.clipboard />, run: () => { setActiveTab('home'); setView('report'); } },
+    { id: 'v-report', group: 'Actions', label: 'Go to Weekly report', keywords: 'status update product owner', icon: <I.clipboard />, run: () => { setView('report'); } },
     { id: 'a-addtime', group: 'Actions', label: 'Add time', icon: <I.timer />, run: () => setAddTime({}) },
     { id: 'v-table', group: 'Actions', label: 'Table view', icon: <I.table />, run: () => { setView('tasks'); setViewMode('table'); } },
     { id: 'v-list', group: 'Actions', label: 'List view', icon: <I.rows />, run: () => { setView('tasks'); setViewMode('list'); } },
@@ -6212,7 +6308,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-quick', group: 'Actions', label: 'Quick add a task', hint: '`', icon: <I.plus />, run: () => setQuickAdd(true) },
     ...all.map(t => ({ id: 't-' + t.id, group: 'Tasks', label: t.title || 'Untitled', hint: [statusLabel(t, stages), t.bucket, t.project].filter(Boolean).join(', '), keywords: t.assignee, icon: <span className={cn('ml-1 mr-1 size-2 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} />, run: () => openTask(t.id) })),
     ...bucketList.map(b => ({ id: 'b-' + b.name, group: 'Buckets', groupLabel: plural(labels.bucket), label: b.name, icon: <I.layers />, run: () => openBucket(b.name) })),
-    ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setActiveTab('home'); setView('docs'); setDocFocus(d.id); } })),
+    ...docs.map(d => ({ id: 'd-' + d.id, group: 'Documents', label: d.name, hint: d.links.length ? d.links.map(l => l.task.title).filter(Boolean).slice(0, 2).join(', ') : 'Not linked', icon: <I.file />, run: () => { setView('docs'); setDocFocus(d.id); } })),
   ];
   const primary = view === 'tasks' || view === 'home' ? { label: 'Create task', run: () => createTask() }
     : view === 'projects' ? { label: `Create ${labels.bucket.toLowerCase()}`, run: () => setBucketEdit({ bucket: null }) }
@@ -6220,9 +6316,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     : view === 'time' ? { label: 'Add time', run: () => setAddTime({}) } : null;
   const primaryRef = useRef(primary); primaryRef.current = primary;
   const popOut = () => { const t = sheetTask; setSheet({ open: false, id: null }); if (t) openTaskWindow(t.id, t.title || 'Untitled', ws); };
-  const sheetToTab = () => { const id = sheet.id; setSheet({ open: false, id: null }); if (id) openTab(id); };
-  const onSheetMode = m => { chooseMode(m); if (m === 'tab') sheetToTab(); };
-  const tabTask = tabs.active !== 'home' ? all.find(t => t.id === tabs.active) : null;
+  const onSheetMode = m => chooseMode(m);
   // In a task's own window: keep the title bar in step, and close the window when the task is closed or deleted.
   useEffect(() => {
     if (!standaloneId) return;
@@ -6233,7 +6327,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -6250,66 +6344,80 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   return (
     <div className="flex h-screen flex-col">
-      <TabStrip list={tabs.list} active={tabs.active} tasks={tasks} stages={stages}
-        onSelect={setActiveTab} onNew={() => createTask({ tab: true })}
-        onClose={id => { if (id === tabs.active && tabClose.current) tabClose.current(); else closeTab(id); }} />
-      {tabs.active !== 'home' && tabTask ? (
-        <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onAccept={acceptTask} key={tabTask.id} mode="tab" open task={tabTask} closeRef={tabClose} dropRef={tabDrop}
-          onHome={() => setActiveTab('home')} onClose={() => closeTab(tabTask.id)}
-          onPopOut={() => { const t = tabTask; closeTab(t.id); openTaskWindow(t.id, t.title || 'Untitled', ws); }}
-          people={people} stages={stages} labels={labels} buckets={bucketNames} projects={projects} rules={rules} allTasks={all} onOpen={id => openTab(id)} onPatch={patch}
-          onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(tabTask.id)} onToggle={toggleTimer} onReset={resetTimer}
-          storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
-          onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
-      ) : (<>
-      {/* Icon rail: workspace, pages with badges, running timer, account */}
+      <>
+      {/* Sidebar: slim icon rail; hover (or keyboard focus) opens it over the page with labels, the pin keeps it open */}
       <div className="flex min-h-0 flex-1">
-      <nav aria-label="Pages" className="no-scrollbar flex w-[72px] shrink-0 flex-col items-center gap-1 overflow-y-auto overflow-x-hidden border-r bg-card px-2 py-2.5">
-        <DropdownMenu align="start"
-          trigger={p => (
-            <button {...p} type="button" aria-label={`Switch workspace (${wsName})`} title={wsName} className="mb-2 flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
-              <I.check className="size-4" />
-            </button>
-          )}
+      <div className={cn('relative shrink-0 transition-[width] duration-200 ease-out', railPinned ? 'w-[236px]' : 'w-[60px]')}>
+      <nav aria-label="Pages" onMouseEnter={railEnter} onMouseLeave={railLeave}
+        onFocus={e => { if (e.target.matches && e.target.matches(':focus-visible')) setRailHover(true); }}
+        onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setRailHover(false); }}
+        className={cn('no-scrollbar absolute inset-y-0 left-0 z-40 flex flex-col gap-1 overflow-y-auto overflow-x-hidden border-r bg-card px-[10px] py-2.5 transition-[width,box-shadow] duration-200 ease-out',
+          railOpen ? 'w-[236px]' : 'w-[60px]', railOpen && !railPinned && 'shadow-[0_16px_40px_rgba(0,0,0,.16)] dark:shadow-[0_16px_40px_rgba(0,0,0,.6)]')}>
+        <div className="mb-2 flex h-[34px] shrink-0 items-center gap-2.5 pl-[3px]">
+          <DropdownMenu align="start"
+            trigger={p => (
+              <button {...p} type="button" aria-label={`Switch workspace (${wsName})`} title={wsName} className="flex size-[34px] shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background">
+                <I.check className="size-[15px]" />
+              </button>
+            )}
           items={[
-            ...workspaces.map(w => ({ label: w.name, icon: <I.layers />, shortcut: w.id === ws ? '✓' : undefined, onSelect: () => { if (w.id !== ws) onSwitchWorkspace(w.id); } })),
-            'sep',
-            { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
-          ]} />
+              ...workspaces.map(w => ({ label: w.name, icon: <I.layers />, shortcut: w.id === ws ? '✓' : undefined, onSelect: () => { if (w.id !== ws) onSwitchWorkspace(w.id); } })),
+              'sep',
+              { label: 'Rename workspace…', icon: <I.pencil />, onSelect: () => setWsRename(true) },
+            ]} />
+          <span aria-hidden={!railOpen} className={cn('min-w-0 flex-1 truncate whitespace-nowrap text-sm font-semibold transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0')}>{wsName}</span>
+          <button type="button" onClick={toggleRailPin} aria-pressed={railPinned} tabIndex={railOpen ? 0 : -1} aria-label={railPinned ? 'Let the sidebar close' : 'Keep the sidebar open'} title={railPinned ? 'Let the sidebar close' : 'Keep the sidebar open'}
+            className={cn('flex size-[30px] shrink-0 items-center justify-center rounded-md transition-opacity hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', railPinned ? 'bg-muted text-foreground' : 'text-muted-foreground', railOpen ? 'opacity-100' : 'pointer-events-none opacity-0')}>
+            <I.panelLeft className="size-4" />
+          </button>
+        </div>
         {[
           { id: 'home', label: 'Home', icon: I.home, on: view === 'home', go: () => setView('home') },
           { id: 'inbox', label: 'Inbox', icon: I.inbox, badge: inboxCount, badgeTitle: `${inboxCount} quick ${inboxCount === 1 ? 'capture' : 'captures'} to sort`, on: view === 'tasks' && filter === 'inbox' && !query, go: () => { setView('tasks'); setFilter('inbox'); setQuery(''); } },
           { id: 'tasks', label: 'Tasks', icon: I.listCheck, on: view === 'tasks' && (filter !== 'inbox' || !!query), go: () => { setView('tasks'); if (filter === 'inbox') setFilter('open'); } },
           { id: 'projects', label: plural(labels.bucket), icon: I.layers, on: view === 'projects', go: () => setView('projects') },
-          { id: 'docs', label: 'Docs', icon: I.file, badge: docs.filter(d => d.inbox).length, badgeTitle: 'new documents', on: view === 'docs', go: () => setView('docs') },
-          { id: 'time', label: 'Time', icon: I.timer, on: view === 'time', go: () => setView('time') },
-          { id: 'report', label: 'Report', icon: I.clipboard, on: view === 'report', go: () => setView('report') },
+          { id: 'docs', label: 'Documents', icon: I.file, badge: docs.filter(d => d.inbox).length, badgeTitle: 'new documents', on: view === 'docs', go: () => setView('docs') },
+          { id: 'time', label: 'Timesheet', icon: I.timer, on: view === 'time', go: () => setView('time') },
+          { id: 'report', label: 'Weekly report', icon: I.clipboard, on: view === 'report', go: () => setView('report') },
         ].map(v => (
-          <button key={v.id} type="button" onClick={v.go} aria-current={v.on ? 'page' : undefined} title={v.badge ? `${v.label}, ${v.badge} ${v.badgeTitle}` : v.label}
-            className={cn('relative flex h-14 w-14 shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-[10.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-              v.on ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground')}>
-            <v.icon className="size-[19px]" />
-            <span className="max-w-full truncate px-0.5">{v.label}</span>
-            {v.badge > 0 && <span className="tnum absolute right-2 top-1.5 min-w-4 rounded-full bg-blue-500 px-1 text-center text-[10px] leading-4 text-white">{v.badge}</span>}
+          <button key={v.id} type="button" onClick={v.go} aria-current={v.on ? 'page' : undefined} aria-label={v.badge ? `${v.label}, ${v.badge} ${v.badgeTitle}` : v.label} title={railOpen ? undefined : v.label}
+            className={cn('flex h-10 w-full shrink-0 items-center gap-3 rounded-[9px] pl-[10.5px] pr-2.5 text-left text-[13.5px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+              v.on ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground')}>
+            <span className="relative shrink-0">
+              <v.icon className="size-[19px]" />
+              {v.badge > 0 && !railOpen && <span className="tnum absolute -right-2.5 -top-2 h-[15px] min-w-[15px] rounded-full bg-blue-600 px-1 text-center text-[9.5px] font-semibold leading-[15px] text-white ring-2 ring-card">{v.badge}</span>}
+            </span>
+            <span className={cn('min-w-0 flex-1 truncate whitespace-nowrap transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0')}>{v.label}</span>
+            {v.badge > 0 && railOpen && <span className="tnum shrink-0 rounded-full bg-blue-600 px-1.5 text-center text-[11px] font-medium leading-[18px] text-white">{v.id === 'docs' ? `${v.badge} new` : v.badge}</span>}
           </button>
         ))}
         <div className="flex-1" />
-        <CloudButton onClick={() => setCloudOpen(true)} />
         {running && (() => {
           const mm = t => (m => m >= 60 ? `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}` : `${m}m`)(Math.floor(elapsed(t) / 60000));
-          const ring = 'group relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950';
+          const ring = 'group relative flex size-9 shrink-0 items-center justify-center rounded-full border-2 border-emerald-500 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:bg-[#052e22] dark:text-emerald-300 dark:hover:bg-emerald-950';
+          const longest = runs.reduce((x, t) => elapsed(t) > elapsed(x) ? t : x, running);
+          const info = (
+            <span aria-hidden={!railOpen} className={cn('flex min-w-0 flex-1 flex-col transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0')}>
+              <span className="truncate whitespace-nowrap text-[12.5px] font-medium">{runs.length === 1 ? (running.title || 'Untitled') : `${runs.length} timers running`}</span>
+              <span className="tnum font-mono text-xs text-emerald-700 dark:text-emerald-300">{fmt(elapsed(runs.length === 1 ? running : longest))}</span>
+            </span>
+          );
           if (runs.length === 1) return (
-            <button type="button" onClick={() => toggleTimer(running.id)} onContextMenu={e => { e.preventDefault(); openTask(running.id); }}
-              aria-label={`Pause timer: ${running.title || 'Untitled'}, ${fmt(elapsed(running))}`} title={`${running.title || 'Untitled'}\n${fmt(elapsed(running))}\nClick to pause, right-click to open`} className={ring}>
-              <span className="tnum font-mono text-[11px] font-medium group-hover:hidden">{mm(running)}</span>
-              <I.pause className="hidden size-3.5 group-hover:block" />
-            </button>
+            <div className="mb-1 flex shrink-0 items-center gap-3 pl-[2px]">
+              <button type="button" onClick={() => toggleTimer(running.id)} onContextMenu={e => { e.preventDefault(); openTask(running.id); }}
+                aria-label={`Pause timer: ${running.title || 'Untitled'}, ${fmt(elapsed(running))}`} title={`${running.title || 'Untitled'}\n${fmt(elapsed(running))}\nClick to pause, right-click to open`} className={ring}>
+                <span className="tnum font-mono text-[10px] font-medium group-hover:hidden">{mm(running)}</span>
+                <I.pause className="hidden size-3.5 group-hover:block" />
+              </button>
+              {info}
+            </div>
           );
           return (
+            <div className="mb-1 flex shrink-0 items-center gap-3 pl-[2px]">
             <DropdownMenu align="start"
               trigger={p => (
                 <button {...p} type="button" aria-label={`${runs.length} timers running`} title={runs.map(t => `${t.title || 'Untitled'}  ${fmt(elapsed(t))}`).join('\n')} className={ring}>
-                  <span className="tnum font-mono text-[11px] font-medium">{mm(runs.reduce((x, t) => elapsed(t) > elapsed(x) ? t : x, running))}</span>
+                  <span className="tnum font-mono text-[10px] font-medium">{mm(longest)}</span>
                   <span className="tnum absolute -right-1 -top-1 min-w-[18px] rounded-full bg-emerald-600 px-1 text-center text-[10px] font-semibold leading-[18px] text-white ring-2 ring-card">{runs.length}</span>
                 </button>
               )}
@@ -6318,12 +6426,15 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 'sep',
                 { icon: <I.pause className="size-3.5" />, label: `Pause all ${runs.length}`, onSelect: pauseAll },
               ]} />
+            {info}
+            </div>
           );
         })()}
         <DropdownMenu align="start"
           trigger={p => (
-            <button {...p} type="button" aria-label="Your account" className="shrink-0 rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <Avatar name={me.name} picture={me.picture} className="h-8 w-8 bg-card ring-1 ring-border" />
+            <button {...p} type="button" aria-label="Your account" className="flex w-full shrink-0 items-center gap-3 rounded-[9px] p-[5px] text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              <Avatar name={me.name} picture={me.picture} className="h-[30px] w-[30px] shrink-0 bg-card ring-1 ring-border" />
+              <span className={cn('min-w-0 flex-1 truncate whitespace-nowrap transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0') + ' text-[13px] font-medium'}>{me.name || 'Your account'}</span>
             </button>
           )}
           items={[
@@ -6332,17 +6443,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             { label: 'Cloud sync…', icon: <I.cloud />, onSelect: () => setCloudOpen(true) },
             { label: 'Back up data…', icon: <I.download />, onSelect: backup },
             { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
-            { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast('Couldn’t open the folder', String(e))) },
+            { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast.error('Couldn’t open the folder', String(e))) },
             'sep',
             { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
           ]} />
       </nav>
+      </div>
       <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex h-14 shrink-0 items-center gap-2 border-b px-4 md:px-6">
         <div className="flex min-w-0 items-center gap-2 text-sm">
           <span className="truncate text-muted-foreground">{wsName}</span>
           <span className="text-muted-foreground/50">/</span>
-          <span className="truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', report: 'Weekly report', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
+          <span className="shrink-0 truncate font-medium">{{ home: 'Home', tasks: filter === 'inbox' && !query ? 'Inbox' : 'Tasks', projects: plural(labels.bucket), docs: 'Documents', time: 'Timesheet', report: 'Weekly report', archive: 'Archive', trash: 'Trash' }[view] || ''}</span>
+          <CloudNote onOpen={() => setCloudOpen(true)} />
         </div>
         <div className="ml-auto flex min-w-0 items-center gap-2">
           {searchOpen || query ? (
@@ -6363,17 +6476,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           <ThemeToggle />
           <DropdownMenu
             trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-lg bg-card shadow-none" aria-label="More tools"><I.more /></Button>}
+            quiet className="w-60"
             items={[
-              { label: 'Automations', icon: <I.zap />, shortcut: `${rules.filter(r => r.enabled).length} on`, onSelect: () => setRulesOpen(true) },
-              { label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, onSelect: () => setPlatformsOpen(true) },
-              { label: 'Archive', icon: <I.clipboard />, shortcut: String(Object.keys(archived).length), onSelect: () => setView('archive') },
-              { label: 'Trash', icon: <I.trash />, shortcut: String(Object.keys(trash).length), onSelect: () => setView('trash') },
+              { label: 'Automations', icon: <I.zap />, shortcut: rules.some(r => r.enabled) ? <span className="inline-flex items-center gap-1.5"><span className="size-1.5 rounded-full bg-green-500" />{rules.filter(r => r.enabled).length} on</span> : 'Off', onSelect: () => setRulesOpen(true) },
+              { label: 'Statuses', icon: <I.circleDot />, onSelect: () => setStatusesOpen(true) },
+              { label: plural(labels.platform), icon: <I.folder />, onSelect: () => setPlatformsOpen(true) },
               'sep',
-              { label: 'Edit statuses', icon: <I.sliders />, onSelect: () => setStatusesOpen(true) },
-              { label: showSummary ? 'Hide time summary' : 'Show time summary', icon: <I.chart />, onSelect: () => setShowSummary(v => !v) },
+              { label: 'Time summary', icon: <I.chart />, toggle: showSummary, onSelect: () => setShowSummary(v => !v) },
+              { label: 'Archive', icon: <I.archive />, shortcut: Object.keys(archived).length || '', onSelect: () => setView('archive') },
+              { label: 'Trash', icon: <I.trash />, shortcut: Object.keys(trash).length || '', onSelect: () => setView('trash') },
+              'sep',
+              { label: 'Settings', icon: <I.gear />, onSelect: () => setSettingsOpen(true) },
               { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
-              { label: 'Settings', icon: <I.sliders />, onSelect: () => setSettingsOpen(true) },
-              { label: 'What’s new', icon: <I.zap />, onSelect: openWhatsNew },
+              { label: 'What’s new', icon: <I.sparkles />, onSelect: openWhatsNew },
             ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
         </div>
@@ -6416,14 +6531,14 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             const lines = [[d.groupLabel, ...d.cols, 'Total (hours)'], ...d.rows.map(r => [r.name, ...r.vals.map(hrs), hrs(r.total)]), ['Total', ...d.colTotals.map(hrs), hrs(d.grand)]];
             const dest = await saveDialog({ defaultPath: `${d.title.replace(/[\\/:*?"<>|]/g, '-')}.csv`, filters: [{ name: 'CSV', extensions: ['csv'] }] });
             if (!dest) return;
-            try { await invoke('write_text_file', { dest, content: '\ufeff' + lines.map(l => l.map(esc).join(',')).join('\r\n') }); toast('Timesheet saved', dest); } catch (e) { toast('Couldn’t save the timesheet', String(e)); }
+            try { await invoke('write_text_file', { dest, content: '\ufeff' + lines.map(l => l.map(esc).join(',')).join('\r\n') }); toast('Timesheet saved', dest); } catch (e) { toast.error('Couldn’t save the timesheet', String(e)); }
           }}
           onPrint={d => {
             const h = s => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
             const html = `<!doctype html><html><head><meta charset="utf-8"><title>${h(d.title)}</title><style>body{font:12px system-ui,-apple-system,"Segoe UI",sans-serif;color:#111;margin:32px}h1{font-size:18px;margin:0 0 4px}p{color:#666;margin:0 0 16px}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ddd;padding:6px 8px;text-align:right}th:first-child,td:first-child{text-align:left}tfoot td{font-weight:600;border-top:2px solid #111}</style></head><body><h1>${h(d.title)}</h1><p>${h(wsName)}, hours:minutes</p><table><thead><tr><th>${h(d.groupLabel)}</th>${d.cols.map(c => `<th>${h(c)}</th>`).join('')}<th>Total</th></tr></thead><tbody>${d.rows.map(r => `<tr><td>${h(r.name)}</td>${r.vals.map(v => `<td>${fmtHM(v)}</td>`).join('')}<td>${fmtHM(r.total)}</td></tr>`).join('')}</tbody><tfoot><tr><td>Total</td>${d.colTotals.map(v => `<td>${fmtHM(v)}</td>`).join('')}<td>${fmtHM(d.grand)}</td></tr></tfoot></table></body></html>`;
             const f = document.createElement('iframe'); f.style.cssText = 'position:fixed;width:0;height:0;border:0;right:0;bottom:0';
             f.srcdoc = html; document.body.appendChild(f);
-            f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { toast('Couldn’t open printing', String(e)); } setTimeout(() => f.remove(), 60000); };
+            f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { toast.error('Couldn’t open printing', String(e)); } setTimeout(() => f.remove(), 60000); };
           }} />
       ) : view === 'archive' ? (
         <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveSettings(x => ({ ...x, archiveDays: d }))}
@@ -6531,8 +6646,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         );
       })()}
 
-      {showSummary && <TimeSummary tasks={all} onHide={() => setShowSummary(false)} />}
-
       {viewMode === 'list' && all.length > 0 ? (
         <ListView tasks={shown} stages={stages} labels={labels} groupBy={groupBy} onOpen={openFromView} onToggle={toggleTimer} onAdd={preset => createTask({ preset })} />
       ) : viewMode === 'board' && all.length > 0 ? (
@@ -6612,8 +6725,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                               </button>
                             )}
                             <button type="button" title={t.title}
-                              onClick={e => { if (e.ctrlKey || e.metaKey) openTab(t.id); else openTask(t.id); }}
-                              onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openTab(t.id); } }}
+                              onClick={() => openTask(t.id)}
+                              onAuxClick={e => { if (e.button === 1) { e.preventDefault(); openTask(t.id); } }}
                               onMouseDown={e => { if (e.button === 1) e.preventDefault(); }}
                               className={cn('min-w-[5rem] truncate text-left font-medium hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline', done && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</button>
                             {(() => {
@@ -6676,7 +6789,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           <DropdownMenu
                             trigger={p => <Button {...p} variant="ghost" size="icon-sm" className="h-7 w-7" aria-label={`Actions for ${t.title}`}><I.more /></Button>}
                             items={[
-                              { label: 'Open in new tab', icon: <I.tab />, shortcut: 'Ctrl+click', onSelect: () => openTab(t.id) },
                               { label: 'Open', icon: <I.pencil />, onSelect: () => openTask(t.id) },
                               { label: on ? 'Pause timer' : 'Start timer', icon: on ? <I.pause /> : <I.play />, onSelect: () => toggleTimer(t.id) },
                               ...(done ? [] : [{ label: 'Mark as done', icon: <I.check />, onSelect: () => markDone(t.id) }]),
@@ -6724,9 +6836,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </div>
       </div>
-      </>)}
+      </>
 
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode === 'tab' ? 'side' : openMode} onMode={onSheetMode} onPopOut={popOut} onNewTab={sheetToTab} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={projectFilter !== 'all' && projectFilter !== 'none' ? projectFilter : ''} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
         onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
@@ -6816,30 +6928,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
         description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
-      {/* Update available: a small snackbar at the bottom left */}
-      {up.update && (
-        <div role="status" aria-live="polite"
-          className="fixed left-4 z-[95] flex w-[calc(100%-2rem)] max-w-sm items-start gap-3 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg anim-toast"
-          style={{ bottom: 'calc(1rem + env(safe-area-inset-bottom,0px))' }}>
-          <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><I.download className="size-3.5" /></span>
-          <div className="min-w-0 flex-1">
-            <div className="font-medium">Version {up.update.version} is ready</div>
-            {up.update.body && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground" title={up.update.body}>{up.update.body}</div>}
-            {up.progress === null ? (
-              <div className="mt-2 flex gap-2">
-                <Button size="sm" className="h-7 px-2.5" onClick={up.install}>Install and restart</Button>
-                <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={up.dismiss}>Later</Button>
-              </div>
-            ) : (
-              <div className="mt-2">
-                <div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${up.progress === 'installing' ? 100 : up.progress === -1 ? 30 : up.progress}%` }} /></div>
-                <div className="tnum mt-1 text-xs text-muted-foreground">{up.progress === 'installing' ? 'Installing…' : up.progress === -1 ? 'Downloading…' : `Downloading ${up.progress}%`}</div>
-              </div>
-            )}
-          </div>
-          {up.progress === null && <button type="button" onClick={up.dismiss} aria-label="Dismiss" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground"><I.x className="size-3.5" /></button>}
-        </div>
-      )}
       <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} prof={prof} />
       <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
@@ -6848,10 +6936,35 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       {dragOver && (
         <div className="pointer-events-none fixed inset-3 z-[95] flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/70 anim-fade">
           <div className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow-lg">
-            {sheet.open || tabs.active !== 'home' ? 'Drop to attach to this task' : addDocs.open ? 'Drop to add to the list' : 'Drop to add documents'}
+            {sheet.open ? 'Drop to attach to this task' : addDocs.open ? 'Drop to add to the list' : 'Drop to add documents'}
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function UpdateCard({ up }) {
+  if (!up.update) return null;
+  return (
+    <div role="status" className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg">
+      <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><I.download className="size-3.5" /></span>
+      <div className="min-w-0 flex-1">
+        <div className="font-medium">Version {up.update.version} is ready</div>
+        {up.update.body && <div className="mt-0.5 line-clamp-2 text-xs text-muted-foreground" title={up.update.body}>{up.update.body}</div>}
+        {up.progress === null ? (
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" className="h-7 px-2.5" onClick={up.install}>Install and restart</Button>
+            <Button variant="ghost" size="sm" className="h-7 px-2.5" onClick={up.dismiss}>Later</Button>
+          </div>
+        ) : (
+          <div className="mt-2">
+            <div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-all" style={{ width: `${up.progress === 'installing' ? 100 : up.progress === -1 ? 30 : up.progress}%` }} /></div>
+            <div className="tnum mt-1 text-xs text-muted-foreground">{up.progress === 'installing' ? 'Installing…' : up.progress === -1 ? 'Downloading…' : `Downloading ${up.progress}%`}</div>
+          </div>
+        )}
+      </div>
+      {up.progress === null && <button type="button" onClick={up.dismiss} aria-label="Dismiss" className="rounded-sm p-0.5 text-muted-foreground hover:text-foreground"><I.x className="size-3.5" /></button>}
     </div>
   );
 }
@@ -6872,12 +6985,12 @@ function SignIn({ prof }) {
     try {
       const u = await invoke('google_sign_in', { clientId: g.clientId, clientSecret: g.clientSecret });
       prof.update({ user: { ...u, via: 'google', signedInAt: Date.now() } });
-    } catch (e) { toast('Sign-in didn’t finish', String(e)); }
+    } catch (e) { toast.error('Sign-in didn’t finish', String(e)); }
     setBusy(false);
   };
   const saveSetup = e => {
     e.preventDefault();
-    if (!cid.trim() || !secret.trim()) { toast('Paste both the Client ID and the Client secret'); return; }
+    if (!cid.trim() || !secret.trim()) { toast.error('Paste both the Client ID and the Client secret'); return; }
     prof.update({ google: { clientId: cid.trim(), clientSecret: secret.trim() } });
     setSetup(false);
   };
@@ -6945,16 +7058,39 @@ const CLOUD_TONE = {
 const CLOUD_BUSY = new Set(['syncing', 'first', 'connecting', 'checking']);
 const ago = ms => { if (!ms) return ''; const m = Math.round((Date.now() - ms) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : fmtDay(ms); };
 
-function CloudButton({ onClick }) {
+// A quiet note beside the page title: "Saved to cloud · 2 min ago". Click it for the cloud sync window;
+// hover it for a button that syncs right away.
+function CloudNote({ onOpen }) {
   const c = useCloud();
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick(x => x + 1), 30000); return () => clearInterval(t); }, []);
+  const [spin, setSpin] = useState(false);
+  const busy = CLOUD_BUSY.has(c.phase);
+  const waiting = c.pending ? `${c.pending} ${c.pending === 1 ? 'change' : 'changes'} waiting` : '';
   const tone = CLOUD_TONE[c.phase] || CLOUD_TONE.loading;
-  const label = c.phase === 'off' ? 'Cloud sync is off' : `Cloud sync: ${tone.text}${c.phase === 'synced' && c.lastSync ? `, ${ago(c.lastSync)}` : ''}${c.pending ? `, ${c.pending} changes waiting` : ''}`;
+  let text = tone.text, Ico = I.cloud, color = 'text-muted-foreground';
+  if (c.phase === 'synced') { Ico = I.cloudCheck; text = `Saved to cloud${c.lastSync ? ` · ${ago(c.lastSync)}` : ''}${waiting ? ` · ${waiting}` : ''}`; }
+  else if (c.phase === 'offline') { Ico = I.cloudOff; text = `Offline · ${waiting || 'saved on this PC'}`; color = 'text-amber-600 dark:text-amber-400'; }
+  else if (c.phase === 'error') { Ico = I.cloudOff; text = 'Not syncing · Fix'; color = 'text-destructive'; }
+  else if (c.phase === 'choose') { text = 'Cloud sync needs your choice'; color = 'text-amber-600 dark:text-amber-400'; }
+  else if (c.phase === 'signin') text = 'Signed out of cloud sync';
+  else if (c.phase === 'off') { Ico = I.cloudOff; text = 'Cloud sync off'; }
+  const canSync = c.phase === 'synced' || c.phase === 'offline' || c.phase === 'error';
+  const syncNow = () => { setSpin(true); cloudSyncNow(); setTimeout(() => setSpin(false), 900); };
   return (
-    <button type="button" onClick={onClick} aria-label={label} title={label}
-      className="relative mb-1 flex size-11 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      <I.cloud className={cn('size-[19px]', c.phase === 'off' && 'opacity-60', CLOUD_BUSY.has(c.phase) && 'anim-cloud-sync')} />
-      {tone.dot && <span className={cn('absolute right-2.5 top-2.5 size-2 rounded-full ring-2 ring-card', tone.dot)} />}
-    </button>
+    <div className="group/cloud ml-1.5 flex min-w-0 items-center">
+      <button type="button" onClick={onOpen} title={`${text}\nClick for cloud sync settings`} aria-label={`Cloud sync: ${text}. Open cloud sync`}
+        className={cn('flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-[12.5px] transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', color)}>
+        <Ico className={cn('size-[15px] shrink-0', busy && 'anim-cloud-sync')} />
+        <span className="truncate whitespace-nowrap">{text}</span>
+      </button>
+      {canSync && (
+        <button type="button" onClick={syncNow} aria-label="Sync now" title="Sync now"
+          className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/cloud:opacity-100">
+          <I.refresh className={cn('size-3.5', spin && 'animate-spin')} />
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -7104,7 +7240,7 @@ function MainRoot() {
     if (WINDOW_LABEL !== 'main') return;
     cloudStart();
     return onCloudNotice(n => {
-      if (n.kind === 'conflict') toast('Changed on two PCs at once', n.kept === 'other' ? `“${n.title}” was also edited on your other PC. Its newer edit was kept.` : `“${n.title}” was also edited on your other PC. Your newer edit here was kept.`);
+      if (n.kind === 'conflict') queueNote({ kind: 'conflict', taskTitle: n.title, kept: n.kept });
       else toast(n.title, n.detail);
     });
   }, []);
@@ -7118,6 +7254,7 @@ function MainRoot() {
             onRenameWorkspace={wsp.rename}
             onSwitchWorkspace={(id, taskId) => { setOpenOnLoad(taskId || null); wsp.switchTo(id); }} />}
       <Toaster />
+      <Toaster id="update" position="bottom-left" style={{ '--width': '384px' }} />
     </MeContext.Provider>
   );
 }

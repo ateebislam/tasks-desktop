@@ -193,7 +193,7 @@ async function saveState() {
 }
 let saveT = null;
 const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(saveState, 400); };
-const sstore = name => { const s = st.stores[name] || (st.stores[name] = { shadow: {}, dirtyAt: {} }); if (!s.itemAt) s.itemAt = {}; if (!s.legacySeen) s.legacySeen = {}; return s; };
+const sstore = name => { const s = st.stores[name] || (st.stores[name] = { shadow: {}, dirtyAt: {} }); if (!s.itemAt) s.itemAt = {}; if (!s.legacySeen) s.legacySeen = {}; if (!s.seenAt) s.seenAt = {}; return s; };
 const pendingCount = () => Object.values(st.stores).reduce((n, s) => n + Object.keys(s.dirtyAt || {}).length, 0);
 
 async function content(name) {
@@ -293,6 +293,14 @@ async function receiveNow(rows, policy = 'normal') {
   for (const name of names) {
     const c = await content(name), s = sstore(name), patch = {};
     for (const r of byStore[name]) {
+      // A row can arrive twice and out of order: realtime may bring a newer copy before the catch-up pull
+      // (which looks back a minute) brings an older one. Only the newest copy of each row counts, or the
+      // older one would put back an old value here and this PC would think it was up to date.
+      if (r.updated_at) {
+        const seen = s.seenAt[r.key];
+        if (policy === 'normal' && seen && r.updated_at <= seen) continue;
+        if (!seen || r.updated_at > seen) s.seenAt[r.key] = r.updated_at;
+      }
       if (policy === 'normal' && r.device === DEVICE_ID) continue; // our own change coming back
       const j = r.deleted ? null : J(r.value), sj = s.shadow[r.key] ?? null;
       const field = r.key.slice(2);

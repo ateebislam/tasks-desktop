@@ -55,20 +55,45 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 @keyframes fade-in{from{opacity:0}to{opacity:1}}
 @keyframes zoom-in{from{opacity:0;transform:translate(-50%,-48%) scale(.96)}to{opacity:1;transform:translate(-50%,-50%) scale(1)}}
 @keyframes pop-in{from{opacity:0;transform:scale(.96)}to{opacity:1;transform:scale(1)}}
-@keyframes toast-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 @keyframes ping{75%,100%{transform:scale(2);opacity:0}}
 .anim-sheet{animation:sheet-in .3s cubic-bezier(.32,.72,0,1)}
 .anim-fade{animation:fade-in .15s ease-out}
 .anim-zoom{animation:zoom-in .15s ease-out}
 .anim-pop{animation:pop-in .12s ease-out}
-.anim-toast{animation:toast-in .2s ease-out}
 .anim-ping{animation:ping 1.5s cubic-bezier(0,0,.2,1) infinite}
 @keyframes cloud-sync{0%,100%{transform:translateY(0);opacity:1}50%{transform:translateY(-1.5px);opacity:.55}}
 .anim-cloud-sync{animation:cloud-sync 1.6s ease-in-out infinite}
 .no-scrollbar{scrollbar-width:none}
 .no-scrollbar::-webkit-scrollbar{display:none}
-@media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-toast,.anim-ping,.anim-cloud-sync{animation:none}}
+@media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-ping,.anim-cloud-sync{animation:none}}
 html,body,#root{height:100%}
 
 /* Quick capture (0.19.11): a plain solid panel. */
 .capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:inset 0 0 0 1px hsl(var(--border))}
+
+/* Quiet menus (0.19.12): grey icons that brighten on the row you point at. */
+.menu-quiet>button>svg{color:hsl(var(--muted-foreground));transition:color .15s}
+.menu-quiet>button:hover>svg,.menu-quiet>button:focus>svg{color:hsl(var(--foreground))}
+
+/* Scroll bars (0.19.12): a thin, faint line that follows the theme. It widens and brightens a little
+   while you scroll, and more when you point at it or drag it. src/scrollbars.js sets data-sb-scroll and
+   data-sb-hover on the element that owns the bar. Each element resets the values, so a nested list
+   keeps its own state. */
+@property --sb-a{syntax:'<number>';inherits:true;initial-value:.14}
+@property --sb-pad{syntax:'<length>';inherits:true;initial-value:4.5px}
+*{--sb-a:.14;--sb-pad:4.5px;transition:--sb-a .25s ease,--sb-pad .2s ease}
+[data-sb-scroll]{--sb-a:.3;--sb-pad:3.5px;transition:--sb-a .12s ease,--sb-pad .12s ease}
+[data-sb-hover]{--sb-a:.5;--sb-pad:2px;transition:--sb-a .12s ease,--sb-pad .12s ease}
+::-webkit-scrollbar{width:12px;height:12px;background:transparent}
+::-webkit-scrollbar-track,::-webkit-scrollbar-corner{background:transparent}
+::-webkit-scrollbar-button{display:none;width:0;height:0}
+::-webkit-scrollbar-thumb{min-height:32px;min-width:32px;border-radius:999px;border:var(--sb-pad) solid transparent;background-clip:padding-box;background-color:hsl(var(--foreground) / var(--sb-a))}
+::-webkit-scrollbar-thumb:active{background-color:hsl(var(--foreground) / .6)}
+
+/* Edge fades (0.19.12): a scrolling area with .scroll-fade softens the edge that has more content past it. */
+@property --fade-t{syntax:'<length>';inherits:false;initial-value:0px}
+@property --fade-b{syntax:'<length>';inherits:false;initial-value:0px}
+.scroll-fade{--fade-t:0px;--fade-b:0px;-webkit-mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);mask-image:linear-gradient(to bottom,transparent 0,#000 var(--fade-t),#000 calc(100% - var(--fade-b)),transparent 100%);transition:--fade-t .2s ease,--fade-b .2s ease,--sb-a .25s ease,--sb-pad .2s ease}
+.scroll-fade[data-fade-top]{--fade-t:28px}
+.scroll-fade[data-fade-bottom]{--fade-b:28px}
+@media (prefers-reduced-motion:reduce){*,.scroll-fade{transition:none}}
