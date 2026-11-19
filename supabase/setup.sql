@@ -54,3 +54,39 @@ create policy "Own documents: replace" on storage.objects for update to authenti
   using (bucket_id = 'documents' and (storage.foldername(name))[1] = (select auth.uid())::text);
 create policy "Own documents: delete" on storage.objects for delete to authenticated
   using (bucket_id = 'documents' and (storage.foldername(name))[1] = (select auth.uid())::text);
+
+-- 5. Profiles (added in 0.19.13): your name, photo, role, phone, status and time zone, one row per person.
+--    Everyone signed in to this project can see the profiles (for teammates later); only you can change yours.
+create table if not exists public.profiles (
+  user_id      uuid primary key default auth.uid() references auth.users(id) on delete cascade,
+  email        text,
+  name         text,
+  role         text,
+  phone        text,
+  photo        text,                       -- a small JPEG as a data URL (about 20 KB)
+  status       text,                       -- 'available', 'busy', 'dnd', 'away' or null
+  status_note  text,
+  status_until bigint,                     -- when the status clears (ms), or null
+  time_zone    text,
+  edited_at    bigint not null default 0,  -- when it was edited on the PC (ms), decides which edit is newer
+  device       text,
+  updated_at   timestamptz not null default now()
+);
+drop trigger if exists profiles_touch on public.profiles;
+create trigger profiles_touch before insert or update on public.profiles
+for each row execute function public.records_touch();
+alter table public.profiles enable row level security;
+drop policy if exists "Profiles: read" on public.profiles;
+drop policy if exists "Profiles: own" on public.profiles;
+drop policy if exists "Profiles: own update" on public.profiles;
+drop policy if exists "Profiles: own delete" on public.profiles;
+create policy "Profiles: read" on public.profiles for select to authenticated using (true);
+create policy "Profiles: own" on public.profiles for insert to authenticated with check (user_id = (select auth.uid()));
+create policy "Profiles: own update" on public.profiles for update to authenticated
+  using (user_id = (select auth.uid())) with check (user_id = (select auth.uid()));
+create policy "Profiles: own delete" on public.profiles for delete to authenticated using (user_id = (select auth.uid()));
+revoke all on public.profiles from anon;
+grant select, insert, update, delete on public.profiles to authenticated;
+do $$ begin
+  alter publication supabase_realtime add table public.profiles;
+exception when duplicate_object then null; end $$;

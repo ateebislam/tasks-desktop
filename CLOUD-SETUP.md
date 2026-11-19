@@ -1,6 +1,6 @@
 # Cloud sync setup (Supabase, free plan)
 
-Cloud sync keeps your tasks, archive, workspaces and documents in your own Supabase project,
+Cloud sync keeps your tasks, archive, workspaces, documents and profile in your own Supabase project,
 so every PC you sign in on has the same data. Changes on one open PC show up on the others
 within a second or two. You do this once; about 10 minutes.
 
@@ -39,6 +39,12 @@ documents) is uploaded. On your other PCs, do step 5 only. If a PC already has t
 Tasks asks whether to **use the cloud's data** (recommended for a second PC) or **combine both**,
 and saves a backup of that PC's data in the data folder first.
 
+## Already set up before 0.19.13?
+Run `supabase/setup.sql` once more (SQL Editor → New query → paste → Run). It adds the `profiles`
+table for your name, photo, role, phone, status and time zone. Running it again is safe: your tasks
+and documents aren't touched. Until you do, everything else keeps syncing and Settings → Cloud & backups
+says the profile is waiting.
+
 ## Good to know
 - Your data stays on each PC too, so Tasks works offline and sends your changes when you're back online.
 - Each task syncs on its own, so working on two PCs at once is fine. If the same task is changed on
@@ -46,5 +52,6 @@ and saves a backup of that PC's data in the data folder first.
 - A running timer shows on every PC, but it belongs to the PC that started it: closing or shutting
   down one PC only stops the timers started there.
 - Watch folders are paths on one PC, so each PC keeps its own list.
+- Your profile syncs as one row. Anyone signed in to your Supabase project can see it, which today is only you.
 - Free plan limits: 500 MB of data, 1 GB of documents, files up to 50 MB. A free project is paused after
   a week with no use at all; open it at supabase.com to wake it up (your data is kept).

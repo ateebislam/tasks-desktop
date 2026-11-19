@@ -1,3 +1,16 @@
+A new Settings with your profile and status, platform icons, and time summary tiles.
+- Profile: a new Profile page in Settings, with your photo, display name, role, phone, status and time zone (from this PC's clock). It syncs to your other PCs. Members, beside it, lists everyone in your workspaces, which for now is just you.
+- Status: click your photo at the bottom of the sidebar for the new menu with your status, Profile, Settings, workspace switching and Sign out. Pick Available, Busy, Do not disturb or Away, add a note and choose when it clears. Do not disturb mutes alerts.
+- Hover card: point at your photo next to a task to see your name, role, status, local time and email.
+- Settings: pages down the left (General, Appearance, Notifications, Shortcuts, Workspace, Watch folders, Cloud & backups, About), one short line per setting with longer help behind ⓘ. Notifications moved here from Automations and are stored and synced as before.
+- Edit statuses: a quieter layout. Each group has a + by its name, counts are plain numbers, and the arrows, lock and delete show only on the row you point at.
+- Manage platforms: click a name to rename it in the list (Enter or clicking away saves, Esc undoes). The count sits on the right and turns into the bin when you point at the row.
+- Platform icons: click a platform's icon to pick one from a searchable grid. Platforms you haven't changed keep the folder. The icon is saved on the platform, which already syncs.
+- Delete, remove and trash buttons turn red when you point at them, everywhere in the app.
+- Time summary: a row of tiles with time tracked today and this week, then your top platforms and their share of the week.
+- Light and dark: switching spreads as a circle from the button you clicked (also from Settings and Shift + D).
+- Supabase: your profile syncs through a new `profiles` table. If your cloud was set up before this version, run the updated `supabase/setup.sql` once (it's safe to run again). Everything else syncs as before.
+
 Status and priority chips, a hover sidebar, no tabs, and grouped Automations.
 - Status and priority: both are colored chips in the table, list and board. Status has a colored dot, and priority has bars, with High in red.
 - Sidebar: the left rail is a slim row of icons that opens with page names when you point at it and closes when you move away. The panel button at the top keeps it open; that choice stays on this PC.

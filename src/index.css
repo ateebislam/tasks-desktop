@@ -68,6 +68,13 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 @media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-ping,.anim-cloud-sync{animation:none}}
 html,body,#root{height:100%}
 
+/* Theme switch (0.19.13): src/theme.js grows the new theme as a circle over a picture of the old one.
+   The browser's default cross-fade is turned off, and colour transitions pause so the new picture is final. */
+::view-transition-old(root),::view-transition-new(root){animation:none;mix-blend-mode:normal}
+::view-transition-old(root){z-index:1}
+::view-transition-new(root){z-index:2}
+.theme-switching *,.theme-switching *::before,.theme-switching *::after{transition:none!important}
+
 /* Quick capture (0.19.11): a plain solid panel. */
 .capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:inset 0 0 0 1px hsl(var(--border))}
 

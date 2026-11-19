@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useRef, useLayoutEffect, useCallback, useMemo, createContext, useContext } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
 import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
@@ -13,9 +13,9 @@ import { updateFade } from './scrollbars.js';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { register as registerShortcut, unregister as unregisterShortcut } from '@tauri-apps/plugin-global-shortcut';
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
-import { applyTheme, readTheme, saveTheme } from './theme.js';
+import { readTheme, setTheme, toggleTheme } from './theme.js';
 import { Toaster, toast as sonner } from './components/ui/sonner.jsx';
-import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc } from './cloud.js';
+import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc, cloudProfileLive, cloudProfileNote } from './cloud.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
 /* =========================================================
@@ -75,6 +75,7 @@ const I = {
   grid: p => <Icon {...p}><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></Icon>,
   up: p => <Icon {...p}><path d="m18 15-6-6-6 6"/></Icon>,
   lock: p => <Icon {...p}><rect width="18" height="11" x="3" y="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></Icon>,
+  info: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></Icon>,
   external: p => <Icon {...p}><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></Icon>,
   panelRight: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></Icon>,
   panelCenter: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><rect width="10" height="10" x="7" y="7" rx="1"/></Icon>,
@@ -84,10 +85,29 @@ const I = {
   rows: p => <Icon {...p}><path d="M3 5h.01"/><path d="M3 12h.01"/><path d="M3 19h.01"/><path d="M8 5h13"/><path d="M8 12h13"/><path d="M8 19h13"/></Icon>,
   kanban: p => <Icon {...p}><path d="M6 5v11"/><path d="M12 5v6"/><path d="M18 5v14"/></Icon>,
   refresh: p => <Icon {...p}><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></Icon>,
+  logout: p => <Icon {...p}><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></Icon>,
   user: p => <Icon {...p}><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></Icon>,
   gear: p => <Icon {...p}><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></Icon>,
   sparkles: p => <Icon {...p}><path d="M9.94 15.5A2 2 0 0 0 8.5 14.06l-6.14-1.58a.5.5 0 0 1 0-.96L8.5 9.94A2 2 0 0 0 9.94 8.5l1.58-6.14a.5.5 0 0 1 .96 0L14.06 8.5A2 2 0 0 0 15.5 9.94l6.14 1.58a.5.5 0 0 1 0 .96L15.5 14.06a2 2 0 0 0-1.44 1.44l-1.58 6.14a.5.5 0 0 1-.96 0z"/></Icon>,
   archive: p => <Icon {...p}><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></Icon>,
+  phone: p => <Icon {...p}><rect width="14" height="20" x="5" y="2" rx="2"/><path d="M12 18h.01"/></Icon>,
+  globe: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></Icon>,
+  shield: p => <Icon {...p}><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></Icon>,
+  layout: p => <Icon {...p}><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></Icon>,
+  code: p => <Icon {...p}><path d="m16 18 6-6-6-6"/><path d="m8 6-6 6 6 6"/></Icon>,
+  palette: p => <Icon {...p}><circle cx="13.5" cy="6.5" r=".5" fill="currentColor"/><circle cx="17.5" cy="10.5" r=".5" fill="currentColor"/><circle cx="8.5" cy="7.5" r=".5" fill="currentColor"/><circle cx="6.5" cy="12.5" r=".5" fill="currentColor"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.93 0 1.65-.75 1.65-1.69 0-.44-.18-.84-.44-1.13-.29-.29-.44-.65-.44-1.13a1.64 1.64 0 0 1 1.67-1.67h2c3.05 0 5.56-2.5 5.56-5.55C21.97 6.01 17.46 2 12 2z"/></Icon>,
+  penTool: p => <Icon {...p}><path d="M15.7 21.3a1 1 0 0 1-1.4 0l-1.6-1.6a1 1 0 0 1 0-1.4l5.6-5.6a1 1 0 0 1 1.4 0l1.6 1.6a1 1 0 0 1 0 1.4Z"/><path d="m18 13-1.4-6.8a1 1 0 0 0-.8-.8L9 4l-5.3 5.3a1 1 0 0 0-.3.6L2 22l12.1-1.4a1 1 0 0 0 .6-.3L20 15"/><path d="m2.3 2.3 7.3 7.3"/><circle cx="11" cy="11" r="2"/></Icon>,
+  database: p => <Icon {...p}><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/></Icon>,
+  server: p => <Icon {...p}><rect width="20" height="8" x="2" y="2" rx="2"/><rect width="20" height="8" x="2" y="14" rx="2"/><path d="M6 6h.01"/><path d="M6 18h.01"/></Icon>,
+  box: p => <Icon {...p}><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></Icon>,
+  rocket: p => <Icon {...p}><path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/></Icon>,
+  cart: p => <Icon {...p}><circle cx="8" cy="21" r="1"/><circle cx="19" cy="21" r="1"/><path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12"/></Icon>,
+  card: p => <Icon {...p}><rect width="20" height="14" x="2" y="5" rx="2"/><path d="M2 10h20"/></Icon>,
+  users: p => <Icon {...p}><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></Icon>,
+  mail: p => <Icon {...p}><rect width="20" height="16" x="2" y="4" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></Icon>,
+  chat: p => <Icon {...p}><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></Icon>,
+  bell: p => <Icon {...p}><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M3.262 15.326A1 1 0 0 0 4 17h16a1 1 0 0 0 .74-1.673C19.41 13.956 18 12.499 18 8A6 6 0 0 0 6 8c0 4.499-1.411 5.956-2.738 7.326"/></Icon>,
+  star: p => <Icon {...p}><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></Icon>,
   circleDot: p => <Icon {...p}><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="1"/></Icon>,
 };
 
@@ -146,9 +166,12 @@ const Kbd = ({ children, className }) => (
 
 // The signed-in person, so their Google photo can be shown wherever their name appears.
 const MeContext = createContext(null);
+// Your photo: one you picked, else your Google photo. '' means you removed it (0.19.13).
+const photoOf = u => (!u || u.photo === '' ? null : u.photo || u.picture || null);
+let meNow = null; // the signed-in person, for code outside React (Do not disturb mutes desktop notifications)
 const Avatar = ({ name, className, picture }) => {
   const me = useContext(MeContext);
-  const pic = picture || (me && me.picture && name && norm(name) === norm(me.name) ? me.picture : null);
+  const pic = picture || (me && photoOf(me) && name && norm(name) === norm(me.name) ? photoOf(me) : null);
   const initials = (name || '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
   return (
     <span className={cn('relative flex h-6 w-6 shrink-0 overflow-hidden rounded-full', className)}>
@@ -379,7 +402,7 @@ function Popover({ trigger, children, align = 'start', className }) {
   return (
     <>
       {trigger({ ref: a, open, onClick: () => setOpen(o => !o), 'aria-expanded': open })}
-      <Floating anchorRef={a} panelRef={p} open={open} align={align} className={className}>{children}</Floating>
+      <Floating anchorRef={a} panelRef={p} open={open} align={align} className={className}>{typeof children === 'function' ? children(() => setOpen(false)) : children}</Floating>
     </>
   );
 }
@@ -394,7 +417,7 @@ const Checkbox = ({ checked, onChange, label }) => (
 const ToggleGroup = ({ value, onChange, items, label }) => (
   <div role="radiogroup" aria-label={label} className="inline-flex items-center rounded-md shadow-sm">
     {items.map((it, i) => (
-      <button key={it.value} type="button" role="radio" aria-checked={value === it.value} data-state={value === it.value ? 'on' : 'off'} onClick={() => onChange(it.value)}
+      <button key={it.value} type="button" role="radio" aria-checked={value === it.value} data-state={value === it.value ? 'on' : 'off'} onClick={e => onChange(it.value, e.currentTarget)}
         className={cn('inline-flex h-9 items-center justify-center gap-1.5 border border-input bg-transparent px-3 text-sm font-medium transition-colors hover:bg-muted hover:text-muted-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
           i === 0 ? 'rounded-l-md' : '-ml-px', i === items.length - 1 && 'rounded-r-md')}>
         {it.icon}{it.label}
@@ -686,6 +709,22 @@ const PROJECT_COLORS = {
   slate: { dot: 'bg-slate-500', soft: 'bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300', bar: 'bg-slate-500' },
 };
 const COLOR_KEYS = Object.keys(PROJECT_COLORS);
+// 0.19.13: each platform can have its own icon. Folder is the default, so platforms without one look as before.
+// The icon is saved on the platform itself ({ id, name, color, icon }), which already syncs.
+const PLATFORM_ICONS = [
+  ['folder', 'Folder', 'default'], ['phone', 'Phone', 'mobile app ios android'], ['monitor', 'Desktop', 'computer screen pc mac'], ['globe', 'Globe', 'web website internet'],
+  ['shield', 'Shield', 'admin security'], ['layout', 'Layout', 'dashboard panel page'], ['code', 'Code', 'developer api'], ['palette', 'Palette', 'design colour color'],
+  ['penTool', 'Pen', 'design draw vector'], ['database', 'Database', 'data storage'], ['server', 'Server', 'backend hosting'], ['cloud', 'Cloud', 'hosting saas'],
+  ['box', 'Box', 'package product'], ['rocket', 'Rocket', 'launch release'], ['cart', 'Cart', 'shop store ecommerce'], ['card', 'Card', 'payment billing'],
+  ['users', 'People', 'team users customers crm'], ['mail', 'Mail', 'email newsletter'], ['chat', 'Chat', 'messages support'], ['bell', 'Bell', 'notifications alerts'],
+  ['chart', 'Chart', 'analytics reports stats'], ['layers', 'Layers', 'stack'], ['star', 'Star', 'favourite favorite'], ['gear', 'Gear', 'settings config'],
+];
+const platformIconMap = { current: {} }; // norm(name) -> icon key; refreshed by the app as platforms change
+const PIcon = ({ name, icon, className }) => {
+  const k = icon || platformIconMap.current[norm(name || '')];
+  const C = (k && PLATFORM_ICONS.some(x => x[0] === k) && I[k]) || I.folder;
+  return <C className={className} />;
+};
 const autoColor = name => COLOR_KEYS[[...(name || '')].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7) % COLOR_KEYS.length];
 
 /* Automations: "When a task [in project] [trigger], [action] [target]". */
@@ -868,6 +907,8 @@ const WS_LABELS = { marketing: { bucket: 'Campaign', platform: 'Channel' } };
 const ARCHIVE_DAYS_DEFAULT = 30;
 const TRASH_DAYS = 15;
 const storeFor = (base, ws) => (ws === 'product' ? base : `${base}-${ws}`);
+// Destructive buttons (delete, remove, move to Trash) stay quiet and turn red when you point at them.
+const danger = 'hover:!text-destructive';
 const plural = w => (/s$/i.test(w) ? w : /[^aeiou]y$/i.test(w) ? w.slice(0, -1) + 'ies' : w + 's');
 
 function useTasks(ws = 'product') {
@@ -1132,6 +1173,7 @@ function useTasks(ws = 'product') {
 
 /* Desktop notifications (used by the "send me a notification" automation). Falls back to an in-app message. */
 async function notifyDesktop(title, body) {
+  if (statusOf(meNow).id === 'dnd') return; // Do not disturb (0.19.13)
   try {
     let ok = await isPermissionGranted();
     if (!ok) ok = (await requestPermission()) === 'granted';
@@ -1242,17 +1284,19 @@ function useTheme() {
     mq.addEventListener('change', on);
     return () => mq.removeEventListener('change', on);
   }, []);
-  const choose = m => { setMode(m); saveTheme(m); applyTheme(m); };
-  useEffect(() => { const on = e => setMode(e.detail); window.addEventListener('tasks-theme', on); return () => window.removeEventListener('tasks-theme', on); }, []);
+  // `from`: the control that was clicked, where the circle starts (see src/theme.js).
+  const choose = (m, from) => setTheme(m, from);
+  // flushSync so the new theme is fully drawn when the animation takes its "after" picture.
+  useEffect(() => { const on = e => flushSync(() => setMode(e.detail)); window.addEventListener('tasks-theme', on); return () => window.removeEventListener('tasks-theme', on); }, []);
   const dark = mode === 'dark' || (mode === 'system' && systemDark);
-  return { mode, dark, choose, toggle: () => choose(dark ? 'light' : 'dark') };
+  return { mode, dark, choose, toggle: from => choose(dark ? 'light' : 'dark', from) };
 }
 
 function ThemeToggle() {
   const th = useTheme();
   return (
     <DropdownMenu
-      trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" aria-label={`Appearance: ${THEMES.find(t => t.id === th.mode).label}`} title="Appearance (Shift+D)">{th.dark ? <I.moon /> : <I.sun />}</Button>}
+      trigger={p => <Button {...p} variant="outline" size="icon" className="rounded-full bg-card shadow-none" data-theme-toggle aria-label={`Appearance: ${THEMES.find(t => t.id === th.mode).label}`} title="Appearance (Shift+D)">{th.dark ? <I.moon /> : <I.sun />}</Button>}
       items={THEMES.map(t => ({
         label: t.label,
         icon: t.id === 'light' ? <I.sun /> : t.id === 'dark' ? <I.moon /> : <I.monitor />,
@@ -1551,49 +1595,231 @@ function ShortcutRecorder({ value, onChange, error }) {
   );
 }
 
-function SettingsDialog({ open, onClose, prefs, onPrefs, watch, onAddFolder, onRemoveFolder, onSubfolders, status, wsName, shortcutError }) {
-  if (!open) return null;
+/* Settings (0.19.13): pages on the left, one short line per setting, longer explanations behind ⓘ.
+   Notifications moved here from Automations. They're still stored and synced as notify automations
+   (one rule per event), so nothing about storage or cloud sync changed. */
+const SETTINGS_PAGES = [
+  { group: 'Account' },
+  { id: 'profile', label: 'Profile', icon: 'user' },
+  { id: 'members', label: 'Members', icon: 'users' },
+  { group: 'App' },
+  { id: 'general', label: 'General', icon: 'gear' },
+  { id: 'appearance', label: 'Appearance', icon: 'sun' },
+  { id: 'notifications', label: 'Notifications', icon: 'bell' },
+  { id: 'shortcuts', label: 'Shortcuts', icon: 'keyboard' },
+  { group: 'Workspace' },
+  { id: 'workspace', label: 'Workspace', icon: 'layers' },
+  { id: 'folders', label: 'Watch folders', icon: 'folder' },
+  { group: 'Data' },
+  { id: 'cloud', label: 'Cloud & backups', icon: 'cloud' },
+  { id: 'about', label: 'About', icon: 'info' },
+];
+// Events you can be notified about, in the order they're listed.
+const NOTIFY_TRIGGERS = ['due_soon', 'overdue', 'blocked', 'unblocked', 'done', 'reopened', 'started', 'created', 'assigned', 'high', 'checklist', 'file_added', 'moved'];
+// ⓘ with the longer explanation in a small pop-up on hover or focus.
+const InfoTip = ({ children, label = 'More info' }) => (
+  <span className="group/tip relative inline-flex">
+    <button type="button" aria-label={label} className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.info className="size-3.5" /></button>
+    <span role="tooltip" className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-64 -translate-x-1/2 rounded-md border bg-popover px-3 py-2 text-xs font-normal leading-snug text-popover-foreground opacity-0 shadow-lg transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100">{children}</span>
+  </span>
+);
+const SRow = ({ label, info, children, className }) => (
+  <div className={cn('group/row flex min-h-9 items-center gap-3 text-sm', className)}>
+    <div className="flex min-w-0 flex-1 items-center gap-1.5"><span className="truncate">{label}</span>{info && <InfoTip label={`About ${typeof label === 'string' ? label.toLowerCase() : 'this setting'}`}>{info}</InfoTip>}</div>
+    {children}
+  </div>
+);
+const quietBtn = 'inline-flex h-7 items-center gap-1 rounded-md px-2 text-[13px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50';
+// A label that looks like text until you hover it, then edits in place. Saves on Enter or when you leave it.
+function QuietInput({ value, onSave, label, placeholder }) {
+  const [v, setV] = useState(value || '');
+  useEffect(() => setV(value || ''), [value]);
+  const commit = () => { const t = v.trim(); if (t && t !== value) onSave(t); else setV(value || ''); };
+  return <input value={v} onChange={e => setV(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setV(value || ''); setTimeout(() => e.target.blur()); } }}
+    aria-label={label} placeholder={placeholder} spellCheck={false}
+    className="h-7 w-44 rounded-md border border-transparent bg-transparent px-2 text-right text-[13px] transition-colors hover:border-input focus:border-input focus:text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />;
+}
+// The quick capture key: shows the keys; click to record new ones. Reset and Off appear on hover.
+function ShortcutCell({ value, onChange, error }) {
+  const [rec, setRec] = useState(false);
+  const [msg, setMsg] = useState('');
+  const keys = value === 'Off' ? null : showShortcut(value).split(' + ');
   return (
-    <Dialog open onClose={onClose} title="Settings" className="max-w-lg" footer={<Button onClick={onClose}>Done</Button>}>
-      <div className="grid gap-5">
-        <div className="flex items-start gap-3">
-          <Switch checked={prefs.keepInTray} onChange={v => onPrefs({ keepInTray: v })} label="Keep running in the system tray" />
-          <div><div className="text-sm font-medium">Keep running in the system tray</div><div className="text-xs text-muted-foreground">Closing the window hides Tasks instead of quitting, so quick capture and watch folders keep working. Quit from the tray icon.</div></div>
-        </div>
-        <div className="flex items-start gap-3">
-          <Switch checked={!!prefs.oneAtATime} onChange={v => onPrefs({ oneAtATime: v })} label="One task at a time" />
-          <div><div className="text-sm font-medium">One task at a time</div><div className="text-xs text-muted-foreground">Starting a timer pauses the others, and moving a task to In progress marks the one before it as Blocked. Turn off to work on several tasks at once, each with its own timer.</div></div>
-        </div>
-        <div className="grid gap-2">
-          <Label>Quick capture shortcut (anywhere in Windows)</Label>
-          <ShortcutRecorder value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} error={shortcutError} />
-          <p className="text-[0.8rem] text-muted-foreground">Inside the app, press ` (the key left of 1) for quick capture.</p>
-        </div>
-        <Field label="Ask about idle time after" htmlFor="st-idle" hint="When a timer is running and there’s no keyboard or mouse activity for this long, Tasks asks what to do with that time.">
-          <Select id="st-idle" value={String(prefs.idleMinutes)} onChange={v => onPrefs({ idleMinutes: Number(v) })} searchable={false}
-            options={[['5', '5 minutes'], ['10', '10 minutes'], ['15', '15 minutes'], ['20', '20 minutes'], ['30', '30 minutes'], ['60', '1 hour'], ['0', 'Never']].map(([value, label]) => ({ value, label }))} />
-        </Field>
-        <div className="grid gap-2">
-          <Label>Watch folders for {wsName}</Label>
-          <p className="text-xs text-muted-foreground">Any new PDF, Word, HTML or other supported file saved in these folders appears in the Documents Inbox, however it got there. Your original files stay where they are.</p>
-          {watch.map(w => {
-            const st = status[w.path] || {};
-            return (
-              <div key={w.path} className="grid gap-1.5 rounded-md border px-3 py-2">
-                <div className="flex items-center gap-2 text-sm">
-                  <I.folder className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
-                  <Button variant="ghost" size="icon-sm" aria-label={`Stop watching ${w.path}`} title="Stop watching" onClick={() => onRemoveFolder(w.path)}><I.x className="size-3.5" /></Button>
-                </div>
-                <label className="flex items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={!!w.subfolders} onChange={v => onSubfolders(w.path, v)} label="Include subfolders" />Include subfolders</label>
-                <div className="text-xs text-muted-foreground">
-                  {st.error ? <span className="text-destructive">{st.error}</span>
-                    : st.checkedAt ? <>Checked {relTime(st.checkedAt).toLowerCase()}{st.added ? `, ${st.added} added` : ''}{st.skipped && st.skipped.length ? <>, <span title={st.skipped.map(x => `${x.name}: ${x.why}`).join('\n')} className="underline decoration-dotted underline-offset-2">{st.skipped.length} skipped</span></> : ''}</> : 'Not checked yet'}
-                </div>
-              </div>
-            );
-          })}
-          <Button variant="outline" className="justify-start" onClick={onAddFolder}><I.plus />Add a folder…</Button>
-        </div>
+    <div className="grid justify-items-end gap-1">
+      <div className="flex items-center gap-1">
+        <button type="button" className={cn(quietBtn, 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100')} onClick={() => onChange(PREF_DEFAULTS.captureKey)} disabled={value === PREF_DEFAULTS.captureKey}>Reset</button>
+        <button type="button" className={cn(quietBtn, 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100')} onClick={() => onChange('Off')} disabled={value === 'Off'}>Off</button>
+        <button type="button" aria-label="Change the quick capture shortcut" title="Click, then press the keys" onClick={() => { setRec(true); setMsg(''); }} onBlur={() => setRec(false)}
+          onKeyDown={e => {
+            if (!rec) return;
+            e.preventDefault(); e.stopPropagation();
+            if (e.key === 'Escape') { setRec(false); return; }
+            if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
+            const r = shortcutFromEvent(e);
+            if (!r) { setMsg('Try a letter, a number, Space or F1–F12.'); return; }
+            if (!r.ok) { setMsg('Include Ctrl or Alt. Function keys work alone.'); return; }
+            setRec(false); setMsg(''); onChange(r.combo);
+          }}
+          className={cn('flex h-7 items-center gap-1 rounded-md border border-transparent px-1.5 transition-colors hover:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', rec && 'border-input ring-1 ring-ring')}>
+          {rec ? <span className="px-1 text-[13px] text-muted-foreground">Press keys…</span> : keys ? keys.map(k => <Kbd key={k} className="h-6 px-2 text-[11px]">{k}</Kbd>) : <span className="px-1 text-[13px] text-muted-foreground">Off</span>}
+        </button>
+      </div>
+      {(msg || error) && <p className="text-xs text-destructive">{msg || error}</p>}
+    </div>
+  );
+}
+
+function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onPrefs, shortcutError, wsName, onRenameWorkspace, labels, onLabel, counts = {}, onEditStatuses, onEditBucketStatuses, onEditPlatforms,
+  rules, onRules, projects, watch, onAddFolder, onRemoveFolder, onSubfolders, status, onOpenCloud, onBackup, onRestore, onOpenDataFolder, updater, onWhatsNew, prof, workspaces = [], ws, onSwitchWorkspace, onSignOut }) {
+  const [page, setPage] = useState(startPage);
+  const [allNotify, setAllNotify] = useState(false);
+  useEffect(() => { if (open) setPage(startPage || 'general'); }, [open, startPage]);
+  const th = useTheme();
+  const c = useCloud();
+  if (!open) return null;
+  const notifyRules = (rules || []).filter(r => r.action === 'notify' && r.scope !== 'bucket');
+  const notifyOn = id => notifyRules.some(r => r.trigger === id && r.enabled);
+  const onCount = NOTIFY_TRIGGERS.filter(notifyOn).length;
+  // The six most useful events show first; the rest fold away unless one of them is on.
+  const shownTriggers = allNotify || NOTIFY_TRIGGERS.slice(6).some(notifyOn) ? NOTIFY_TRIGGERS : NOTIFY_TRIGGERS.slice(0, 6);
+  const setNotify = (id, on) => {
+    const mine = notifyRules.filter(r => r.trigger === id);
+    if (mine.length) onRules(rules.map(r => r.action === 'notify' && r.trigger === id ? { ...r, enabled: on } : r));
+    else if (on) onRules([...rules, { id: 'r-' + newId(), enabled: true, project: '', trigger: id, action: 'notify', target: '' }]);
+  };
+  // One project per event: picking one keeps the first notification for that event (and its message) and drops any others.
+  const setNotifyProject = (id, project) => {
+    const keep = notifyRules.find(r => r.trigger === id);
+    onRules(rules.filter(r => !(r.action === 'notify' && r.trigger === id) || r === keep).map(r => r === keep ? { ...r, project } : r));
+  };
+  const projectOptions = [{ value: '', label: 'Any project' }, ...projects.map(p => ({ value: p, label: p, icon: <PIcon name={p} className="size-3.5 text-muted-foreground" /> }))];
+  const tone = CLOUD_TONE[c.phase] || CLOUD_TONE.loading;
+  const signedIn = !['off', 'signin', 'loading'].includes(c.phase);
+  const navBtn = (p) => {
+    const Icon = I[p.icon] || I.gear;
+    const n = p.id === 'notifications' ? onCount : p.id === 'folders' ? watch.length : p.id === 'members' ? 1 : 0;
+    return (
+      <button key={p.id} type="button" onClick={() => setPage(p.id)} aria-current={page === p.id ? 'page' : undefined}
+        className={cn('flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+          page === p.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground')}>
+        <Icon className="size-3.5 shrink-0" /><span className="min-w-0 flex-1 truncate">{p.label}</span>{n > 0 && <span className="tnum text-xs text-muted-foreground">{n}</span>}
+      </button>
+    );
+  };
+  const head = (t, extra) => <h3 className="mb-1.5 flex items-center gap-2 text-[15px] font-semibold">{t}{extra}</h3>;
+  const link = (text, onClick, label) => <button type="button" onClick={onClick} aria-label={label} className={quietBtn}>{text}<I.external className="size-3" /></button>;
+  let body;
+  if (page === 'profile') body = <ProfilePage prof={prof} workspaces={workspaces} ws={ws} cloud={c} onManageWorkspace={() => setPage('workspace')}
+    onSwitchWorkspace={id => { if (id !== ws) { onClose(); onSwitchWorkspace(id); } }} onSignOut={() => { onClose(); onSignOut(); }} />;
+  else if (page === 'members') body = <MembersPage prof={prof} cloud={c} />;
+  else if (page === 'general') body = <>
+    {head('General')}
+    <SRow label="Keep running in the tray" info="Closing the window hides Tasks instead of quitting, so quick capture and watch folders keep working. Quit from the tray icon.">
+      <Switch checked={!!prefs.keepInTray} onChange={v => onPrefs({ keepInTray: v })} label="Keep running in the system tray" />
+    </SRow>
+    <SRow label="One task at a time" info="Starting a timer pauses the others, and moving a task to In progress marks the one before it as Blocked. Turn off to run several timers at once.">
+      <Switch checked={!!prefs.oneAtATime} onChange={v => onPrefs({ oneAtATime: v })} label="One task at a time" />
+    </SRow>
+    <SRow label="Ask about idle time" info="When a timer runs with no keyboard or mouse activity for this long, Tasks asks what to do with that time.">
+      <Select variant="word" label="Ask about idle time after" value={String(prefs.idleMinutes)} onChange={v => onPrefs({ idleMinutes: Number(v) })} searchable={false}
+        options={[['5', 'After 5 min'], ['10', 'After 10 min'], ['15', 'After 15 min'], ['20', 'After 20 min'], ['30', 'After 30 min'], ['60', 'After 1 hour'], ['0', 'Never']].map(([value, label]) => ({ value, label }))} />
+    </SRow>
+  </>;
+  else if (page === 'appearance') body = <>
+    {head('Appearance')}
+    <SRow label="Theme" info="Shift + D switches between light and dark from anywhere in the app.">
+      <ToggleGroup label="Theme" value={th.mode} onChange={th.choose} items={THEMES.map(t => ({ value: t.id, label: t.label, icon: t.id === 'light' ? <I.sun className="size-3.5" /> : t.id === 'dark' ? <I.moon className="size-3.5" /> : <I.monitor className="size-3.5" /> }))} />
+    </SRow>
+  </>;
+  else if (page === 'notifications') body = <>
+    {head('Notify me when a task', <InfoTip label="About notifications">Desktop notifications for {wsName}. Several at once arrive as one, like “12 tasks are overdue”.</InfoTip>)}
+    {shownTriggers.map(id => {
+      const on = notifyOn(id), r = notifyRules.find(x => x.trigger === id);
+      return (
+        <SRow key={id} label={TRIG[id].label}>
+          {on && <Select variant="word" label={`Project for “${TRIG[id].label}”`} value={(r && r.project) || ''} onChange={v => setNotifyProject(id, v)} options={projectOptions} />}
+          <Switch checked={on} onChange={v => setNotify(id, v)} label={`Notify me when a task ${TRIG[id].label}`} />
+        </SRow>
+      );
+    })}
+    {shownTriggers.length < NOTIFY_TRIGGERS.length && <button type="button" onClick={() => setAllNotify(true)} className={cn(quietBtn, 'w-fit -ml-2')}><I.down className="size-3.5" />{NOTIFY_TRIGGERS.length - shownTriggers.length} more</button>}
+  </>;
+  else if (page === 'shortcuts') body = <>
+    {head('Shortcuts')}
+    <SRow label="Quick capture, anywhere" info="Works in any app while Tasks is running. Click the keys to change them.">
+      <ShortcutCell value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} error={shortcutError} />
+    </SRow>
+    {SHORTCUTS.filter(([what]) => !/anywhere in Windows|Show this list/.test(what)).map(([what, key]) => (
+      <SRow key={what} label={what}><span className="flex shrink-0 items-center gap-1">{key.split(' / ').map((k, i) => <React.Fragment key={k}>{i > 0 && <span className="text-xs text-muted-foreground">or</span>}<Kbd className="h-6 px-2 text-[11px]">{k.replace(/ \+ /g, ' ')}</Kbd></React.Fragment>)}</span></SRow>
+    ))}
+  </>;
+  else if (page === 'workspace') body = <>
+    {head('Workspace')}
+    <SRow label="Name"><QuietInput value={wsName} onSave={onRenameWorkspace} label="Workspace name" /></SRow>
+    <SRow label="Call buckets" info="What this workspace calls buckets, everywhere: the table, filters and the task panel."><QuietInput value={labels.bucket} onSave={v => onLabel('bucket', v)} label="Name for buckets" placeholder={LABEL_DEFAULTS.bucket} /></SRow>
+    <SRow label="Call platforms"><QuietInput value={labels.platform} onSave={v => onLabel('platform', v)} label="Name for platforms" placeholder={LABEL_DEFAULTS.platform} /></SRow>
+    <div className="my-2 h-px bg-border" />
+    <SRow label="Task statuses">{link(`${counts.stages} statuses`, onEditStatuses, 'Edit task statuses')}</SRow>
+    <SRow label={`${labels.bucket} statuses`}>{link(`${counts.bucketStatuses} statuses`, onEditBucketStatuses, `Edit ${labels.bucket.toLowerCase()} statuses`)}</SRow>
+    <SRow label={plural(labels.platform)}>{link(`${counts.platforms} ${plural(labels.platform).toLowerCase()}`, onEditPlatforms, `Edit ${plural(labels.platform).toLowerCase()}`)}</SRow>
+  </>;
+  else if (page === 'folders') body = <>
+    {head(<>Watch folders <span className="text-[13px] font-normal text-muted-foreground">for {wsName}</span></>, <InfoTip label="About watch folders">New PDF, Word, HTML and other supported files saved in these folders appear in the Documents Inbox. Your files stay where they are. Each PC keeps its own list.</InfoTip>)}
+    <div className="grid gap-0.5">
+      {watch.map(w => {
+        const st = status[w.path] || {};
+        return (
+          <div key={w.path} className="group/f rounded-md px-2 py-1.5 transition-colors hover:bg-muted/50">
+            <div className="flex items-center gap-2 text-[13px]">
+              <I.folder className="size-3.5 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate" title={w.path}>{w.path}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {st.error ? <span className="text-destructive">{st.error}</span>
+                  : st.checkedAt ? <>{st.added ? `${st.added} added` : `Checked ${relTime(st.checkedAt).toLowerCase()}`}{st.skipped && st.skipped.length ? <> · <span title={st.skipped.map(x => `${x.name}: ${x.why}`).join('\n')} className="underline decoration-dotted underline-offset-2">{st.skipped.length} skipped</span></> : ''}</> : 'Not checked yet'}
+              </span>
+              <Button variant="ghost" size="icon-sm" className={cn('text-muted-foreground opacity-0 transition-opacity group-hover/f:opacity-100 focus-visible:opacity-100 hover:!bg-destructive/10', danger)} aria-label={`Stop watching ${w.path}`} title="Stop watching" onClick={() => onRemoveFolder(w.path)}><I.x className="size-3.5" /></Button>
+            </div>
+            <label className="ml-[22px] mt-1 flex w-fit items-center gap-2 text-xs text-muted-foreground"><Checkbox checked={!!w.subfolders} onChange={v => onSubfolders(w.path, v)} label="Include subfolders" />Include subfolders</label>
+          </div>
+        );
+      })}
+      <button type="button" onClick={onAddFolder} className={cn(quietBtn, 'h-8 w-fit gap-2 px-2')}><I.plus className="size-3.5" />Add a folder</button>
+    </div>
+  </>;
+  else if (page === 'cloud') body = <>
+    {head('Cloud sync', <InfoTip label="About cloud sync">Keeps every PC you sign in on in step, within a second or two. Your data stays on this PC too, so Tasks works offline.</InfoTip>)}
+    <SRow label={<span className="flex items-center gap-2">{tone.dot && <span className={cn('size-2 shrink-0 rounded-full', tone.dot)} />}{tone.text}{c.phase === 'synced' && c.lastSync ? ` · ${ago(c.lastSync)}` : ''}{c.email && signedIn ? <span className="truncate text-xs text-muted-foreground">{c.email}</span> : null}</span>}>
+      {signedIn ? <>
+        <button type="button" className={quietBtn} onClick={cloudSyncNow}><I.refresh className="size-3.5" />Sync now</button>
+        <button type="button" className={cn(quietBtn, 'hover:bg-destructive/10 hover:text-destructive')} onClick={() => cloudSignOut().catch(e => toast.error('Couldn’t sign out', String(e)))}>Sign out</button>
+        <button type="button" className={quietBtn} onClick={onOpenCloud}>Details</button>
+      </> : <Button variant="outline" size="sm" onClick={onOpenCloud}>{c.phase === 'signin' ? 'Sign in…' : 'Set up…'}</Button>}
+    </SRow>
+    <div className="my-2 h-px bg-border" />
+    {head('Backups')}
+    <SRow label="Back up data" info="Saves tasks, documents, automations and your profile to one .zip file."><Button variant="outline" size="sm" onClick={onBackup}><I.download className="size-3.5" />Back up…</Button></SRow>
+    <SRow label="Restore from backup" info="Replaces everything in the app with the backup. Back up first if you might need what’s here now."><Button variant="outline" size="sm" onClick={onRestore}><I.upload className="size-3.5" />Restore…</Button></SRow>
+    <SRow label="Data folder">{link('Open', onOpenDataFolder, 'Open data folder')}</SRow>
+  </>;
+  else if (page === 'about') body = <>
+    <div className="mb-3 flex items-center gap-3">
+      <span className="flex size-10 items-center justify-center rounded-[10px] bg-primary text-primary-foreground"><I.check className="size-5" /></span>
+      <div><div className="font-semibold">Tasks</div><div className="text-xs text-muted-foreground">Version {updater.version || '…'}</div></div>
+    </div>
+    <SRow label="Updates">
+      {updater.update ? <Button size="sm" onClick={updater.install} disabled={updater.progress !== null}>{updater.progress === null ? `Install ${updater.update.version}` : 'Installing…'}</Button>
+        : <Button variant="outline" size="sm" onClick={() => updater.look(true)}><I.reset className="size-3.5" />Check now</Button>}
+    </SRow>
+    <SRow label="What’s new">{link(updater.version ? `See ${updater.version}` : 'See', onWhatsNew, 'See what’s new')}</SRow>
+  </>;
+  return (
+    <Dialog open onClose={onClose} title="Settings" className="max-w-[680px]" footer={<Button onClick={onClose}>Done</Button>}>
+      <div className="grid min-h-[380px] grid-cols-[176px_minmax(0,1fr)]">
+        <nav aria-label="Settings pages" className="grid content-start gap-0.5 border-r pr-3">
+          {SETTINGS_PAGES.map((p, i) => p.group
+            ? <div key={'g' + i} className={cn('px-2.5 pb-1 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80', i === 0 ? 'pt-0.5' : 'pt-3')}>{p.group}</div>
+            : navBtn(p))}
+        </nav>
+        <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] content-start gap-0.5 pl-6" data-testid={`settings-${page}`}>{body}</div>
       </div>
     </Dialog>
   );
@@ -1674,7 +1900,16 @@ function useProfile() {
       .catch(() => setState({ loaded: true, data: {} }));
   }, []);
   const update = useCallback(patch => setState(s => { const data = { ...s.data, ...patch }; persist('profile', data); return { ...s, data }; }), []);
-  return { ...state, update };
+  // Changes to your profile (0.19.13). Edits made here are stamped and sent to the cloud; ones from the cloud aren't.
+  // 'quiet' (the time zone from this PC's clock) is saved and sent without a new stamp, so it never wins over a real edit.
+  const updateUser = useCallback((patch, how) => setState(s => {
+    if (!s.data.user) return s;
+    const user = { ...s.data.user, ...patch, ...(how ? {} : { editedAt: Date.now() }) };
+    const data = { ...s.data, user }; persist('profile', data);
+    if (how !== true) setTimeout(cloudProfileNote);
+    return { ...s, data };
+  }), []);
+  return { ...state, update, updateUser };
 }
 
 // A timer started on this PC (timers from before 0.19 have no PC and count as this one's).
@@ -1813,7 +2048,7 @@ function FileRow({ f, onPreview, onDownload, onRemove }) {
         <div className="text-xs text-muted-foreground">{fmtSize(f.size)}, added {fmtDay(f.addedAt)}</div>
       </button>
       <Button variant="ghost" size="icon-sm" aria-label={`Save a copy of ${f.name}`} onClick={() => onDownload(f)}><I.download /></Button>
-      <Button variant="ghost" size="icon-sm" aria-label={`Remove ${f.name}`} onClick={() => onRemove(f)}><I.x /></Button>
+      <Button variant="ghost" size="icon-sm" className={danger} aria-label={`Remove ${f.name}`} onClick={() => onRemove(f)}><I.x /></Button>
     </div>
   );
 }
@@ -2030,7 +2265,7 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
             <Field label="Project" htmlFor="ad-project">
               <Select id="ad-project" value={project} onChange={setProject} options={[
                 { value: '', label: 'No project', node: <span className="text-muted-foreground">No project</span> },
-                ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+                ...projects.map(p => ({ value: p, label: p, icon: <PIcon name={p} className="size-3.5 text-muted-foreground" /> })),
               ]} />
             </Field>
           )}
@@ -2612,7 +2847,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
     placeholder = `Search or create a ${ctx.labels.platform.toLowerCase()}…`;
     items = [
       { key: '', text: `No ${ctx.labels.platform.toLowerCase()}`, node: <span className="text-muted-foreground">No {ctx.labels.platform.toLowerCase()}</span>, on: !task.project, pick: () => set({ project: '' }) },
-      ...ctx.projects.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.project) === norm(n), pick: () => set({ project: n }) })),
+      ...ctx.projects.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><PIcon name={n} className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{n}</span></span>, on: norm(task.project) === norm(n), pick: () => set({ project: n }) })),
     ];
     creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Create {ctx.labels.platform.toLowerCase()}</span><I.folder className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate font-medium">{name}</span></span>,
       pick: () => { ctx.ensureProject(name); set({ project: name }); } }];
@@ -2696,7 +2931,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
                     {it.remove && (
                       <button type="button" aria-label={`Delete status ${it.text}`} title="Delete this status"
                         onClick={e => { e.stopPropagation(); it.remove(); }}
-                        className="hidden size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground group-hover/opt:flex"><I.trash className="size-3.5" /></button>
+                        className={cn("hidden size-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted group-hover/opt:flex", danger)}><I.trash className="size-3.5" /></button>
                     )}
                   </div>
                 </React.Fragment>
@@ -2721,76 +2956,113 @@ function CellEditor({ edit, task, ctx, onClose }) {
 }
 
 /* ---------- Edit the Status property ---------- */
+// 0.19.13: a quieter layout. Each group has a + by its name, counts are plain numbers, and the
+// arrows, lock and delete show on the row you point at. How groups behave sits behind the (i) icon.
+const GROUP_HELP = [
+  ['todo', 'Not started yet.'],
+  ['doing', 'Being worked on. Starting a timer moves a to-do here. With “One task at a time” on, the task that was in progress becomes Blocked.'],
+  ['blocked', 'Waiting on something. Its timer stops.'],
+  ['done', 'Counts as done. Its timer stops and it’s crossed off.'],
+];
+// Row buttons stay hidden until you point at the row or tab into it. One that can't be used shows faintly.
+const rowAct = (off = false) => cn('flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
+  off ? 'group-hover/row:opacity-30 group-focus-within/row:opacity-30 [@media(hover:none)]:opacity-30' : 'hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100');
 function StatusesDialog({ open, stages, tasks, onClose, onSave }) {
   const [draft, setDraft] = useState([]);
-  useEffect(() => { if (open) setDraft(statusList(stages)); }, [open]);
+  const [help, setHelp] = useState(false);
+  const [added, setAdded] = useState(null);
+  useEffect(() => { if (open) { setDraft(statusList(stages)); setHelp(false); setAdded(null); } }, [open]);
   const upd = (id, patch) => setDraft(d => d.map(x => x.id === id ? { ...x, ...patch } : x));
   const move = (id, dir) => setDraft(d => {
     const i = d.findIndex(x => x.id === id), j = i + dir;
     if (j < 0 || j >= d.length || d[j].group !== d[i].group) return d;
     const n = [...d]; [n[i], n[j]] = [n[j], n[i]]; return n;
   });
+  const add = g => {
+    const id = 'st-' + newId();
+    setAdded(id);
+    setDraft(d => {
+      const at = d.map(y => y.group).lastIndexOf(g) + 1;
+      return [...d.slice(0, at), { id, name: '', group: g, color: NEW_COLOR[g] }, ...d.slice(at)];
+    });
+  };
   const used = x => tasks.filter(t => (S[t.status] ? t.status : 'todo') === x.group && (x.builtin ? !t.stage || !draft.some(y => y.id === t.stage) : t.stage === x.id)).length;
   const dupes = new Set(draft.map(x => norm(x.name)).filter((n, i, a) => n && a.indexOf(n) !== i));
   const valid = draft.every(x => x.name.trim() && !dupes.has(norm(x.name)));
+  const mainName = g => (draft.find(y => y.id === g) || {}).name || GROUP_HEAD[g];
   return (
-    <Dialog open={open} onClose={onClose} title="Edit the Status property" className="max-w-xl"
-      description="Rename, recolor and reorder statuses, or add your own. Each one belongs to a group, and the group decides how it behaves: Complete counts as done, In progress blocks the previous task, and so on."
+    <>
+    <Dialog open={open} onClose={help ? () => setHelp(false) : onClose} className="max-w-[460px]"
+      title={<span className="inline-flex items-center gap-1">Edit statuses
+        <button type="button" onClick={() => setHelp(true)} aria-label="How status groups work" title="How status groups work"
+          className="-my-1 flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.info className="size-3.5" /></button>
+      </span>}
+      description="Rename, recolor or reorder. Add your own to any group."
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button disabled={!valid} onClick={() => onSave(draft.map(({ builtin, ...x }) => ({ ...x, name: x.name.trim() })))}>Save</Button>
       </>}>
-      <div className="grid gap-5">
+      <div className="grid gap-2.5">
         {STATUSES.map(g => {
           const rows = draft.filter(x => x.group === g.id);
           return (
             <div key={g.id}>
-              <div className="mb-1.5 text-xs font-medium text-muted-foreground">{GROUP_HEAD[g.id]}</div>
-              <div className="grid gap-1">
-                {rows.map((x, i) => {
-                  const n = used(x), clash = dupes.has(norm(x.name));
-                  return (
-                    <div key={x.id} className="group/row flex items-center gap-2 rounded-md px-1 py-0.5 hover:bg-muted/50">
-                      <Popover className="p-2"
-                        trigger={p => <button {...p} type="button" aria-label={`Color of ${x.name || 'status'}`} className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"><span className={cn('size-2.5 rounded-full', STATUS_COLORS[x.color])} /></button>}>
-                        <div className="grid grid-cols-3 gap-1">
-                          {Object.keys(STATUS_COLORS).map(c => (
-                            <button key={c} type="button" onClick={() => upd(x.id, { color: c })}
-                              className={cn('flex h-7 items-center gap-2 rounded px-2 text-xs capitalize hover:bg-accent', x.color === c && 'bg-accent font-medium')}>
-                              <span className={cn('size-2.5 rounded-full', STATUS_COLORS[c])} />{c}
-                            </button>
-                          ))}
-                        </div>
-                      </Popover>
-                      <Input value={x.name} onChange={e => upd(x.id, { name: e.target.value })} placeholder="Status name" aria-label="Status name"
-                        className={cn('h-8 flex-1 border-transparent bg-transparent shadow-none hover:border-input focus-visible:border-input', clash && 'border-destructive')} />
-                      <span className="w-14 shrink-0 text-right text-xs text-muted-foreground tnum">{n ? `${n} ${n === 1 ? 'task' : 'tasks'}` : ''}</span>
-                      <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(x.id, -1)}
-                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.up className="size-3.5" /></button>
-                      <button type="button" aria-label="Move down" disabled={i === rows.length - 1} onClick={() => move(x.id, 1)}
-                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30"><I.down className="size-3.5" /></button>
-                      {x.builtin
-                        ? <span title="Every group keeps its main status. You can rename and recolor it." className="flex size-7 items-center justify-center text-muted-foreground/50"><I.lock className="size-3.5" /></span>
-                        : <button type="button" aria-label={`Delete ${x.name || 'status'}`} title={n ? `Its ${n} ${n === 1 ? 'task moves' : 'tasks move'} to ${(draft.find(y => y.id === g.id) || {}).name}` : 'Delete'}
-                            onClick={() => setDraft(d => d.filter(y => y.id !== x.id))}
-                            className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive"><I.trash className="size-3.5" /></button>}
-                    </div>
-                  );
-                })}
-                <button type="button" onClick={() => setDraft(d => {
-                    const at = d.map(y => y.group).lastIndexOf(g.id) + 1;
-                    return [...d.slice(0, at), { id: 'st-' + newId(), name: '', group: g.id, color: NEW_COLOR[g.id] }, ...d.slice(at)];
-                  })}
-                  className="flex h-8 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground">
-                  <I.plus className="size-3.5" />Add a status
-                </button>
+              <div className="flex h-7 items-center justify-between pl-1.5">
+                <span className="text-xs font-medium text-muted-foreground">{GROUP_HEAD[g.id]}</span>
+                <button type="button" onClick={() => add(g.id)} aria-label={`Add a status to ${GROUP_HEAD[g.id]}`} title="Add a status"
+                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.plus className="size-3.5" /></button>
               </div>
+              {rows.map((x, i) => {
+                const n = used(x), clash = dupes.has(norm(x.name));
+                return (
+                  <div key={x.id} className="group/row flex h-8 items-center gap-1.5 rounded-md pl-0.5 pr-1 hover:bg-muted/50 focus-within:bg-muted/50">
+                    <Popover className="p-2"
+                      trigger={p => <button {...p} type="button" aria-label={`Color of ${x.name || 'status'}`} className="flex size-7 shrink-0 items-center justify-center rounded-md hover:bg-muted"><span className={cn('size-2.5 rounded-full', STATUS_COLORS[x.color])} /></button>}>
+                      <div className="grid grid-cols-3 gap-1">
+                        {Object.keys(STATUS_COLORS).map(c => (
+                          <button key={c} type="button" onClick={() => upd(x.id, { color: c })}
+                            className={cn('flex h-7 items-center gap-2 rounded px-2 text-xs capitalize hover:bg-accent', x.color === c && 'bg-accent font-medium')}>
+                            <span className={cn('size-2.5 rounded-full', STATUS_COLORS[c])} />{c}
+                          </button>
+                        ))}
+                      </div>
+                    </Popover>
+                    <Input value={x.name} onChange={e => upd(x.id, { name: e.target.value })} placeholder="Status name" aria-label="Status name" autoFocus={x.id === added}
+                      className={cn('h-7 flex-1 border-transparent bg-transparent px-1.5 font-medium !shadow-none hover:border-input focus-visible:border-input focus-visible:ring-0 focus-visible:bg-background', clash && 'border-destructive')} />
+                    <span className="min-w-[1.5rem] shrink-0 text-right text-xs text-muted-foreground tnum" title={n ? `${n} ${n === 1 ? 'task' : 'tasks'}` : undefined}>{n || ''}</span>
+                    <button type="button" aria-label="Move up" disabled={i === 0} onClick={() => move(x.id, -1)} className={rowAct(i === 0)}><I.up className="size-3.5" /></button>
+                    <button type="button" aria-label="Move down" disabled={i === rows.length - 1} onClick={() => move(x.id, 1)} className={rowAct(i === rows.length - 1)}><I.down className="size-3.5" /></button>
+                    {x.builtin
+                      ? <span title="Main status. Rename or recolor it, but it can’t be deleted." className="flex size-7 shrink-0 items-center justify-center text-muted-foreground opacity-0 transition-opacity group-hover/row:opacity-50 group-focus-within/row:opacity-50 [@media(hover:none)]:opacity-50"><I.lock className="size-3.5" /></span>
+                      : <button type="button" aria-label={`Delete ${x.name || 'status'}`} title={n ? `Its ${n} ${n === 1 ? 'task moves' : 'tasks move'} to ${mainName(g.id)}` : 'Delete'}
+                          onClick={() => setDraft(d => d.filter(y => y.id !== x.id))}
+                          className={cn(rowAct(), danger)}><I.trash className="size-3.5" /></button>}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
         {dupes.size > 0 && <p className="text-[0.8rem] text-destructive">Two statuses can’t have the same name.</p>}
       </div>
     </Dialog>
+    <Dialog open={open && help} onClose={() => setHelp(false)} title="How status groups work" className="max-w-[420px]"
+      description="Every status sits in one of four groups. The group decides how its tasks behave."
+      footer={<Button onClick={() => setHelp(false)}>Got it</Button>}>
+      <div className="grid gap-3">
+        {GROUP_HELP.map(([g, text]) => (
+          <div key={g} className="grid grid-cols-[6.5rem_minmax(0,1fr)] items-baseline gap-2.5 text-sm">
+            <span className="flex items-center gap-2 font-medium"><span className={cn('size-2 shrink-0 rounded-full', STATUS_COLORS[(draft.find(y => y.id === g) || {}).color || BUILTIN_COLOR[g]])} />{GROUP_HEAD[g]}</span>
+            <span className="text-muted-foreground">{text}</span>
+          </div>
+        ))}
+        <div className="grid gap-2 rounded-lg bg-muted/60 p-3 text-[0.8rem] text-muted-foreground">
+          <div className="flex gap-2"><I.lock className="mt-0.5 size-3.5 shrink-0" />Each group keeps one main status. You can rename and recolor it, but not delete it.</div>
+          <div className="flex gap-2"><I.trash className="mt-0.5 size-3.5 shrink-0" />Deleting a status moves its tasks to the group’s main status.</div>
+        </div>
+      </div>
+    </Dialog>
+    </>
   );
 }
 
@@ -2828,7 +3100,7 @@ const CompactFile = ({ f, onPreview, onDownload, onRemove }) => (
     <button type="button" onClick={() => onPreview(f)} className="min-w-0 flex-1 truncate text-left text-sm hover:underline underline-offset-4 focus-visible:outline-none focus-visible:underline">{f.name}</button>
     <span className="tnum text-xs text-muted-foreground">{fmtSize(f.size)}</span>
     <button type="button" className={hoverAct} aria-label={`Download ${f.name}`} onClick={() => onDownload(f)}><I.download className="size-3.5" /></button>
-    <button type="button" className={hoverAct} aria-label={`Remove ${f.name}`} onClick={() => onRemove(f)}><I.x className="size-3.5" /></button>
+    <button type="button" className={cn(hoverAct, danger)} aria-label={`Remove ${f.name}`} onClick={() => onRemove(f)}><I.x className="size-3.5" /></button>
   </div>
 );
 
@@ -3017,7 +3289,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
             })()}
             <PropRow label={labels.platform} htmlFor="t-project">
               <Combobox id="t-project" value={form.project} onChange={set('project')} options={projects} placeholder={`Add ${labels.platform.toLowerCase()}`} hideIcon inputClassName={ghostField}
-                createLabel={v => `Use “${v}”`} icon={() => <I.folder className="text-muted-foreground" />} />
+                createLabel={v => `Use “${v}”`} icon={v => <PIcon name={v} className="text-muted-foreground" />} />
             </PropRow>
             <PropRow label={labels.deadline} htmlFor="t-deadline">
               {bucketEnds[norm(form.bucket)] ? (() => {
@@ -3109,7 +3381,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
 
         {/* Footer */}
         <div className="flex shrink-0 items-center gap-2 border-t px-4 py-2.5">
-          {task && <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive" onClick={onDelete} aria-label="Delete task"><I.trash /></Button>}
+          {task && <Button variant="ghost" size="icon-sm" className={cn("text-muted-foreground", danger)} onClick={onDelete} aria-label="Delete task"><I.trash /></Button>}
           <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground"><I.check className="size-3.5" />Changes save automatically</span>
           <div className="flex-1" />
           <Button type="submit" variant="outline" size="sm">Close</Button>
@@ -3152,7 +3424,7 @@ function Checklist({ items, onChange }) {
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); setEditing({ id: it.id, value: it.text }); } }}
               className={cn('-mx-1 flex-1 cursor-text rounded px-1 py-1 text-sm hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', it.done && 'text-muted-foreground line-through')}>{it.text}</span>
           )}
-          <button type="button" className={cn(hoverAct, 'h-6 w-6')} aria-label={`Remove ${it.text}`}
+          <button type="button" className={cn(hoverAct, 'h-6 w-6', danger)} aria-label={`Remove ${it.text}`}
             onClick={() => onChange(items.filter(x => x.id !== it.id))}><I.x className="size-3.5" /></button>
         </div>
       ))}
@@ -3180,27 +3452,45 @@ function TimeSummary({ tasks, onHide }) {
     if (wm) { const k = t.project || 'No project'; byProject[k] = (byProject[k] || 0) + wm; }
   });
   const rows = Object.entries(byProject).sort((a, b) => b[1] - a[1]);
+  const tile = 'flex min-w-0 flex-col gap-3 rounded-xl border bg-card px-4 py-3.5';
+  const big = 'tnum text-[22px] font-semibold leading-tight tracking-tight';
+  const btn = 'flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
   return (
-    <Card className="mt-6 p-5 shadow-none">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex gap-8">
-          <div><div className="text-xs text-muted-foreground">Today</div><div className="tnum text-2xl font-semibold tracking-tight">{fmtShort(todayMs)}</div></div>
-          <div><div className="text-xs text-muted-foreground">This week</div><div className="tnum text-2xl font-semibold tracking-tight">{fmtShort(weekMs)}</div></div>
+    <div className="mt-6 grid grid-cols-[repeat(auto-fit,minmax(14rem,1fr))] gap-2.5">
+      <div className={cn(tile, 'justify-between')}>
+        <div className="-my-1 -mr-2 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <I.timer className="size-3.5" /><span className="flex-1">Tracked</span>
+          <span className="group/tip relative flex">
+            <button type="button" aria-label="About the time summary" className={btn}><I.info className="size-3.5" /></button>
+            <span role="tooltip" className="pointer-events-none absolute right-0 top-full z-10 mt-1.5 w-56 rounded-md bg-foreground px-2.5 py-1.5 text-xs leading-snug text-background opacity-0 transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100">
+              Time from your timers. Each tile shows this week for one platform.
+            </span>
+          </span>
+          <button type="button" onClick={onHide} aria-label="Hide time summary" title="Hide time summary" className={btn}><I.x className="size-3.5" /></button>
         </div>
-        <Button variant="ghost" size="icon-sm" onClick={onHide} aria-label="Hide time summary"><I.x /></Button>
+        <div className="flex gap-6">
+          <div><div className="text-xs text-muted-foreground">Today</div><div className={big}>{fmtShort(todayMs)}</div></div>
+          <div><div className="text-xs text-muted-foreground">This week</div><div className={big}>{fmtShort(weekMs)}</div></div>
+        </div>
       </div>
-      {rows.length > 0 ? (
-        <div className="mt-4 grid gap-2.5">
-          {rows.map(([name, ms]) => (
-            <div key={name} className="grid grid-cols-[minmax(0,10rem)_1fr_auto] items-center gap-3 text-sm">
-              <span className="truncate text-muted-foreground">{name}</span>
-              <div className="h-1.5 rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(3, ms / weekMs * 100)}%` }} /></div>
-              <span className="tnum font-medium">{fmtShort(ms)}</span>
+      {rows.map(([name, ms]) => {
+        const pct = weekMs ? Math.round(ms / weekMs * 100) : 0;
+        return (
+          <div key={name} className={tile}>
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="flex size-[26px] shrink-0 items-center justify-center rounded-md bg-muted text-foreground"><PIcon name={name} className="size-3.5" /></span>
+              <span className="truncate text-sm font-medium" title={name}>{name}</span>
+              <span className="tnum ml-auto text-xs text-muted-foreground">{pct}%</span>
             </div>
-          ))}
-        </div>
-      ) : <p className="mt-3 text-sm text-muted-foreground">Start a timer on any task and your time shows up here, split by project.</p>}
-    </Card>
+            <div className={big}>{fmtShort(ms)}</div>
+            <div className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary" style={{ width: `${Math.max(3, pct)}%` }} /></div>
+          </div>
+        );
+      })}
+      {rows.length === 0 && (
+        <div className={cn(tile, 'justify-center text-sm text-muted-foreground')}>Start a timer on any task to see time per platform.</div>
+      )}
+    </div>
   );
 }
 
@@ -3231,9 +3521,11 @@ const WordInput = ({ value, onChange, placeholder, label, className }) => (
     style={{ width: `calc(${Math.min(Math.max(String(value || '').length, (placeholder || '').length, 4), 30)}ch + 1.25rem)` }}
     className={cn('h-7 max-w-full rounded-md border border-border bg-transparent px-2 text-[13px] text-foreground placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', className)} />
 );
-function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave, bucketNoun = 'Bucket' }) {
-  const [draft, setDraft] = useState(rules);
-  useEffect(() => { if (open) setDraft(rules); }, [open]);
+function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave, onOpenNotifications, bucketNoun = 'Bucket' }) {
+  // Notifications live in Settings since 0.19.13. They're still rules, kept out of this list and saved back untouched.
+  const isNote = r => r.action === 'notify' && r.scope !== 'bucket';
+  const [draft, setDraft] = useState(() => rules.filter(r => !isNote(r)));
+  useEffect(() => { if (open) setDraft(rules.filter(r => !isNote(r))); }, [open]);
   const bnoun = bucketNoun.toLowerCase();
   const upd = (id, patch) => setDraft(d => d.map(r => r.id === id ? { ...r, ...patch } : r));
   const updGroup = (g, patch) => { const ids = new Set(g.rules.map(r => r.id)); setDraft(d => d.map(r => ids.has(r.id) ? { ...r, ...patch } : r)); };
@@ -3255,8 +3547,6 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
     { title: 'Assign new tasks to me', text: 'Every new task starts assigned to you.', rule: { trigger: 'created', action: 'assign', target: me } },
     { title: 'Claim what you start', text: 'Assign a task to you when it moves to In progress.', rule: { trigger: 'started', action: 'assign', target: me } },
     { title: 'Raise blocked tasks', text: 'Make a task High priority when it gets blocked.', rule: { trigger: 'blocked', action: 'priority', target: 'high' } },
-    { title: 'Remind me a day before', text: 'Send a desktop notification when a task is due tomorrow.', rule: { trigger: 'due_soon', action: 'notify', target: 'Due tomorrow' } },
-    { title: 'Tell me when work is overdue', text: 'Send a desktop notification when a task becomes overdue.', rule: { trigger: 'overdue', action: 'notify', target: 'Overdue' } },
     { title: 'Stop the clock when blocked', text: 'Pause the timer as soon as a task gets blocked.', rule: { trigger: 'blocked', action: 'stop_timer', target: '' } },
     { title: 'Give new tasks a deadline', text: 'New tasks without a date are due in a week.', rule: { trigger: 'created', action: 'deadline', target: '7' } },
     { title: 'Start with a checklist', text: 'Add Brief, Design and Review to every new task.', rule: { trigger: 'created', action: 'checklist', target: 'Brief, Design, Review' } },
@@ -3268,17 +3558,17 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   { const byKey = {}; draft.forEach(r => { const k = ruleGroupKey(r); if (!byKey[k]) groups.push(byKey[k] = { key: k, rules: [] }); byKey[k].rules.push(r); }); }
   const usedGroup = k => groups.some(g => g.key === k);
   // A new task automation starts on an event that isn't in the list yet, so it gets its own group.
-  const addTask = () => { const t = TRIGGERS.find(x => !usedGroup(`t||${x.id}`)) || TRIGGERS[0]; add({ trigger: t.id, action: 'notify', target: '' }); };
+  const addTask = () => { const t = TRIGGERS.find(x => !usedGroup(`t||${x.id}`)) || TRIGGERS[0]; add({ trigger: t.id, action: 'priority', target: 'high' }); };
   const addBucket = () => { const s = BUCKET_STATUSES.find(x => !usedGroup(`b|${x.id}`)) || BUCKET_STATUSES[0]; add(bucketRule(s.id)); };
   const addToGroup = g => {
     const f = g.rules[0];
     if (f.scope === 'bucket') return add(bucketRule(f.status));
-    const free = ACTIONS.find(a => !g.rules.some(r => r.action === a.id) && a.id === 'notify') || ACTIONS.find(a => !g.rules.some(r => r.action === a.id)) || ACTIONS[0];
+    const free = ACTIONS.find(a => a.id !== 'notify' && !g.rules.some(r => r.action === a.id)) || ACTIONS[0];
     add({ project: f.project, trigger: f.trigger, action: free.id, target: '' });
   };
   const projectOptions = (none = 'Any project') => [
     { value: '', label: none },
-    ...projects.map(p => ({ value: p, label: p, icon: <I.folder className="size-3.5 text-muted-foreground" /> })),
+    ...projects.map(p => ({ value: p, label: p, icon: <PIcon name={p} className="size-3.5 text-muted-foreground" /> })),
   ];
   // Typing a name that isn't on any task yet offers it, as the old person box did.
   const newPerson = v => ({ value: v, label: `Assign to “${v}”`, icon: <Avatar name={v} className="h-5 w-5" /> });
@@ -3300,11 +3590,11 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
   const onCount = draft.filter(r => r.enabled).length;
   return (
     <Dialog open={open} onClose={onClose} title="Automations" className="max-w-3xl"
-      description="Click any word in a box to change it. One event can do several things."
+      description={<>Click any word in a box to change it. Notifications are in <button type="button" onClick={onOpenNotifications} className="underline underline-offset-4 hover:text-foreground">Settings</button>.</>}
       footer={<>
         {draft.length > 0 && <span className="mr-auto self-center text-sm text-muted-foreground">{onCount} of {draft.length} on</span>}
         <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button disabled={!valid} onClick={() => onSave(draft.map(r => ({ ...r, target: String(r.target || '').trim() })))}>Save automations</Button>
+        <Button disabled={!valid} onClick={() => onSave([...draft.map(r => ({ ...r, target: String(r.target || '').trim() })), ...rules.filter(isNote)])}>Save automations</Button>
       </>}>
       <div className="grid gap-3">
         {draft.length === 0 && <p className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">No automations yet. Add one, or start from an idea below.</p>}
@@ -3327,7 +3617,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
                       options={TRIGGERS.map(t => ({ value: t.id, label: t.label, group: t.group }))} />
                   </>}
                 </div>
-                <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label={g.rules.length > 1 ? `Delete these ${g.rules.length} automations` : 'Delete automation'} title="Delete" onClick={() => removeIds(g.rules.map(r => r.id))}><I.trash /></Button>
+                <Button variant="ghost" size="icon-sm" className={cn("text-muted-foreground", danger)} aria-label={g.rules.length > 1 ? `Delete these ${g.rules.length} automations` : 'Delete automation'} title="Delete" onClick={() => removeIds(g.rules.map(r => r.id))}><I.trash /></Button>
               </div>
               {g.rules.map(r => {
                 const err = problem(r);
@@ -3349,12 +3639,12 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, onSave,
                             options={DEADLINE_OPTIONS.map(([v, l]) => ({ value: v, label: l }))} />
                         </> : <>
                           <Select variant="word" label="Then" value={r.action} onChange={v => upd(r.id, { action: v, target: '' })} searchable={false}
-                            options={ACTIONS.map(a => ({ value: a.id, label: a.label }))} />
+                            options={ACTIONS.filter(a => a.id !== 'notify').map(a => ({ value: a.id, label: a.label }))} />
                           {targetField(r)}
                         </>}
                       </div>
                       <Switch checked={r.enabled} onChange={v => upd(r.id, { enabled: v })} label="Turn automation on or off" />
-                      <Button variant="ghost" size="icon-sm" className="text-muted-foreground" aria-label="Remove this action" title="Remove" onClick={() => removeIds([r.id])}><I.x /></Button>
+                      <Button variant="ghost" size="icon-sm" className={cn("text-muted-foreground", danger)} aria-label="Remove this action" title="Remove" onClick={() => removeIds([r.id])}><I.x /></Button>
                     </div>
                     {err && <p className="ml-10 mt-1 text-[0.8rem] text-destructive">{err}</p>}
                   </div>
@@ -3431,29 +3721,120 @@ function NameDialog({ open, title, value, hint, defaultValue, onClose, onSave })
   );
 }
 
-/* Manage platforms: rarely needed, so it lives in a small window. */
-function PlatformsDialog({ open, onClose, list, tasks, noun, onNew, onEdit, onDelete }) {
+/* Manage platforms: rarely needed, so it lives in a small window.
+   0.19.13: names are renamed right in the list (Enter or leaving the field saves, Esc undoes).
+   The count sits flush right; pointing at a row swaps it for the bin. How it works sits behind (i). */
+// The icon grid for one platform. Search filters by name; the reset button in the search box puts the folder back.
+function PlatformIconPicker({ p, noun, onPick }) {
+  const [q, setQ] = useState('');
+  const cur = p.icon || 'folder';
+  const t = q.trim().toLowerCase();
+  const list = PLATFORM_ICONS.filter(([k, label, words]) => !t || label.toLowerCase().includes(t) || words.includes(t));
   return (
-    <Dialog open={open} onClose={onClose} title={`Manage ${plural(noun).toLowerCase()}`} className="max-w-md"
-      description={`Rename or delete ${plural(noun).toLowerCase()}. Renaming updates every task and automation that uses it.`}
+    <Popover className="w-[232px] p-2"
+      trigger={tp => <button {...tp} type="button" aria-label={`Icon for ${p.name}`} title="Change icon"
+        onClick={e => { setQ(''); tp.onClick(e); }}
+        className={cn('flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', tp.open && 'bg-muted text-foreground ring-1 ring-input')}>
+        <PIcon icon={cur} className="size-4" />
+      </button>}>
+      {close => <div data-picking="1">
+      <div className="mb-1.5 flex h-8 items-center gap-1.5 rounded-md border border-input pl-2 pr-0.5 focus-within:border-ring/60">
+        <I.search className="size-3.5 shrink-0 text-muted-foreground" />
+        <input value={q} onChange={e => setQ(e.target.value)} autoFocus placeholder="Search icons" aria-label="Search icons"
+          className="h-full min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus-visible:outline-none" />
+        <span className="group/tip relative flex">
+          <button type="button" aria-label={`Reset to the default folder icon`} disabled={cur === 'folder'} onClick={() => { onPick(p, 'folder'); close(); }}
+            className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-40 disabled:hover:bg-transparent"><I.reset className="size-3.5" /></button>
+          <span role="tooltip" className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 whitespace-nowrap rounded-md bg-foreground px-2 py-1 text-xs text-background opacity-0 transition-opacity group-hover/tip:opacity-100">
+            {cur === 'folder' ? 'Already the default folder icon' : 'Reset to the default folder icon'}
+          </span>
+        </span>
+      </div>
+      <div className="grid grid-cols-6 gap-0.5">
+        {list.map(([k, label]) => (
+          <button key={k} type="button" title={label} aria-label={label} aria-pressed={k === cur} onClick={() => { onPick(p, k); close(); }}
+            className={cn('flex size-9 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', k === cur && 'bg-accent text-foreground ring-1 ring-inset ring-input')}>
+            <PIcon icon={k} className="size-4" />
+          </button>
+        ))}
+      </div>
+      {list.length === 0 && <p className="px-1 py-2 text-sm text-muted-foreground">No icons match.</p>}
+      </div>}
+    </Popover>
+  );
+}
+function PlatformRow({ p, n, noun, names, fresh, onRename, onCreate, onDelete, onDrop, onClash, onIcon }) {
+  const [v, setV] = useState(p ? p.name : '');
+  const ref = useRef(null);
+  useEffect(() => { if (p) setV(p.name); }, [p && p.name]);
+  const clash = !!v.trim() && names.some(x => norm(x) === norm(v) && (!p || norm(x) !== norm(p.name)));
+  useEffect(() => { onClash(clash); return () => onClash(false); }, [clash]);
+  const commit = () => {
+    const name = v.trim();
+    if (!p) { if (name && !clash) onCreate(name); else onDrop(); return; }
+    if (!name || clash) { setV(p.name); return; }
+    if (name !== p.name) onRename(p, name);
+  };
+  return (
+    <div className="group/row flex h-9 items-center gap-1 rounded-md pl-1 pr-1 hover:bg-muted/50 focus-within:bg-muted/50">
+      {p && onIcon ? <PlatformIconPicker p={p} noun={noun} onPick={onIcon} /> : <span className="flex size-7 shrink-0 items-center justify-center text-muted-foreground"><I.folder className="size-4" /></span>}
+      <Input ref={ref} value={v} onChange={e => setV(e.target.value)} onBlur={commit} autoFocus={fresh}
+        data-picking={!p || v !== p.name ? '1' : undefined}
+        placeholder={`${noun} name`} aria-label={p ? `Rename ${p.name}` : `New ${noun.toLowerCase()} name`}
+        onKeyDown={e => {
+          if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); }
+          else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); if (p) { setV(p.name); requestAnimationFrame(() => ref.current && ref.current.blur()); } else onDrop(); }
+        }}
+        className={cn('h-7 min-w-0 flex-1 border-transparent bg-transparent px-1.5 font-medium !shadow-none hover:border-input focus-visible:border-input focus-visible:ring-0 focus-visible:bg-background', clash && '!border-destructive')} />
+      <div className="relative flex h-7 min-w-[1.75rem] shrink-0 items-center justify-end">
+        {p && <span className="pr-1.5 text-xs text-muted-foreground tnum transition-opacity group-hover/row:opacity-0 group-focus-within/row:opacity-0 [@media(hover:none)]:opacity-0" title={n ? `${n} ${n === 1 ? 'task' : 'tasks'}` : 'No tasks'}>{n || ''}</span>}
+        {p && <button type="button" aria-label={`Delete ${p.name}`} title="Delete" onMouseDown={e => e.preventDefault()} onClick={() => onDelete(p)}
+          className="absolute right-0 flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-muted hover:!text-destructive focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover/row:opacity-100 group-focus-within/row:opacity-100 [@media(hover:none)]:opacity-100"><I.trash className="size-3.5" /></button>}
+      </div>
+    </div>
+  );
+}
+function PlatformsDialog({ open, onClose, list, tasks, noun, onRename, onCreate, onDelete, onIcon }) {
+  const [help, setHelp] = useState(false);
+  const [adding, setAdding] = useState(false);
+  const [clashes, setClashes] = useState({});
+  useEffect(() => { if (open) { setHelp(false); setAdding(false); setClashes({}); } }, [open]);
+  const many = plural(noun).toLowerCase(), one = noun.toLowerCase();
+  const names = list.map(p => p.name);
+  const clashFor = key => on => setClashes(c => (!!c[key] === on ? c : { ...c, [key]: on }));
+  const iconBtn = 'flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
+  return (
+    <>
+    <Dialog open={open} onClose={help ? () => setHelp(false) : onClose} className="max-w-md"
+      title={<span className="inline-flex items-center gap-1">Manage {many}
+        <button type="button" onClick={() => setHelp(true)} aria-label={`How ${many} work`} title={`How ${many} work`} className={cn('-my-1', iconBtn)}><I.info className="size-3.5" /></button>
+      </span>}
+      description="Click a name to rename it, or its icon to change it."
       footer={<Button variant="outline" onClick={onClose}>Done</Button>}>
-      <div className="grid gap-1">
-        {list.length === 0 && <p className="text-sm text-muted-foreground">No {plural(noun).toLowerCase()} yet.</p>}
-        {list.map(p => {
-          const n = tasks.filter(t => norm(t.project) === norm(p.name)).length;
-          return (
-            <div key={p.name} className="group flex h-10 items-center gap-3 rounded-md px-2 hover:bg-muted/60">
-              <I.folder className="size-4 text-muted-foreground" />
-              <span className="min-w-0 flex-1 truncate text-sm">{p.name}</span>
-              <span className="text-xs text-muted-foreground tnum">{n} {n === 1 ? 'task' : 'tasks'}</span>
-              <Button variant="ghost" size="icon-sm" aria-label={`Rename ${p.name}`} onClick={() => onEdit(p)}><I.pencil className="size-3.5" /></Button>
-              <Button variant="ghost" size="icon-sm" aria-label={`Delete ${p.name}`} onClick={() => onDelete(p)}><I.trash className="size-3.5" /></Button>
-            </div>
-          );
-        })}
-        <button type="button" onClick={onNew} className="mt-1 flex h-9 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/60 hover:text-foreground"><I.plus className="size-3.5" />Add {noun.toLowerCase()}</button>
+      <div className="grid gap-0.5">
+        {list.length === 0 && !adding && <p className="px-2 pb-1 text-sm text-muted-foreground">No {many} yet.</p>}
+        {list.map(p => (
+          <PlatformRow key={p.id || p.name} p={p} noun={noun} names={names} n={tasks.filter(t => norm(t.project) === norm(p.name)).length}
+            onRename={onRename} onDelete={onDelete} onIcon={onIcon} onClash={clashFor(p.id || p.name)} />
+        ))}
+        {adding
+          ? <PlatformRow fresh noun={noun} names={names} onClash={clashFor('new')}
+              onCreate={name => { setAdding(false); onCreate(name); }} onDrop={() => setAdding(false)} />
+          : <button type="button" onClick={() => setAdding(true)} className="flex h-9 items-center gap-2 rounded-md px-2 text-left text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.plus className="size-3.5" />Add {one}</button>}
+        {Object.values(clashes).some(Boolean) && <p className="px-2 pt-1 text-[0.8rem] text-destructive">A {one} with this name already exists.</p>}
       </div>
     </Dialog>
+    <Dialog open={open && help} onClose={() => setHelp(false)} title={`How ${many} work`} className="max-w-[420px]"
+      description={`Every task can belong to one ${one}.`}
+      footer={<Button onClick={() => setHelp(false)}>Got it</Button>}>
+      <div className="grid gap-3 text-sm">
+        <div className="flex gap-2.5"><I.folder className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /><span><span className="font-medium">Icon</span> <span className="text-muted-foreground">shows wherever the {one} appears. Folder is the default.</span></span></div>
+        <div className="flex gap-2.5"><I.pencil className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /><span><span className="font-medium">Rename</span> <span className="text-muted-foreground">updates its tasks and automations too.</span></span></div>
+        <div className="flex gap-2.5"><I.trash className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /><span><span className="font-medium">Delete</span> <span className="text-muted-foreground">keeps the tasks. They move to “No {one}”.</span></span></div>
+        <div className="flex gap-2.5"><I.zap className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" /><span><span className="font-medium">Automations</span> <span className="text-muted-foreground">that use a deleted {one} are removed.</span></span></div>
+      </div>
+    </Dialog>
+    </>
   );
 }
 
@@ -3700,7 +4081,7 @@ function BucketStatusesDialog({ open, buckets, noun = 'Bucket', onClose, onSave 
                     title={n ? `Its ${n} ${n === 1 ? lower + ' moves' : plural(lower) + ' move'} to ${((draft.find(y => y.id !== x.id && y.id !== 'done') || {}).label) || 'the first status'}` : 'Delete'}
                     disabled={draft.length <= 2}
                     onClick={() => setDraft(d => d.filter(y => y.id !== x.id))}
-                    className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-destructive disabled:opacity-30"><I.trash className="size-3.5" /></button>}
+                    className={cn("flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted disabled:opacity-30", danger)}><I.trash className="size-3.5" /></button>}
             </div>
           );
         })}
@@ -4183,7 +4564,7 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
         <Card key={g.key || '_none'} className="mb-3 break-inside-avoid overflow-hidden">
           <div className="flex h-12 items-center gap-2 px-4 text-sm font-semibold">
             {groupBy === 'status' ? <DefPill def={statusList(stages).find(x => x.id === g.key)} /> : groupBy === 'priority' ? <PriorityPill priority={g.key} />
-              : <>{groupBy === 'project' ? <I.folder className="size-3.5 text-muted-foreground" /> : groupBy === 'bucket' ? <I.layers className="size-3.5 text-muted-foreground" /> : groupBy === 'assignee' ? <Avatar name={g.key} className="h-5 w-5 [&_span]:text-[9px]" /> : <I.flag className="size-3.5 text-muted-foreground" />}<span className="truncate">{g.name}</span></>}
+              : <>{groupBy === 'project' ? <PIcon name={g.key} className="size-3.5 text-muted-foreground" /> : groupBy === 'bucket' ? <I.layers className="size-3.5 text-muted-foreground" /> : groupBy === 'assignee' ? <Avatar name={g.key} className="h-5 w-5 [&_span]:text-[9px]" /> : <I.flag className="size-3.5 text-muted-foreground" />}<span className="truncate">{g.name}</span></>}
             <span className="font-normal text-muted-foreground">{g.tasks.length}</span>
             <button type="button" onClick={() => onAdd(presetFor(g))} className="ml-auto inline-flex h-7 items-center gap-1 rounded-md px-2 font-normal text-muted-foreground hover:bg-muted hover:text-foreground"><I.plus className="size-3.5" />Add</button>
           </div>
@@ -4205,12 +4586,12 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
                     {groupBy !== 'status' && <DefPill def={def} className="h-[22px] text-[11.5px]" />}
-                    {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.folder className="size-3 text-muted-foreground" />{t.project}</span>}
+                    {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><PIcon name={t.project} className="size-3 text-muted-foreground" />{t.project}</span>}
                     {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
                     {groupBy !== 'priority' && <PriorityPill priority={t.priority} className="h-[22px] text-[11.5px]" />}
                     <span className="ml-auto flex items-center gap-2.5 text-muted-foreground">
                       <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(t))}</span>
-                      {groupBy !== 'assignee' && t.assignee && <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" />}
+                      {groupBy !== 'assignee' && t.assignee && <PersonHover name={t.assignee}><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /></PersonHover>}
                     </span>
                   </div>
                 </div>
@@ -4256,12 +4637,12 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
         className={cn('flex cursor-grab select-none flex-col gap-2.5 rounded-lg border bg-card p-3 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing', drag && drag.id === t.id && 'opacity-40', on && 'ring-1 ring-foreground/20')}>
         <div className={cn('text-[13px] font-medium leading-snug', t.status === 'done' && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</div>
         <div className="flex flex-wrap gap-1.5">
-          {t.project && <MiniTag icon={<I.folder className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
+          {t.project && <MiniTag icon={<PIcon name={t.project} className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
           {t.bucket && <MiniTag icon={<I.layers className="size-3 text-muted-foreground" />}>{t.bucket}</MiniTag>}
           <PriorityPill priority={t.priority} />
         </div>
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          {t.assignee && <Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[8px]" />}
+          {t.assignee && <PersonHover name={t.assignee}><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[8px]" /></PersonHover>}
           {t.deadline && <span className={cn('inline-flex items-center gap-1', dueCls[d.tone])}><I.calendar className="size-3" />{d.text}</span>}
           {(t.checklist || []).length > 0 && <span className="tnum inline-flex items-center gap-0.5"><I.listCheck className="size-3" />{t.checklist.filter(c => c.done).length}/{t.checklist.length}</span>}
           <span data-nodrag className="ml-auto"><TaskTimer t={t} onToggle={onToggle} /></span>
@@ -4431,7 +4812,7 @@ function TimeCellPopover({ cell, onClose, onDelete, onAdd }) {
           <span className="tnum flex-1">{new Date(x.s).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}, {hm(x.s)}–{x.running ? 'now' : hm(x.e)}</span>
           {x.manual && <span className="text-[10px] text-muted-foreground">added</span>}
           <span className="tnum text-xs text-muted-foreground">{fmtShort(x.e - x.s)}</span>
-          {!x.running && <button type="button" aria-label="Remove this entry" title="Remove" onClick={() => onDelete(cell.task, x)} className="flex size-6 items-center justify-center rounded opacity-0 hover:bg-muted group-hover:opacity-100"><I.trash className="size-3.5" /></button>}
+          {!x.running && <button type="button" aria-label="Remove this entry" title="Remove" onClick={() => onDelete(cell.task, x)} className={cn("flex size-6 items-center justify-center rounded opacity-0 hover:bg-muted group-hover:opacity-100", danger)}><I.trash className="size-3.5" /></button>}
         </div>
       ))}
       <div className="mx-1 my-1 h-px bg-border" />
@@ -4542,7 +4923,7 @@ function ArchiveView({ items, labels, days, onDays, onRestore, onTrash, onCleanU
           <span className="text-xs text-muted-foreground">Archive finished tasks</span>
           <Select variant="chip" label="When to archive" value={String(days)} onChange={v => onDays(Number(v))} searchable={false}
             options={ARCHIVE_DAY_OPTIONS.map(([value, label]) => ({ value, label }))} />
-          <Button size="sm" variant="outline" onClick={onCleanUp} disabled={!Object.keys(items).length}><I.trash />Clean up…</Button>
+          <Button size="sm" variant="outline" className={danger} onClick={onCleanUp} disabled={!Object.keys(items).length}><I.trash />Clean up…</Button>
         </div>
       </div>
       <div className="relative mb-3 max-w-sm">
@@ -4563,7 +4944,7 @@ function ArchiveView({ items, labels, days, onDays, onRestore, onTrash, onCleanU
                 {t.bucket && <span className="hidden max-w-[10rem] truncate text-xs text-muted-foreground lg:block">{t.bucket}</span>}
                 <span className="w-28 shrink-0 text-right text-xs text-muted-foreground">Done {fmtDay(t.doneAt || t.archivedAt)}</span>
                 <Button size="sm" variant="ghost" className="h-7" onClick={() => onRestore(t.id)}><I.reset className="size-3.5" />Restore</Button>
-                <Button size="icon-sm" variant="ghost" aria-label={`Move ${t.title || 'Untitled'} to the Trash`} title="Move to Trash" onClick={() => onTrash(t.id)}><I.trash className="size-3.5" /></Button>
+                <Button size="icon-sm" variant="ghost" className={danger} aria-label={`Move ${t.title || 'Untitled'} to the Trash`} title="Move to Trash" onClick={() => onTrash(t.id)}><I.trash className="size-3.5" /></Button>
               </div>
             ))}
           </div>
@@ -4646,7 +5027,7 @@ function ProjectsView({ list, tasks, onNew, onEdit, onDelete, onOpen }) {
     return (
       <Card className="group flex flex-col p-5 transition-shadow hover:shadow-md">
         <div className="flex items-start gap-3">
-          <span className={cn('flex size-10 shrink-0 items-center justify-center rounded-xl', c.soft)}><I.folder /></span>
+          <span className={cn('flex size-10 shrink-0 items-center justify-center rounded-xl', c.soft)}><PIcon name={p.name} icon={p.icon} /></span>
           <div className="min-w-0 flex-1">
             <button type="button" onClick={() => onOpen(p.name)} className="block max-w-full truncate text-left font-semibold hover:underline underline-offset-4">{p.label || p.name}</button>
             <div className="text-xs text-muted-foreground">{st.total} {st.total === 1 ? 'task' : 'tasks'}{st.time ? `, ${fmtShort(st.time)} tracked` : ''}</div>
@@ -5093,6 +5474,26 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.19.13', title: 'Your profile', img: 'profile.webp',
+    points: ['Settings has a new Profile page with your photo, display name, role, phone and status. Your time zone comes from this PC’s clock.', 'Your profile syncs to your other PCs. Members, next to it, lists everyone in your workspaces, which for now is just you.'] },
+  { v: '0.19.13', title: 'Set your status', img: 'avatar-menu.webp',
+    points: ['Click your photo at the bottom of the sidebar for a new menu: your status, Profile, Settings, switching workspace and Sign out.', 'Pick Available, Busy, Do not disturb or Away, add a short note, and choose when it clears. Do not disturb mutes alerts.'] },
+  { v: '0.19.13', title: 'A card when you point at a person', img: 'hover-card.webp',
+    points: ['Point at your photo next to a task to see a small card with your name, role, status, local time and email.'] },
+  { v: '0.19.13', title: 'A new Settings', img: 'settings-pages.webp',
+    points: ['Settings has pages down the left: General, Appearance, Notifications, Shortcuts, Workspace, Watch folders, Cloud & backups and About.', 'Each setting is one short line, with the longer explanation behind the ⓘ. Notifications moved here from Automations, and work just as before.'] },
+  { v: '0.19.13', title: 'A cleaner Edit statuses window', img: 'statuses-window.webp',
+    points: ['Each group has a + by its name, and counts are plain numbers.', 'The arrows, lock and delete only show on the row you point at. How each group behaves sits behind the ⓘ.'] },
+  { v: '0.19.13', title: 'Rename platforms in the list', img: 'platforms-rename.webp',
+    points: ['In Manage platforms, click a name to rename it right there. Enter or clicking away saves, and Esc undoes.', 'Each row shows how many tasks use it, and the bin appears when you point at the row.'] },
+  { v: '0.19.13', title: 'An icon for each platform', img: 'platform-icons.webp',
+    points: ['Click a platform’s icon to pick a new one from the grid, or search for one, like “mobile” or “payment”.', 'The icon shows wherever the platform does. Platforms you haven’t changed keep the folder.'] },
+  { v: '0.19.13', title: 'Delete turns red', img: 'delete-red.webp',
+    points: ['Every delete, remove and trash button in the app turns red when you point at it, so you always know before you click.'] },
+  { v: '0.19.13', title: 'Time summary as tiles', img: 'time-summary-tiles.webp',
+    points: ['The time summary on Tasks is a row of tiles: time tracked today and this week, then your top platforms with their share of the week.', 'Hide it with the ×, or turn it back on from the ⋯ menu.'] },
+  { v: '0.19.13', title: 'Light and dark, in a circle', img: 'theme-circle.webp',
+    points: ['Switching between light and dark now spreads as a circle from the button you clicked.', 'It works from the moon button, from Settings › Appearance, and with Shift + D.'] },
   { v: '0.19.12', title: 'Status and priority at a glance', img: 'status-priority.webp',
     points: ['Status and priority are now colored chips in every view: a dot for the status, and bars for the priority, with High in red.', 'They look the same in the table, the list and the board.'] },
   { v: '0.19.12', title: 'A sidebar that gets out of the way', img: 'sidebar-hover.webp',
@@ -5281,7 +5682,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const openTask = id => setSheet({ open: true, id });
   const [confirmId, setConfirmId] = useState(null);
   const storageOk = true;
-  const [profileOpen, setProfileOpen] = useState(false);
   const [cloudOpen, setCloudOpen] = useState(false);
   // Sidebar: a slim rail that opens over the page on hover. Pinning keeps it open (remembered on this PC only).
   const [railPinned, setRailPinned] = useState(() => { try { return localStorage.getItem('tasks-rail-pinned') === '1'; } catch (e) { return false; } });
@@ -5315,12 +5715,15 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     });
     return list.sort((a, b) => a.name.localeCompare(b.name));
   }, [storedProjects, all, rules]);
+  platformIconMap.current = Object.fromEntries(projectList.filter(p => p.icon).map(p => [norm(p.name), p.icon]));
   const projects = useMemo(() => projectList.map(p => p.name), [projectList]);
   const colorOf = name => PROJECT_COLORS[(projectList.find(p => norm(p.name) === norm(name)) || {}).color || autoColor(name)] || PROJECT_COLORS.slate;
-  const saveProject = ({ name, color }) => {
-    const old = projectEdit && projectEdit.project;
+  // Renames or creates a platform. Used by the rename window and by the in-place rename in Manage platforms.
+  const writeProject = (old, { name, color, icon }) => {
     const list = projectList.filter(p => !old || norm(p.name) !== norm(old.name));
-    saveProjects([...list, { id: old ? old.id : 'p-' + newId(), name, color }]);
+    const next = { ...(old || {}), id: old ? old.id : 'p-' + newId(), name, color: color || (old && old.color) || autoColor(name) };
+    if (icon !== undefined) { if (icon) next.icon = icon; else delete next.icon; } // null puts the folder back
+    saveProjects([...list, next]);
     if (old && old.name !== name) {
       const moved = Object.values(tasksRef.current).filter(t => norm(t.project) === norm(old.name)).map(t => ({ ...t, project: name }));
       if (moved.length) saveMany(moved);
@@ -5329,9 +5732,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         target: (r.action === 'copy' || r.action === 'move' || r.action === 'create') && norm(r.target) === norm(old.name) ? name : r.target })));
       if (projectFilter === old.name) setProjectFilter(name);
     }
-    setProjectEdit(null);
-    toast(old ? `${labels.platform} renamed` : `${labels.platform} created`, name);
+    if (icon === undefined) toast(old ? `${labels.platform} renamed` : `${labels.platform} created`, name);
   };
+  const saveProject = ({ name, color }) => { writeProject(projectEdit && projectEdit.project, { name, color }); setProjectEdit(null); };
   const deleteProject = () => {
     const p = projectDelete; setProjectDelete(null);
     const n = norm(p.name);
@@ -6262,7 +6665,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       if (e.key === 'n' || e.key === 'N') { e.preventDefault(); if (primaryRef.current) primaryRef.current.run(); }
       else if (e.key === '/' && document.getElementById('home-cmd-in')) { e.preventDefault(); document.getElementById('home-cmd-in').focus(); }
       else if (e.key === '/') { e.preventDefault(); setSearchOpen(true); setTimeout(() => searchRef.current && searchRef.current.focus(), 0); }
-      else if (e.key === '?') { e.preventDefault(); setKeysOpen(true); }
+      else if (e.key === '?') { e.preventDefault(); setSettingsOpen('shortcuts'); }
     };
     document.addEventListener('keydown', k);
     return () => document.removeEventListener('keydown', k);
@@ -6271,11 +6674,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [searchOpen, setSearchOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [docFocus, setDocFocus] = useState(null);
-  const toggleTheme = () => {
-    const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches, cur = readTheme();
-    const next = cur === 'dark' || (cur === 'system' && sysDark) ? 'light' : 'dark';
-    saveTheme(next); applyTheme(next); window.dispatchEvent(new CustomEvent('tasks-theme', { detail: next }));
-  };
   const paletteItems = !paletteOpen ? [] : [
     { id: 'a-task', group: 'Actions', label: 'Create task', hint: 'N', icon: <I.plus />, run: () => { setView('tasks'); createTask(); } },
     { id: 'a-bucket', group: 'Actions', label: `Create ${labels.bucket.toLowerCase()}`, icon: <I.layers />, run: () => { setView('projects'); setBucketEdit({ bucket: null }); } },
@@ -6299,11 +6697,11 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-auto', group: 'Actions', label: 'Automations', icon: <I.zap />, run: () => setRulesOpen(true) },
     { id: 'a-status', group: 'Actions', label: 'Edit statuses', icon: <I.sliders />, run: () => setStatusesOpen(true) },
     { id: 'a-plat', group: 'Actions', label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, run: () => setPlatformsOpen(true) },
-    { id: 'a-theme', group: 'Actions', label: 'Switch light and dark mode', hint: 'Shift+D', icon: <I.moon />, run: toggleTheme },
+    { id: 'a-theme', group: 'Actions', label: 'Switch light and dark mode', hint: 'Shift+D', icon: <I.moon />, run: () => toggleTheme() },
     { id: 'a-undo', group: 'Actions', label: 'Undo', hint: 'Ctrl+Z', icon: <I.reset />, run: doUndo },
     { id: 'a-redo', group: 'Actions', label: 'Redo', hint: 'Ctrl+Shift+Z', icon: <I.reset />, run: doRedo },
     { id: 'a-backup', group: 'Actions', label: 'Back up data…', icon: <I.download />, run: backup },
-    { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: '?', icon: <I.keyboard />, run: () => setKeysOpen(true) },
+    { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: '?', icon: <I.keyboard />, run: () => setSettingsOpen('shortcuts') },
     { id: 'a-settings', group: 'Actions', label: 'Settings', icon: <I.sliders />, run: () => setSettingsOpen(true) },
     { id: 'a-quick', group: 'Actions', label: 'Quick add a task', hint: '`', icon: <I.plus />, run: () => setQuickAdd(true) },
     ...all.map(t => ({ id: 't-' + t.id, group: 'Tasks', label: t.title || 'Untitled', hint: [statusLabel(t, stages), t.bucket, t.project].filter(Boolean).join(', '), keywords: t.assignee, icon: <span className={cn('ml-1 mr-1 size-2 rounded-full', STATUS_COLORS[statusDef(t, stages).color])} />, run: () => openTask(t.id) })),
@@ -6430,23 +6828,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             </div>
           );
         })()}
-        <DropdownMenu align="start"
-          trigger={p => (
-            <button {...p} type="button" aria-label="Your account" className="flex w-full shrink-0 items-center gap-3 rounded-[9px] p-[5px] text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              <Avatar name={me.name} picture={me.picture} className="h-[30px] w-[30px] shrink-0 bg-card ring-1 ring-border" />
-              <span className={cn('min-w-0 flex-1 truncate whitespace-nowrap transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0') + ' text-[13px] font-medium'}>{me.name || 'Your account'}</span>
-            </button>
-          )}
-          items={[
-            { label: 'Profile', icon: <I.user />, onSelect: () => setProfileOpen(true) },
-            'sep',
-            { label: 'Cloud sync…', icon: <I.cloud />, onSelect: () => setCloudOpen(true) },
-            { label: 'Back up data…', icon: <I.download />, onSelect: backup },
-            { label: 'Restore from backup…', icon: <I.upload />, onSelect: chooseRestore },
-            { label: 'Open data folder', icon: <I.folder />, onSelect: () => invoke('open_data_folder').catch(e => toast.error('Couldn’t open the folder', String(e))) },
-            'sep',
-            { label: 'Check for updates', icon: <I.reset />, shortcut: up.version ? `v${up.version}` : undefined, onSelect: () => up.look(true) },
-          ]} />
+        <AccountMenu me={me} wsName={wsName} workspaces={workspaces} ws={ws} railOpen={railOpen} onStatus={patch => prof.updateUser(patch)}
+          onProfile={() => setSettingsOpen('profile')} onSettings={() => setSettingsOpen(true)} onSwitchWorkspace={id => onSwitchWorkspace(id)} onSignOut={() => prof.update({ user: null })} />
       </nav>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
@@ -6487,7 +6870,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: 'Trash', icon: <I.trash />, shortcut: Object.keys(trash).length || '', onSelect: () => setView('trash') },
               'sep',
               { label: 'Settings', icon: <I.gear />, onSelect: () => setSettingsOpen(true) },
-              { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setKeysOpen(true) },
+              { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setSettingsOpen('shortcuts') },
               { label: 'What’s new', icon: <I.sparkles />, onSelect: openWhatsNew },
             ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
@@ -6734,7 +7117,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                               return t.project ? (
                                 <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Change ${labels.platform.toLowerCase()}`}
                                   className={cn('inline-flex h-5 max-w-[11rem] shrink-0 items-center gap-1 rounded-md border bg-background px-1.5 text-[11px] text-foreground/75 transition-colors hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 bg-muted')}>
-                                  <I.folder className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{t.project}</span>
+                                  <PIcon name={t.project} className="size-3 shrink-0 text-muted-foreground" /><span className="truncate">{t.project}</span>
                                 </button>
                               ) : t.inbox ? null : (
                                 <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Add a ${labels.platform.toLowerCase()}`}
@@ -6766,7 +7149,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           ? <span className="flex min-w-0 items-center gap-1.5"><I.layers className="size-3.5 shrink-0 text-muted-foreground/70" /><span className="truncate">{t.bucket}</span></span>
                           : <span className="text-muted-foreground/60">Empty</span>],
                         ['assignee', t.assignee
-                          ? <span className="flex min-w-0 items-center gap-1.5"><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{t.assignee}</span></span>
+                          ? <span className="flex min-w-0 items-center gap-1.5"><PersonHover name={t.assignee}><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /></PersonHover><span className="truncate">{t.assignee}</span></span>
                           : <span className="text-muted-foreground/60">Empty</span>],
                         ['deadline', t.deadline ? <span className={cn('inline-flex items-center gap-1 whitespace-nowrap', dueCls[d.tone])} title={deadlineLock(t) ? lockText(deadlineLock(t), labels.bucket, t.deadline !== deadlineLock(t).end) : undefined}>{d.text}{deadlineLock(t) && t.deadline === deadlineLock(t).end && <I.layers className="size-3 shrink-0 opacity-50" aria-label={`${labels.bucket} end date`} />}</span> : <span className="text-muted-foreground/60">Empty</span>],
                         ['priority', <span className={cn(done && 'opacity-50')}><PriorityPill priority={t.priority} /></span>],
@@ -6863,7 +7246,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         description={`The tasks stay; they just won’t have a ${labels.bucket.toLowerCase()} anymore.`}
         confirmLabel={`Delete ${labels.bucket.toLowerCase()}`} onConfirm={deleteBucket} onCancel={() => setBucketDelete(null)} />
       <PlatformsDialog open={platformsOpen} onClose={() => setPlatformsOpen(false)} list={projectList} tasks={all} noun={labels.platform}
-        onNew={() => setProjectEdit({ project: null })} onEdit={p => setProjectEdit({ project: p })} onDelete={p => setProjectDelete(p)} />
+        onCreate={name => writeProject(null, { name })} onRename={(p, name) => writeProject(p, { name, color: p.color })} onIcon={(p, icon) => writeProject(p, { name: p.name, color: p.color, icon: icon === 'folder' ? null : icon })} onDelete={p => setProjectDelete(p)} />
       <NameDialog open={!!labelEdit} title="Rename column" value={labelEdit ? labels[labelEdit] : ''}
         defaultValue={labelEdit ? ({ ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}) })[labelEdit] : ''}
         hint={`Used everywhere in ${wsName}: the table, filters and the task panel.`}
@@ -6880,17 +7263,24 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           const n = norm(projectDelete.name);
           const tc = all.filter(t => norm(t.project) === n).length;
           const rc = rules.filter(r => norm(r.project) === n || ((r.action === 'copy' || r.action === 'move') && norm(r.target) === n)).length;
-          return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No ${labels.platform.toLowerCase()}”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this project will be removed.` : ''}`;
+          return `The tasks stay. ${tc ? `${tc} ${tc === 1 ? 'task moves' : 'tasks move'} to “No ${labels.platform.toLowerCase()}”. ` : ''}${rc ? `${rc} ${rc === 1 ? 'automation that uses' : 'automations that use'} this ${labels.platform.toLowerCase()} will be removed.` : ''}`;
         })() : ''}
-        confirmLabel="Delete project" onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
-      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket}
+        confirmLabel={`Delete ${labels.platform.toLowerCase()}`} onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
+      <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} onOpenNotifications={() => { setRulesOpen(false); setSettingsOpen('notifications'); }} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket}
         onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
-      <ShortcutsDialog open={keysOpen} onClose={() => setKeysOpen(false)} />
+      <ShortcutsDialog open={false} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
       <WhatsNewDialog open={!!whatsNew} items={whatsNew || []} onClose={() => setWhatsNew(null)} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName} shortcutError={shortcutError}
+      <SettingsDialog open={!!settingsOpen} page={typeof settingsOpen === 'string' ? settingsOpen : 'general'} onClose={() => setSettingsOpen(false)} prefs={prefs} onPrefs={savePrefs} wsName={wsName} shortcutError={shortcutError}
+        onRenameWorkspace={v => onRenameWorkspace(ws, v)} labels={labels} onLabel={(k, v) => saveLabels(l => ({ ...l, [k]: v }))}
+        counts={{ stages: statusList(stages).length, bucketStatuses: BUCKET_STATUSES.length, platforms: projectList.length }}
+        onEditStatuses={() => { setSettingsOpen(false); setStatusesOpen(true); }} onEditBucketStatuses={() => { setSettingsOpen(false); setBucketStatusesOpen(true); }} onEditPlatforms={() => { setSettingsOpen(false); setPlatformsOpen(true); }}
+        rules={rules} onRules={saveRules} projects={projects}
+        onOpenCloud={() => setCloudOpen(true)} onBackup={backup} onRestore={chooseRestore} onOpenDataFolder={() => invoke('open_data_folder').catch(e => toast.error('Couldn’t open the folder', String(e)))}
+        updater={up} onWhatsNew={() => { setSettingsOpen(false); openWhatsNew(); }}
         watch={settings.watchFolders || []} status={watchStatus} onAddFolder={addWatchFolder} onSubfolders={setFolderSubfolders}
-        onRemoveFolder={path => saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).filter(w => w.path !== path) }))} />
+        onRemoveFolder={path => saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).filter(w => w.path !== path) }))}
+        prof={prof} workspaces={workspaces} ws={ws} onSwitchWorkspace={id => onSwitchWorkspace(id)} onSignOut={() => prof.update({ user: null })} />
       <AlertDialog open={!!watchOffer} title={watchOffer ? (watchOffer.why === 'missed' ? `${watchOffer.files.length} ${watchOffer.files.length === 1 ? 'file wasn’t' : 'files weren’t'} picked up` : `Add the ${watchOffer.files.length} ${watchOffer.files.length === 1 ? 'file' : 'files'} already in this folder?`) : ''}
         description={watchOffer ? `${watchOffer.path}: ${watchOffer.files.slice(0, 4).map(f => f.name).join(', ')}${watchOffer.files.length > 4 ? ` and ${watchOffer.files.length - 4} more` : ''}. ${watchOffer.why === 'missed' ? 'Add them to the Documents Inbox now?' : 'From now on, new files arrive in the Inbox by themselves.'}` : ''}
         confirmLabel="Add to Inbox" cancelLabel="Only new files" destructive={false} onConfirm={acceptOffer} onCancel={() => { const o = watchOffer; setWatchOffer(null); if (o && o.why === 'existing') toast('Watching folder', o.path); }} />
@@ -6928,7 +7318,6 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
         description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
-      <ProfileDialog open={profileOpen} onClose={() => setProfileOpen(false)} prof={prof} />
       <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
         description="Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first."
@@ -7171,31 +7560,274 @@ function CloudDialog({ open, onClose }) {
   );
 }
 
-function ProfileDialog({ open, onClose, prof }) {
-  const u = prof.data.user || {};
-  const [name, setName] = useState(u.name || '');
-  const [phone, setPhone] = useState(u.phone || '');
-  useEffect(() => { if (open) { setName(u.name || ''); setPhone(u.phone || ''); } }, [open]);
-  const save = () => { prof.update({ user: { ...u, name: name.trim() || u.name, phone: phone.trim() } }); onClose(); toast('Profile saved'); };
+/* =========================================================
+   Profile (0.19.13): lives in Settings › Account, with Members beside it.
+   Name, photo, role, phone, status and time zone sync through the `profiles` table.
+   ========================================================= */
+// A status with a "clear after" time reads as Available once that time passes.
+const PRESENCE = [
+  { id: 'available', label: 'Available', dot: 'bg-emerald-500' },
+  { id: 'busy', label: 'Busy', dot: 'bg-amber-500' },
+  { id: 'dnd', label: 'Do not disturb', dot: 'bg-red-500', hint: 'Mutes alerts' },
+  { id: 'away', label: 'Away', dot: 'bg-background ring-[1.5px] ring-inset ring-muted-foreground' },
+];
+const statusOf = u => {
+  const on = !!(u && u.status && (!u.statusUntil || u.statusUntil > Date.now()));
+  const s = PRESENCE.find(x => x.id === (on ? u.status : 'available')) || PRESENCE[0];
+  return { ...s, note: on || (u && !u.status) ? ((u && u.statusNote) || '') : '' };
+};
+const CLEAR_AFTER = [
+  { id: 'never', label: 'Never', until: () => null },
+  { id: '1h', label: '1 h', until: () => Date.now() + 3600000 },
+  { id: '4h', label: '4 h', until: () => Date.now() + 4 * 3600000 },
+  { id: 'today', label: 'Today', until: () => { const d = new Date(); d.setHours(23, 59, 59, 0); return d.getTime(); } },
+];
+const myZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ''; } catch (e) { return ''; } };
+const zoneCity = z => (z || '').split('/').pop().replace(/_/g, ' ');
+const zoneTime = z => { try { return new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit', timeZone: z || undefined }); } catch (e) { return new Date().toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }); } };
+// A workspace's little square: a steady color from its id.
+const WS_COLORS = ['#4f46e5', '#be185d', '#0e7490', '#4d7c0f', '#b45309', '#7c3aed'];
+const WsSquare = ({ w, className }) => {
+  const n = [...String(w.id)].reduce((a, c) => a + c.charCodeAt(0), 0);
+  return <span aria-hidden="true" className={cn('flex size-[22px] shrink-0 items-center justify-center rounded-md text-[11px] font-semibold text-white', className)} style={{ background: WS_COLORS[n % WS_COLORS.length] }}>{(w.name || '?').slice(0, 1).toUpperCase()}</span>;
+};
+
+// Your photo with your status dot on its corner.
+function StatusAvatar({ u, className, dot = 'size-3' }) {
+  const s = statusOf(u);
   return (
-    <Dialog open={open} onClose={onClose} title="Profile" className="max-w-md"
-      footer={<>
-        <Button variant="ghost" className="sm:mr-auto text-destructive hover:text-destructive" onClick={() => { onClose(); prof.update({ user: null }); }}>Sign out</Button>
-        <Button variant="outline" onClick={onClose}>Cancel</Button>
-        <Button onClick={save}>Save</Button>
-      </>}>
-      <div className="flex items-center gap-4">
-        <Avatar name={u.name} picture={u.picture} className="h-14 w-14 text-base" />
-        <div className="min-w-0">
-          <div className="truncate font-medium">{u.name}</div>
-          <div className="truncate text-sm text-muted-foreground">{u.email || 'Not signed in with Google'}</div>
+    <span className="relative inline-flex shrink-0">
+      <Avatar name={u && u.name} picture={photoOf(u)} className={className} />
+      <span aria-label={s.label} role="img" className={cn('absolute -bottom-px -right-px rounded-full ring-2 ring-background', dot, s.dot)} />
+    </span>
+  );
+}
+
+// A bordered field that saves when you leave it or press Enter (Esc puts it back).
+function ProfileInput({ value, onSave, label, placeholder, type = 'text', required, id }) {
+  const [v, setV] = useState(value || '');
+  useEffect(() => setV(value || ''), [value]);
+  const commit = () => { const t = v.trim(); if (required && !t) { setV(value || ''); return; } if (t !== (value || '')) onSave(t); };
+  return <input id={id} type={type} value={v} onChange={e => setV(e.target.value)} onBlur={commit} aria-label={label} placeholder={placeholder} spellCheck={false}
+    onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setV(value || ''); setTimeout(() => e.target.blur()); } }}
+    className="h-8 w-[230px] shrink-0 rounded-md border border-input bg-transparent px-2.5 text-sm transition-colors placeholder:text-muted-foreground hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />;
+}
+
+// The status list, the note and "clear after". Used in the picker and in the avatar menu.
+function StatusPanel({ u, onChange, onDone }) {
+  const s = statusOf(u);
+  const [note, setNote] = useState(s.note);
+  useEffect(() => setNote(s.note), [s.note]);
+  const saveNote = () => { const t = note.trim(); if (t !== s.note) onChange({ status: s.id, statusNote: t }); };
+  const clearId = !u.statusUntil ? 'never' : null;
+  return (
+    <div className="grid gap-0.5">
+      {PRESENCE.map(x => (
+        <button key={x.id} type="button" role="menuitemradio" aria-checked={s.id === x.id}
+          onClick={() => { onChange({ status: x.id, statusNote: note.trim(), statusUntil: s.id === x.id ? u.statusUntil || null : null }); onDone && onDone(); }}
+          className={cn('flex h-[30px] w-full items-center gap-2 rounded-md px-2 text-left text-[13px] outline-none transition-colors hover:bg-accent focus-visible:bg-accent', s.id === x.id && 'bg-accent')}>
+          <span className={cn('size-2 shrink-0 rounded-full', x.dot)} />{x.label}
+          {x.hint && <span className="ml-auto text-xs text-muted-foreground">{x.hint}</span>}
+          {s.id === x.id && <I.check className={cn('size-3.5', !x.hint && 'ml-auto')} />}
+        </button>
+      ))}
+      <div className="-mx-1 my-1 h-px bg-muted" />
+      <label className="px-2 pt-0.5 text-[11px] text-muted-foreground" htmlFor="status-note">Note</label>
+      <input id="status-note" value={note} onChange={e => setNote(e.target.value)} onBlur={saveNote} placeholder="What are you up to?" maxLength={80}
+        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNote(); onDone && onDone(); } }}
+        className="mx-1 h-[30px] rounded-md border border-input bg-transparent px-2 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+      <div className="flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">
+        <I.timer className="size-3.5 shrink-0" /><span className="mr-auto whitespace-nowrap">Clear after</span>
+        {CLEAR_AFTER.map(c => {
+          const on = c.id === clearId || (c.id !== 'never' && u.statusUntil && u.clearAfter === c.id);
+          return <button key={c.id} type="button" aria-pressed={!!on} onClick={() => onChange({ status: s.id, statusNote: note.trim(), statusUntil: c.until(), clearAfter: c.id })}
+            className={cn('h-6 whitespace-nowrap rounded-md px-1.5 text-xs transition-colors hover:bg-accent hover:text-foreground', on && 'bg-accent font-medium text-foreground')}>{c.label}</button>;
+        })}
+      </div>
+    </div>
+  );
+}
+
+// Profile › Status: a field that opens the status panel.
+function StatusPicker({ u, onChange }) {
+  const [open, setOpen] = useState(false);
+  const a = useRef(null), p = useRef(null);
+  useDismiss(open, setOpen, [a, p]);
+  const s = statusOf(u);
+  return (
+    <>
+      <button ref={a} type="button" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open} aria-label={`Status: ${s.label}${s.note ? `, ${s.note}` : ''}`}
+        className={cn('flex h-8 w-[230px] shrink-0 items-center gap-2 rounded-md border border-input bg-transparent px-2.5 text-sm transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', open && 'border-foreground/40')}>
+        <span className={cn('size-2 shrink-0 rounded-full', s.dot)} /><span className="shrink-0">{s.label}</span>
+        {s.note && <span className="min-w-0 truncate text-[13px] text-muted-foreground">· {s.note}</span>}
+        <I.down className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
+      </button>
+      <Floating anchorRef={a} panelRef={p} open={open} align="end" className="w-[260px] p-1">
+        <div role="menu" aria-label="Status" data-picking="1"><StatusPanel u={u} onChange={onChange} onDone={() => setOpen(false)} /></div>
+      </Floating>
+    </>
+  );
+}
+
+// What a teammate sees when they point at your photo on a task. Only your own profile is known for now.
+function PersonHover({ name, children }) {
+  const me = useContext(MeContext);
+  const [open, setOpen] = useState(false);
+  const a = useRef(null), p = useRef(null), t = useRef(null);
+  useEffect(() => () => clearTimeout(t.current), []);
+  if (!me || !name || norm(name) !== norm(me.name)) return children;
+  const s = statusOf(me);
+  const show = () => { clearTimeout(t.current); t.current = setTimeout(() => setOpen(true), 350); };
+  const hide = () => { clearTimeout(t.current); setOpen(false); };
+  return (
+    <span ref={a} className="inline-flex" onMouseEnter={show} onMouseLeave={hide}>
+      {children}
+      <Floating anchorRef={a} panelRef={p} open={open} align="end" className="pointer-events-none w-[280px] rounded-lg p-3.5">
+        <div className="grid gap-2.5 text-[13px]">
+          <div className="flex items-center gap-3">
+            <StatusAvatar u={me} className="h-10 w-10 [&_span]:text-sm" />
+            <div className="min-w-0"><div className="truncate text-sm font-semibold">{me.name}</div>{me.role && <div className="truncate text-muted-foreground">{me.role}</div>}</div>
+          </div>
+          <div className="flex items-center gap-2 text-muted-foreground"><span className={cn('size-2 shrink-0 rounded-full', s.dot)} /><span className="text-foreground">{s.label}</span>{s.note && <span className="truncate">· {s.note}</span>}</div>
+          <div className="flex items-center gap-2 text-muted-foreground"><I.timer className="size-3.5 shrink-0" />{zoneTime(me.timeZone)} local time</div>
+          {me.email && <div className="flex items-center gap-2 text-muted-foreground"><I.mail className="size-3.5 shrink-0" /><span className="truncate">{me.email}</span></div>}
         </div>
+      </Floating>
+    </span>
+  );
+}
+
+// Reads a picked image, crops it square and shrinks it to 192 px, so it stays small enough to sync.
+function squarePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = () => reject(new Error('Couldn’t read that file'));
+    r.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('That file isn’t an image Tasks can read'));
+      img.onload = () => {
+        const n = Math.min(img.width, img.height), size = 192, c = document.createElement('canvas');
+        c.width = size; c.height = size;
+        c.getContext('2d').drawImage(img, (img.width - n) / 2, (img.height - n) / 2, n, n, 0, 0, size, size);
+        resolve(c.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = r.result;
+    };
+    r.readAsDataURL(file);
+  });
+}
+
+// Settings › Profile.
+function ProfilePage({ prof, workspaces, ws, onSwitchWorkspace, onManageWorkspace, onSignOut, cloud }) {
+  const u = prof.data.user || {};
+  const fileRef = useRef(null);
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick(x => x + 1), 30000); return () => clearInterval(t); }, []);
+  const set = patch => prof.updateUser(patch);
+  const pick = async e => {
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f) return;
+    try { set({ photo: await squarePhoto(f) }); toast('Photo updated'); } catch (err) { toast.error('Couldn’t use that photo', String(err.message || err)); }
+  };
+  const email = u.email || (cloud.email && !['off', 'signin', 'loading'].includes(cloud.phase) ? cloud.email : '');
+  return <>
+    <div className="mb-2 flex items-center gap-3.5">
+      <StatusAvatar u={u} className="h-[60px] w-[60px] [&_span]:text-xl" dot="size-3.5" />
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-[17px] font-semibold">{u.name}</div>
+        <div className="truncate text-[13px] text-muted-foreground">{email || 'No email'}</div>
       </div>
-      <div className="grid gap-4">
-        <Field label="Display name" htmlFor="p-name" hint="Used as your name in the Assignee list. If you rename yourself, tasks assigned to your old name keep that name."><Input id="p-name" value={name} onChange={e => setName(e.target.value)} /></Field>
-        <Field label="Phone number" htmlFor="p-phone" hint="Optional. Stored only on this computer."><Input id="p-phone" type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="+41 …" /></Field>
-      </div>
-    </Dialog>
+      <Button variant="outline" size="sm" onClick={() => fileRef.current && fileRef.current.click()}>Change photo</Button>
+      {photoOf(u) && <Button variant="ghost" size="sm" className={cn('text-muted-foreground hover:!bg-destructive/10', danger)} onClick={() => set({ photo: '' })}>Remove</Button>}
+      <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" className="hidden" onChange={pick} />
+    </div>
+    <SRow label="Status"><StatusPicker u={u} onChange={set} /></SRow>
+    <SRow label="Display name" info="Your name in the Assignee list. Tasks already assigned to your old name keep it."><ProfileInput value={u.name} onSave={v => set({ name: v })} label="Display name" required /></SRow>
+    <SRow label="Role"><ProfileInput value={u.role} onSave={v => set({ role: v })} label="Role" placeholder="e.g. Designer" /></SRow>
+    <SRow label="Phone" info="Saved with your profile and synced to your other PCs."><ProfileInput value={u.phone} onSave={v => set({ phone: v })} label="Phone number" type="tel" placeholder="+92 …" /></SRow>
+    <SRow label="Time zone" info="Taken from this PC’s clock, so others can see your local time."><span className="w-[230px] shrink-0 truncate px-2.5 text-[13px] text-muted-foreground">{zoneCity(myZone() || u.timeZone)} · {zoneTime(myZone() || u.timeZone)}</span></SRow>
+    {cloud.profileMissing && <p className="mt-1 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">Your profile is saved on this PC. To sync it, run setup.sql once more in Supabase (CLOUD-SETUP.md has the step).</p>}
+    <div className="my-2 h-px bg-border" />
+    <div className="flex items-center justify-between pb-1">
+      <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Your workspaces</span>
+      <button type="button" className={quietBtn} onClick={onManageWorkspace}>Manage<I.right className="size-3" /></button>
+    </div>
+    {workspaces.map(w => (
+      <button key={w.id} type="button" onClick={() => onSwitchWorkspace(w.id)} aria-current={w.id === ws ? 'true' : undefined}
+        className={cn('flex h-9 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-sm transition-colors hover:bg-muted/60 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', w.id === ws && 'bg-accent hover:bg-accent')}>
+        <WsSquare w={w} /><span className="min-w-0 flex-1 truncate">{w.name}</span>
+        <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-muted-foreground">Owner</span>
+        <span className="flex w-3.5 justify-center">{w.id === ws && <I.check className="size-3.5" />}</span>
+      </button>
+    ))}
+    <div className="my-2 h-px bg-border" />
+    <SRow label={u.via === 'google' ? 'Signed in with Google' : 'Using Tasks without Google'} info="Sign out takes you back to the sign-in screen on this PC. Your tasks stay here. Cloud sync has its own sign-in, under Cloud & backups.">
+      <button type="button" className={cn(quietBtn, 'hover:!bg-destructive/10', danger)} onClick={onSignOut}><I.logout className="size-3.5" />Sign out</button>
+    </SRow>
+  </>;
+}
+
+// Settings › Members. Just you until teams arrive.
+function MembersPage({ prof, cloud }) {
+  const u = prof.data.user || {};
+  const email = u.email || (cloud.email && !['off', 'signin', 'loading'].includes(cloud.phase) ? cloud.email : '');
+  return <>
+    <h3 className="mb-1.5 flex items-center gap-2 text-[15px] font-semibold">Members<InfoTip label="About members">Everyone in your workspaces. Teammates will show here once teams are set up; for now it’s just you.</InfoTip></h3>
+    <div className="flex min-h-12 items-center gap-3 rounded-md px-2 text-sm">
+      <StatusAvatar u={u} className="h-[30px] w-[30px] [&_span]:text-xs" dot="size-2.5" />
+      <div className="min-w-0 flex-1"><div className="truncate">{u.name} <span className="text-muted-foreground">(you)</span></div><div className="truncate text-xs text-muted-foreground">{[u.role, email].filter(Boolean).join(' · ') || 'No email'}</div></div>
+      <span className="px-2 text-[13px] text-muted-foreground">Owner</span>
+    </div>
+  </>;
+}
+
+// The menu on your photo at the bottom of the rail.
+function AccountMenu({ me, wsName, workspaces, ws, railOpen, onStatus, onProfile, onSettings, onSwitchWorkspace, onSignOut }) {
+  const [open, setOpen] = useState(false), [statusOpen, setStatusOpen] = useState(false);
+  const a = useRef(null), p = useRef(null);
+  useDismiss(open, setOpen, [a, p]);
+  useEffect(() => { if (!open) setStatusOpen(false); }, [open]);
+  const s = statusOf(me);
+  const item = 'flex h-[30px] w-full items-center gap-2.5 rounded-md px-2 text-left text-sm outline-none transition-colors hover:bg-accent focus-visible:bg-accent [&>svg]:size-3.5 [&>svg]:text-muted-foreground';
+  const go = f => () => { setOpen(false); f(); };
+  return (
+    <>
+      <button ref={a} type="button" aria-label="Your account" aria-haspopup="menu" aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        className="flex w-full shrink-0 items-center gap-3 rounded-[9px] p-[5px] text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <StatusAvatar u={me} className="h-[30px] w-[30px] bg-card ring-1 ring-border" dot="size-2.5" />
+        <span className={cn('min-w-0 flex-1 truncate whitespace-nowrap text-[13px] font-medium transition-opacity duration-150', railOpen ? 'opacity-100' : 'opacity-0')}>{me.name || 'Your account'}</span>
+      </button>
+      <Floating anchorRef={a} panelRef={p} open={open} className="w-[264px] p-1">
+        <div role="menu" aria-label="Your account" onClick={e => e.stopPropagation()}>
+          <div className="flex items-center gap-2.5 p-2">
+            <StatusAvatar u={me} className="h-[34px] w-[34px] [&_span]:text-xs" dot="size-2.5" />
+            <div className="min-w-0"><div className="truncate text-sm font-semibold">{me.name}</div><div className="truncate text-xs text-muted-foreground">{[me.role, wsName].filter(Boolean).join(' · ')}</div></div>
+          </div>
+          <button type="button" aria-expanded={statusOpen} onClick={() => setStatusOpen(o => !o)}
+            className="mx-1 mb-1 flex h-8 w-[calc(100%-8px)] items-center gap-2 rounded-md border border-input px-2 text-left text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            <span className={cn('size-2 shrink-0 rounded-full', s.dot)} />{s.label}
+            {s.note && <span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{s.note}</span>}
+            <I.down className={cn('size-3 shrink-0 text-muted-foreground transition-transform', !s.note && 'ml-auto', statusOpen && 'rotate-180')} />
+          </button>
+          {statusOpen ? <div className="pb-1"><StatusPanel u={me} onChange={onStatus} onDone={() => setStatusOpen(false)} /></div> : <>
+          <div className="-mx-1 my-1 h-px bg-muted" />
+          <button type="button" role="menuitem" className={item} onClick={go(onProfile)}><I.user />Profile</button>
+          <button type="button" role="menuitem" className={item} onClick={go(onSettings)}><I.gear />Settings</button>
+          {workspaces.length > 1 && <>
+            <div className="-mx-1 my-1 h-px bg-muted" />
+            <div className="px-2 pb-0.5 pt-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Switch workspace</div>
+            {workspaces.map(w => (
+              <button key={w.id} type="button" role="menuitemradio" aria-checked={w.id === ws} className={item} onClick={go(() => { if (w.id !== ws) onSwitchWorkspace(w.id); })}>
+                <WsSquare w={w} className="size-[18px] rounded-[5px] text-[10px]" /><span className="min-w-0 flex-1 truncate">{w.name}</span>{w.id === ws && <I.check className="!text-foreground" />}
+              </button>
+            ))}
+          </>}
+          <div className="-mx-1 my-1 h-px bg-muted" />
+          <button type="button" role="menuitem" className={cn(item, 'hover:!bg-destructive/10 hover:!text-destructive focus-visible:!bg-destructive/10 focus-visible:!text-destructive [&:hover>svg]:!text-destructive')} onClick={go(onSignOut)}><I.logout />Sign out</button>
+          </>}
+        </div>
+      </Floating>
+    </>
   );
 }
 
@@ -7232,9 +7864,25 @@ export default function Root() {
   return <MainRoot />;
 }
 
+// What the cloud's profiles table holds about you (0.19.13).
+const profileOf = u => (u ? { name: u.name || '', role: u.role || '', phone: u.phone || '', photo: photoOf(u) || '', status: u.status || '', statusNote: u.statusNote || '', statusUntil: u.statusUntil || null, timeZone: u.timeZone || '', editedAt: u.editedAt || 0 } : null);
+
 function MainRoot() {
   const prof = useProfile();
   const wsp = useWorkspaces();
+  const userRef = useRef(null);
+  userRef.current = prof.data.user || null;
+  meNow = userRef.current;
+  // Your profile from other PCs, and yours sent up when it changes here.
+  useEffect(() => cloudProfileLive(p => prof.updateUser(p, true), () => profileOf(userRef.current)), []);
+  // Time zone comes from this PC's clock; it's saved when it changes (a trip, or a new PC).
+  const signedInHere = !!prof.data.user;
+  useEffect(() => {
+    if (!signedInHere || STANDALONE_ID) return;
+    const z = myZone(); let last = null;
+    try { last = localStorage.getItem('tasks-zone'); } catch (e) {}
+    if (z && (z !== last || !prof.data.user.timeZone)) { try { localStorage.setItem('tasks-zone', z); } catch (e) {} if (prof.data.user.timeZone !== z) prof.updateUser({ timeZone: z }, 'quiet'); }
+  }, [signedInHere]);
   // Cloud sync runs in the main window only; task windows get changes from it.
   useEffect(() => {
     if (WINDOW_LABEL !== 'main') return;

@@ -441,6 +441,69 @@ export async function cloudDeleteDoc(file) {
   try { await client.storage.from(BUCKET).remove([docPath(file)]); st.docsUp = (st.docsUp || []).filter(f => f !== file); saveSoon(); } catch (e) {}
 }
 
+/* ---------- Profile (0.19.13) ----------
+   Your name, photo, role, phone, status and time zone live in the `profiles` table, one row per
+   person, so they're the same on every PC (and teammates can see them once teams arrive).
+   The photo is a small JPEG (about 20 KB) kept right in the row. The newer edit wins.
+   If the profiles table hasn't been created yet, tasks keep syncing and only the profile waits. */
+const PROFILE_TABLE = 'profiles';
+let profileApply = null, profileGet = null, profileBusy = false, profileAgain = false, profileChannel = null;
+// The app registers how to read its profile ({ name, role, …, editedAt }) and how to take one from the cloud.
+export function cloudProfileLive(apply, get) {
+  profileApply = apply; profileGet = get;
+  if (uid && st && st.ready) syncProfile().catch(() => {});
+  return () => { if (profileApply === apply) { profileApply = null; profileGet = null; } };
+}
+// Called after you edit your profile here.
+export function cloudProfileNote() {
+  if (!st) return;
+  st.profileDirty = true; saveSoon();
+  if (uid && st.ready) syncProfile().catch(() => {});
+}
+const profileRow = p => ({
+  user_id: uid, email: st.email || null, name: p.name || null, role: p.role || null, phone: p.phone || null, photo: p.photo || null,
+  status: p.status || null, status_note: p.statusNote || null, status_until: p.statusUntil || null, time_zone: p.timeZone || null,
+  edited_at: p.editedAt || Date.now(), device: DEVICE_ID,
+});
+const profileFrom = r => ({
+  name: r.name || '', role: r.role || '', phone: r.phone || '', photo: r.photo || '', status: r.status || '', statusNote: r.status_note || '',
+  statusUntil: r.status_until || null, timeZone: r.time_zone || '', editedAt: r.edited_at || 0,
+});
+const missingTable = e => /profiles/i.test(String(e && (e.message || e))) && /exist|could not find|schema cache/i.test(String(e && (e.message || e)));
+function takeProfile(r) {
+  if (!r || r.user_id !== uid || r.device === DEVICE_ID || !profileApply || !profileGet) return;
+  const mine = profileGet();
+  if (!mine) return;
+  if ((r.edited_at || 0) > (mine.editedAt || 0)) { profileApply(profileFrom(r)); st.profileDirty = false; saveSoon(); }
+}
+async function syncProfile() {
+  if (!client || !uid || !profileGet) return;
+  if (profileBusy) { profileAgain = true; return; }
+  const mine = profileGet();
+  if (!mine) return;
+  profileBusy = true;
+  try {
+    const { data, error } = await client.from(PROFILE_TABLE).select('*').eq('user_id', uid).maybeSingle();
+    if (error) throw error;
+    if (data && (data.edited_at || 0) > (mine.editedAt || 0)) { profileApply(data.device !== DEVICE_ID ? profileFrom(data) : { editedAt: data.edited_at }); st.profileDirty = false; }
+    else if (!data || st.profileDirty || (mine.editedAt || 0) > (data.edited_at || 0)) {
+      const { error: e2 } = await client.from(PROFILE_TABLE).upsert([profileRow(mine)], { onConflict: 'user_id' });
+      if (e2) throw e2;
+      st.profileDirty = false;
+    }
+    saveSoon();
+    setStatus({ profileMissing: false });
+    if (!profileChannel) {
+      profileChannel = client.channel('profiles-' + DEVICE_ID)
+        .on('postgres_changes', { event: '*', schema: 'public', table: PROFILE_TABLE, filter: `user_id=eq.${uid}` }, p => takeProfile(p.new))
+        .subscribe();
+    }
+  } catch (e) {
+    if (missingTable(e)) setStatus({ profileMissing: true });
+  } finally { profileBusy = false; if (profileAgain) { profileAgain = false; syncProfile().catch(() => {}); } }
+}
+function dropProfileChannel() { if (profileChannel) { try { client.removeChannel(profileChannel); } catch (e) {} profileChannel = null; } }
+
 /* ---------- The sync loop ---------- */
 async function loop() {
   if (!client || !uid || !st.ready || !caughtUp) return;
@@ -455,6 +518,7 @@ async function loop() {
     st.lastSync = Date.now(); saveSoon();
     setStatus({ phase: 'synced', pending: 0, lastSync: st.lastSync, error: null });
     syncDocs().catch(() => {});
+    if (st.profileDirty) syncProfile().catch(() => {});
   } catch (e) {
     const offline = !navigator.onLine || /fetch|network|failed to|timeout/i.test(String(e && (e.message || e)));
     retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000);
@@ -463,7 +527,7 @@ async function loop() {
   } finally { loopBusy = false; }
 }
 async function catchUp() {
-  try { await pull('normal'); caughtUp = true; kick(0); }
+  try { await pull('normal'); caughtUp = true; kick(0); syncProfile().catch(() => {}); }
   catch (e) { setStatus({ phase: navigator.onLine ? 'error' : 'offline', error: String(e && (e.message || e)) }); retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000); setTimeout(catchUp, retryMs); }
 }
 function connect() {
@@ -581,7 +645,7 @@ export async function cloudFirstSync(mode) {
 }
 export async function cloudSignOut() {
   try { if (channel) client.removeChannel(channel); } catch (e) {}
-  channel = null; caughtUp = false;
+  channel = null; caughtUp = false; dropProfileChannel();
   const was = uid; uid = null;
   try { if (was) await client.auth.signOut(); } catch (e) {}
   uid = null;

@@ -25,6 +25,56 @@ export function applyTheme(mode) {
   try { getCurrentWindow().setTheme(mode === 'system' ? null : mode).catch(() => {}); } catch (e) {}
 }
 
+// Which theme is actually showing (Match Windows resolves to the Windows setting).
+function isDark(mode) {
+  return mode === 'dark' || (mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+}
+
+// Where the circle starts: the middle of the given element, else the theme button in the top bar.
+function originOf(el) {
+  const target = el || document.querySelector('[data-theme-toggle]');
+  if (target && target.getBoundingClientRect) {
+    const r = target.getBoundingClientRect();
+    if (r.width || r.height) return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  }
+  return { x: window.innerWidth - 40, y: 28 };
+}
+
+// Switch theme (0.19.13). When light/dark actually changes, the new theme grows as a circle from
+// `from` (the control that was clicked; defaults to the theme button) until it covers the window.
+// Instant when Windows asks for reduced motion, or where the browser has no view transitions.
+export function setTheme(mode, from) {
+  const changes = isDark(mode) !== isDark(readTheme());
+  const commit = () => {
+    saveTheme(mode);
+    applyTheme(mode);
+    window.dispatchEvent(new CustomEvent('tasks-theme', { detail: mode }));
+  };
+  const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!changes || still || typeof document.startViewTransition !== 'function') { commit(); return; }
+  const { x, y } = originOf(from);
+  // Wait a frame so a menu that is closing is gone from the "before" picture.
+  requestAnimationFrame(() => {
+    const root = document.documentElement;
+    root.classList.add('theme-switching');
+    let vt;
+    try { vt = document.startViewTransition(commit); } catch (e) { root.classList.remove('theme-switching'); commit(); return; }
+    const r = Math.hypot(Math.max(x, window.innerWidth - x), Math.max(y, window.innerHeight - y));
+    vt.ready.then(() => {
+      root.animate(
+        { clipPath: [`circle(0px at ${x}px ${y}px)`, `circle(${r}px at ${x}px ${y}px)`] },
+        { duration: 520, easing: 'cubic-bezier(.45,0,.2,1)', pseudoElement: '::view-transition-new(root)' },
+      );
+    }).catch(() => {});
+    vt.finished.finally(() => root.classList.remove('theme-switching'));
+  });
+}
+
+// Light <-> dark, from the shortcut or the command palette.
+export function toggleTheme(from) {
+  setTheme(isDark(readTheme()) ? 'light' : 'dark', from);
+}
+
 // Shift+D switches between light and dark from anywhere (except while typing).
 export function installThemeShortcut() {
   document.addEventListener('keydown', e => {
@@ -32,12 +82,6 @@ export function installThemeShortcut() {
     const el = document.activeElement;
     if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return;
     e.preventDefault();
-    const sysDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-    const cur = readTheme();
-    const isDark = cur === 'dark' || (cur === 'system' && sysDark);
-    const next = isDark ? 'light' : 'dark';
-    saveTheme(next);
-    applyTheme(next);
-    window.dispatchEvent(new CustomEvent('tasks-theme', { detail: next }));
+    toggleTheme();
   });
 }
