@@ -1,29 +1,30 @@
 # Builds the Windows app and publishes it as a GitHub release.
 # Installed copies of the app find the new release and offer to update themselves.
 #
-# Runs automatically when package.json changes (that's where the version number lives),
+# Runs automatically when package.json changes on main (that's where the version number lives),
 # or by hand from the "Actions" tab → "Build Windows installer" → "Run workflow".
+# Running it by hand on another branch makes a test build that no installed app updates to.
 name: Build Windows installer
-
+ 
 on:
   push:
     branches: [main]
     paths: [package.json]
   workflow_dispatch:
-
+ 
 permissions:
   contents: write
-
+ 
 concurrency:
   group: release
   cancel-in-progress: false
-
+ 
 jobs:
   build:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
+ 
       - name: Check the update key is set up
         shell: pwsh
         env:
@@ -35,7 +36,7 @@ jobs:
             Write-Error "The update key isn't set up yet. Add the UPDATER_PUBKEY variable and the TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets (SETUP-GUIDE.md, Step 2)."
             exit 1
           }
-
+ 
       - name: Add the public update key to the app
         shell: pwsh
         env:
@@ -43,38 +44,45 @@ jobs:
         run: |
           $cfg = @{ bundle = @{ createUpdaterArtifacts = $true }; plugins = @{ updater = @{ pubkey = $env:PUBKEY.Trim() } } }
           $cfg | ConvertTo-Json -Depth 5 | Set-Content -Path src-tauri/release.conf.json -Encoding utf8
-
+ 
       - name: Read the release notes
         shell: pwsh
         run: |
           $notes = if (Test-Path RELEASE-NOTES.md) { (Get-Content RELEASE-NOTES.md -Raw).Trim() } else { "Improvements and fixes." }
           "NOTES<<END_OF_NOTES`n$notes`nEND_OF_NOTES" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
+ 
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-
+ 
       - uses: dtolnay/rust-toolchain@stable
-
+ 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
-
+ 
       - name: Install packages
         run: npm ci
-
+ 
       - name: Build and publish the release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Google sign-in for teammates (0.20). Kept out of the code; added to the app while it builds.
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
         with:
-          tagName: v__VERSION__
-          releaseName: Tasks __VERSION__
+          # Built from any branch other than main (Run workflow → pick the branch): a test build.
+          # It's published as a pre-release, which installed apps never offer as an update;
+          # download the installer from the release page to try it on one PC.
+          tagName: ${{ github.ref == 'refs/heads/main' && 'v__VERSION__' || format('v__VERSION__-test-{0}', github.run_number) }}
+          releaseName: ${{ github.ref == 'refs/heads/main' && 'Tasks __VERSION__' || format('Tasks __VERSION__ (test build {0})', github.run_number) }}
           releaseBody: ${{ env.NOTES }}
           releaseDraft: false
-          prerelease: false
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
           includeUpdaterJson: true
           args: --config src-tauri/release.conf.json
+ 
