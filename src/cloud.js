@@ -24,7 +24,16 @@
      versions before 0.19.4 ignore, so a PC that hasn't updated yet can never delete them;
    - the whole-list rows ("m/buckets", …) are still written for PCs that haven't updated yet.
      A whole-list row from such a PC is compared with the last one, and only the items it
-     changed are taken. Whole-list rows from updated PCs are ignored. Nothing in Supabase changes. */
+     changed are taken. Whole-list rows from updated PCs are ignored. Nothing in Supabase changes.
+
+   Since 0.20 the cloud is a team workspace (teams-0.20.sql):
+   - every row belongs to the workspace (workspace_id), not to one person; joining runs join_workspace();
+   - Owner and Admin change the team's lists and settings; members' changes to those stay on their PC;
+   - two people changing different fields of one task at once both keep their change (merged field by field);
+   - documents live under <workspace id>/<file>. The Owner's PCs keep every document, teammates fetch
+     one when they open it, so a big team doesn't use up the free plan's downloads;
+   - a time-based automation is claimed in automation_runs, so only one PC runs it;
+   - personal settings (watch folders, the Trash cleanup list) stay on each PC. */
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { CLOUD_URL, CLOUD_PUBLISHABLE_KEY } from './cloud-config.js';
@@ -45,7 +54,8 @@ const CLOUD_STORE_RE = /^(?:(?:data|archive)(?:-[a-z0-9_]{1,32})?|workspaces)(?:
 // Lists synced item by item. Ordered lists keep their order (each row carries its place).
 const DATA_LISTS = { rules: 'ordered', stages: 'ordered', projects: 'set', buckets: 'set', looseDocs: 'set' };
 const DATA_OBJS = ['settings', 'labels'];
-const listsOf = name => (isData(name) ? DATA_LISTS : name === 'workspaces' ? { list: 'ordered' } : {});
+// Teams and job roles (0.20) are team-wide, so they live with the workspace list.
+const listsOf = name => (isData(name) ? DATA_LISTS : name === 'workspaces' ? { list: 'ordered', teams: 'ordered', roles: 'ordered' } : {});
 const objsOf = name => (isData(name) ? DATA_OBJS : []);
 const isSplitKey = k => k.startsWith('l/') || k.startsWith('f/');
 const cloudStoreOf = (name, key) => (isSplitKey(key) ? name + ITEMS : name);
@@ -58,7 +68,13 @@ const J = v => (v === undefined || v === null ? null : JSON.stringify(v));
 
 /* ---------- Stores <-> rows ---------- */
 // Watch folders are paths on this PC, so they stay local.
-const localOnly = s => { if (!s || typeof s !== 'object') return s; const { watchFolders, ...rest } = s; return rest; };
+// Since 0.20 the Trash cleanup list (purgeFiles) is per PC too, since team settings are admin-only.
+const LOCAL_SETTINGS = ['watchFolders', 'purgeFiles'];
+const localOnly = s => { if (!s || typeof s !== 'object') return s; const rest = { ...s }; LOCAL_SETTINGS.forEach(k => delete rest[k]); return rest; };
+const keepLocal = s => { const o = {}; if (s && typeof s === 'object') LOCAL_SETTINGS.forEach(k => { if (s[k] !== undefined) o[k] = s[k]; }); return o; };
+const isLocalKey = k => LOCAL_SETTINGS.some(f => k === `f/settings/${f}`);
+// Rows only Owner and Admin may change (the same test as records_admin_only in teams-0.20.sql).
+const adminOnly = (store, key) => store === 'workspaces' || store.startsWith('workspaces:') || key.startsWith('m/') || (key.startsWith('l/') && !key.startsWith('l/looseDocs/')) || key.startsWith('f/');
 // The rows of one list or settings object: { key: value }.
 function fieldRows(name, field, v) {
   const out = {}, kind = listsOf(name)[field];
@@ -83,6 +99,7 @@ function split(name, c) {
     Object.entries(c.trash || {}).forEach(([id, t]) => { out['x/' + id] = t; });
   } else if (name === 'workspaces') {
     if (Array.isArray(c.list)) { out['m/list'] = c.list; Object.assign(out, fieldRows(name, 'list', c.list)); }
+    ['teams', 'roles'].forEach(f => { if (Array.isArray(c[f])) Object.assign(out, fieldRows(name, f, c[f])); });
   }
   return out;
 }
@@ -130,7 +147,7 @@ export function applyRows(name, c, patch) {
     if (isData(name)) {
       if (!n.version) n.version = 4;
       if (p === 't/') setIn('tasks', id, v);
-      else if (p === 'm/' && META.includes(id)) n[id] = id === 'settings' ? { ...(v || {}), ...(n.settings && n.settings.watchFolders ? { watchFolders: n.settings.watchFolders } : {}) } : v;
+      else if (p === 'm/' && META.includes(id)) n[id] = id === 'settings' ? { ...localOnly(v || {}), ...keepLocal(n.settings) } : v;
     } else if (isArch(name)) {
       if (!n.version) n.version = 1;
       if (p === 'a/') setIn('archived', id, v); else if (p === 'x/') setIn('trash', id, v);
@@ -148,8 +165,39 @@ function mergeLists(remote, local) {
   return remote;
 }
 const isItem = key => /^[taxl]\//.test(key);
+const isRowItem = key => /^[tax]\//.test(key); // a task, archived task or trashed task
 const unwrap = (key, v) => (key && key.startsWith('l/') && v && typeof v === 'object' ? v.v : v);
 const itemTime = v => (v && typeof v === 'object' ? v.updatedAt || v.archivedAt || v.deletedAt || 0 : 0);
+// Two people changed the same task: start from the last agreed copy and take each side's changed fields.
+// A field both changed goes to the newer edit; lists of things with ids (comments, files, links) are combined.
+const byId = a => Array.isArray(a) && a.every(x => x && typeof x === 'object' && (typeof x.id === 'string' || typeof x.id === 'number'));
+function mergeIds(base, mine, theirs, mineWins) {
+  const b = new Map((byId(base) ? base : []).map(x => [x.id, J(x)])), m = new Map(mine.map(x => [x.id, x])), t = new Map(theirs.map(x => [x.id, x]));
+  const out = [];
+  theirs.forEach(x => {
+    if (!m.has(x.id)) { if (!b.has(x.id) || b.get(x.id) !== J(x)) out.push(x); return; } // removed here, unless changed there
+    const mx = m.get(x.id);
+    out.push(J(mx) === J(x) ? x : b.get(x.id) === J(mx) ? x : b.get(x.id) === J(x) ? mx : mineWins ? mx : x);
+  });
+  mine.forEach(x => { if (!t.has(x.id) && (!b.has(x.id) || b.get(x.id) !== J(x))) out.push(x); }); // added here
+  return out;
+}
+export function mergeFields(base, mine, theirs, mineWins) {
+  if (!mine || !theirs || typeof mine !== 'object' || typeof theirs !== 'object' || Array.isArray(mine) || Array.isArray(theirs)) return mineWins ? mine : theirs;
+  base = base && typeof base === 'object' ? base : {};
+  const out = {};
+  new Set([...Object.keys(mine), ...Object.keys(theirs)]).forEach(k => {
+    const bj = J(base[k]), mj = J(mine[k]), tj = J(theirs[k]);
+    let v;
+    if (mj === tj || mj === bj) v = theirs[k];
+    else if (tj === bj) v = mine[k];
+    else if (byId(mine[k]) && byId(theirs[k])) v = mergeIds(base[k], mine[k], theirs[k], mineWins);
+    else v = mineWins ? mine[k] : theirs[k];
+    if (v !== undefined) out[k] = v;
+  });
+  if (typeof mine.updatedAt === 'number' || typeof theirs.updatedAt === 'number') out.updatedAt = Math.max(mine.updatedAt || 0, theirs.updatedAt || 0);
+  return out;
+}
 const rowTitle = v => (v && typeof v === 'object' ? (typeof v.title === 'string' ? v.title : typeof v.name === 'string' ? v.name : '') : '');
 // For the open window: list items and settings fields become the whole list or object it already knows.
 function livePatch(name, next, patch) {
@@ -169,7 +217,8 @@ function docRefs(v, out) {
 
 /* ---------- State ---------- */
 // Saved in the `cloud` store: { url, key, uid, email, ready, cursor, stores: {name: {shadow, dirtyAt}}, docsUp, lastSync }
-let st = null, client = null, uid = null, channel = null;
+let st = null, client = null, uid = null, channel = null, wsId = null, access = null, teamChannel = null;
+const clashes = new Map(); // task key -> how many times in a row it clashed while sending
 let status = { phase: 'loading' };
 const subs = new Set(), noticeSubs = new Set();
 const live = {};   // store name -> function applying a patch to the open window's state
@@ -241,6 +290,7 @@ function kick(ms = 0) { clearTimeout(timer); timer = setTimeout(loop, ms); }
 /* ---------- Pushing local changes ---------- */
 function diff(name) {
   const s = sstore(name), rows = split(name, cache[name]), now = Date.now(), out = [];
+  Object.keys(s.shadow).forEach(k => { if (isLocalKey(k)) { delete s.shadow[k]; delete s.dirtyAt[k]; } });
   Object.entries(rows).forEach(([k, v]) => {
     const j = J(v);
     if ((s.shadow[k] ?? null) !== j) { s.dirtyAt[k] = s.dirtyAt[k] || itemTime(v) || now; out.push({ key: k, value: v, j }); }
@@ -253,21 +303,63 @@ function diff(name) {
   return out;
 }
 async function pushAll() {
+  if (!access) await loadTeam(); // who we are in the team decides which rows we may send; throws (and retries) if unknown
+  if (!access) throw new Error('Couldn’t find you in the team. Try signing in again.');
   const names = [...dirty]; dirty.clear();
   let sent = 0;
   for (const name of names) {
     if (cache[name] === undefined) await content(name);
     // Items go before the whole-list rows, so a PC that reads both always sees the items first.
-    const changes = diff(name).sort((a, b) => (a.key.startsWith('m/') ? 1 : 0) - (b.key.startsWith('m/') ? 1 : 0));
+    let changes = diff(name).sort((a, b) => (a.key.startsWith('m/') ? 1 : 0) - (b.key.startsWith('m/') ? 1 : 0));
     const s = sstore(name);
-    for (let i = 0; i < changes.length; i += 200) {
-      const part = changes.slice(i, i + 200);
-      const { error } = await client.from(TABLE).upsert(part.map(c => ({
-        user_id: uid, store: cloudStoreOf(name, c.key), key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || Date.now(), device: DEVICE_ID,
-      })), { onConflict: 'user_id,store,key' });
+    if (!isAdmin()) {
+      // Members can't change the team's lists or settings (the app doesn't let them, and Supabase refuses).
+      // Anything that differs here, like a default the team never saved, simply stays on this PC; the
+      // team's copy comes in whenever an admin changes it. Nothing is put back, so nothing can ping-pong.
+      changes.filter(c => adminOnly(cloudStoreOf(name, c.key), c.key)).forEach(c => { delete s.dirtyAt[c.key]; });
+      changes = changes.filter(c => !adminOnly(cloudStoreOf(name, c.key), c.key));
+    }
+    const row = c => ({ workspace_id: wsId, store: cloudStoreOf(name, c.key), key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || Date.now(), device: DEVICE_ID });
+    const done = (c, at) => { clashes.delete(c.key); if (isSplitKey(c.key)) s.itemAt[c.key] = s.dirtyAt[c.key] || Date.now(); s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; if (at) s.seenAt[c.key] = at; sent++; };
+    // Lists and settings go item by item, so a plain write is safe.
+    const plain = changes.filter(c => !isRowItem(c.key));
+    for (let i = 0; i < plain.length; i += 200) {
+      const part = plain.slice(i, i + 200);
+      const { error } = await client.from(TABLE).upsert(part.map(row), { onConflict: 'workspace_id,store,key' });
       if (error) { dirty.add(name); throw error; }
-      part.forEach(c => { if (isSplitKey(c.key)) s.itemAt[c.key] = s.dirtyAt[c.key] || Date.now(); s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; });
-      sent += part.length;
+      part.forEach(c => done(c));
+    }
+    // Tasks (0.20): written only over the copy this PC last saw, so two people's edits can't cross in flight
+    // and wipe each other out. If someone got there first, their copy is merged with ours and sent again.
+    const tasks = changes.filter(c => isRowItem(c.key)), conflicts = [];
+    const fresh = tasks.filter(c => !s.seenAt[c.key]), known = tasks.filter(c => s.seenAt[c.key]);
+    for (let i = 0; i < fresh.length; i += 200) {
+      const part = fresh.slice(i, i + 200);
+      const { data, error } = await client.from(TABLE).upsert(part.map(row), { onConflict: 'workspace_id,store,key', ignoreDuplicates: true }).select('key,updated_at');
+      if (error) { dirty.add(name); throw error; }
+      const got = new Map((data || []).map(r => [r.key, r.updated_at]));
+      part.forEach(c => (got.has(c.key) ? done(c, got.get(c.key)) : conflicts.push(c.key)));
+    }
+    for (const c of known) {
+      const { workspace_id, store, key, ...set } = row(c);
+      const { data, error } = await client.from(TABLE).update(set).eq('workspace_id', wsId).eq('store', store).eq('key', key).eq('updated_at', s.seenAt[c.key]).select('key,updated_at');
+      if (error) { dirty.add(name); throw error; }
+      if (data && data.length) done(c, data[0].updated_at); else conflicts.push(c.key);
+    }
+    if (conflicts.length) {
+      const { data, error } = await client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').eq('workspace_id', wsId).eq('store', name).in('key', conflicts);
+      if (error) { dirty.add(name); throw error; }
+      // A task that keeps clashing (someone editing it nonstop, or a server hiccup) backs off instead of spinning.
+      conflicts.forEach(k => { clashes.set(k, (clashes.get(k) || 0) + 1); });
+      if (conflicts.some(k => clashes.get(k) > 5)) { conflicts.forEach(k => clashes.delete(k)); dirty.add(name); throw new Error('A task kept changing on another PC while sending. Trying again shortly.'); }
+      const found = new Set((data || []).map(r => r.key));
+      // Gone from the cloud (an admin cleared it): send ours as a new row next time.
+      conflicts.forEach(k => { if (!found.has(k)) delete s.seenAt[k]; });
+      // A copy this PC wrote itself (its answer got lost): just note it, ours goes again.
+      // Someone else's copy: take it in fresh (whatever this PC last noted), merging with ours.
+      (data || []).forEach(r => { if (r.device === DEVICE_ID) s.seenAt[r.key] = r.updated_at; else delete s.seenAt[r.key]; });
+      await receive((data || []).filter(r => r.device !== DEVICE_ID), 'normal');
+      dirty.add(name);
     }
   }
   if (sent) saveSoon();
@@ -284,6 +376,7 @@ async function receiveNow(rows, policy = 'normal') {
     if (!r || typeof r.key !== 'string' || !CLOUD_STORE_RE.test(r.store || '')) return;
     const items = r.store.endsWith(ITEMS), base = items ? r.store.slice(0, -ITEMS.length) : r.store;
     if (items !== isSplitKey(r.key)) return; // a row in the wrong place is never taken
+    if (isLocalKey(r.key)) return; // personal settings written by a PC before 0.20
     // A PC that writes item rows is on 0.19.4 or later: its whole-list rows are only for older PCs.
     if (items && r.device && !st.v2.includes(r.device)) { st.v2.push(r.device); saveSoon(); }
     (byStore[base] || (byStore[base] = [])).push(r);
@@ -343,6 +436,15 @@ async function receiveNow(rows, policy = 'normal') {
       }
       else if (policy === 'combine') take = lj === null || (r.edited_at || 0) >= itemTime(lv);
       else if (lj === sj) take = true; // not changed here since the last sync
+      else if (/^[tax]\//.test(r.key) && lv && r.value && !r.deleted) {
+        // Changed here and by someone else: keep both sides' changes, field by field.
+        const mineWins = (s.dirtyAt[r.key] || itemTime(lv) || 0) > (r.edited_at || 0);
+        const merged = mergeFields(sj === null ? null : JSON.parse(sj), lv, r.value, mineWins);
+        s.shadow[r.key] = j; s.seenAt[r.key] = r.updated_at || s.seenAt[r.key];
+        patch[r.key] = merged;
+        if (J(merged) !== j) dirty.add(name); else delete s.dirtyAt[r.key];
+        continue;
+      }
       else {
         // Changed on both PCs: the newer edit wins.
         take = (r.edited_at || 0) >= (s.dirtyAt[r.key] || itemTime(lv) || 0);
@@ -381,7 +483,7 @@ async function pull(policy = 'normal') {
   const since = policy === 'normal' && st.cursor ? new Date(Date.parse(st.cursor) - 60000).toISOString() : null;
   let maxTs = st.cursor || null;
   for (let from = 0; ; from += 1000) {
-    let q = client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').order('updated_at', { ascending: true }).order('key', { ascending: true }).range(from, from + 999);
+    let q = client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').eq('workspace_id', wsId).order('updated_at', { ascending: true }).order('key', { ascending: true }).range(from, from + 999);
     if (since) q = q.gt('updated_at', since);
     const { data, error } = await q;
     if (error) throw error;
@@ -399,7 +501,24 @@ async function allRefs() {
   for (const n of await localStores()) if (n !== 'workspaces') docRefs(await content(n), refs);
   return refs;
 }
-const docPath = f => `${uid}/${f}`;
+const docPath = f => `${wsId}/${f}`;
+// The Owner's PCs keep every document. Teammates fetch one when they open it (cloudEnsureDoc).
+const keepsAllDocs = () => access === 'owner';
+// 0.20: documents move from <user id>/ to <workspace id>/. Copied inside Supabase, so nothing is downloaded.
+async function moveOldDocs() {
+  if (!wsId || !uid || st.docsMoved === wsId) return;
+  for (let offset = 0; ; offset += 1000) {
+    const { data, error } = await client.storage.from(BUCKET).list(uid, { limit: 1000, offset });
+    if (error) return;
+    for (const o of data || []) {
+      if (!o || !DOC_RE.test(o.name)) continue;
+      const { error: e } = await client.storage.from(BUCKET).copy(`${uid}/${o.name}`, `${wsId}/${o.name}`);
+      if (e && !/exist|duplicate|409/i.test(e.message || '')) return; // try again next launch
+    }
+    if (!data || data.length < 1000) break;
+  }
+  st.docsMoved = wsId; saveSoon();
+}
 async function download(file) {
   const { data, error } = await client.storage.from(BUCKET).download(docPath(file));
   if (error || !data) return false;
@@ -417,6 +536,7 @@ async function syncDocs() {
       let missing = [];
       try { missing = await invoke('missing_documents', { files: refs }); } catch (e) {}
       const miss = new Set(missing);
+      if (!keepsAllDocs()) missing = [];
       for (const f of refs) {
         if (up.has(f) || miss.has(f)) continue;
         let buf; try { buf = await invoke('read_document', { file: f }); } catch (e) { continue; }
@@ -433,11 +553,11 @@ async function syncDocs() {
 }
 // Opening a document that hasn't arrived on this PC yet: fetch it now.
 export async function cloudEnsureDoc(file) {
-  if (!client || !uid || !DOC_RE.test(file)) return false;
-  try { return await download(file); } catch (e) { return false; }
+  if (!client || !uid || !wsId || !DOC_RE.test(file)) return false;
+  try { const ok = await download(file); if (ok) { st.docsUp = [...new Set([...(st.docsUp || []), file])]; saveSoon(); } return ok; } catch (e) { return false; }
 }
 export async function cloudDeleteDoc(file) {
-  if (!client || !uid || !DOC_RE.test(file)) return;
+  if (!client || !uid || !wsId || !DOC_RE.test(file)) return;
   try { await client.storage.from(BUCKET).remove([docPath(file)]); st.docsUp = (st.docsUp || []).filter(f => f !== file); saveSoon(); } catch (e) {}
 }
 
@@ -506,7 +626,7 @@ function dropProfileChannel() { if (profileChannel) { try { client.removeChannel
 
 /* ---------- The sync loop ---------- */
 async function loop() {
-  if (!client || !uid || !st.ready || !caughtUp) return;
+  if (!client || !uid || !wsId || !st.ready || !caughtUp) return;
   if (loopBusy) { loopAgain = true; return; }
   loopBusy = true;
   try {
@@ -517,7 +637,7 @@ async function loop() {
     retryMs = 0;
     st.lastSync = Date.now(); saveSoon();
     setStatus({ phase: 'synced', pending: 0, lastSync: st.lastSync, error: null });
-    syncDocs().catch(() => {});
+    moveOldDocs().catch(() => {}).then(() => syncDocs()).catch(() => {});
     if (st.profileDirty) syncProfile().catch(() => {});
   } catch (e) {
     const offline = !navigator.onLine || /fetch|network|failed to|timeout/i.test(String(e && (e.message || e)));
@@ -533,7 +653,7 @@ async function catchUp() {
 function connect() {
   if (channel) { try { client.removeChannel(channel); } catch (e) {} channel = null; }
   channel = client.channel('records-' + DEVICE_ID)
-    .on('postgres_changes', { event: '*', schema: 'public', table: TABLE, filter: `user_id=eq.${uid}` }, p => {
+    .on('postgres_changes', { event: '*', schema: 'public', table: TABLE, filter: `workspace_id=eq.${wsId}` }, p => {
       if (p.new && p.new.store) receive([p.new]).catch(() => {});
       if (p.new && p.new.updated_at && (!st.cursor || p.new.updated_at > st.cursor)) st.cursor = p.new.updated_at;
     })
@@ -544,16 +664,113 @@ function connect() {
   localStores().then(ns => ns.forEach(n => dirty.add(n)));
 }
 
+/* ---------- The team (0.20) ---------- */
+let team = { members: [], invites: [] };
+const teamSubs = new Set();
+const isAdmin = () => access === 'owner' || access === 'admin';
+export const cloudAccess = () => access;
+export const cloudMe = () => uid;
+export const cloudTeam = () => team;
+export function onCloudTeam(f) { teamSubs.add(f); f(team); return () => teamSubs.delete(f); }
+async function loadTeam() {
+  if (!client || !wsId) return;
+  const { data: ms, error } = await client.from('members').select('user_id,access,job_role,teams,joined_at').eq('workspace_id', wsId);
+  if (error) throw error;
+  const ids = (ms || []).map(m => m.user_id);
+  const { data: ps } = ids.length ? await client.from(PROFILE_TABLE).select('user_id,email,name,photo,time_zone,status,status_note').in('user_id', ids) : { data: [] };
+  const pr = new Map((ps || []).map(p => [p.user_id, p]));
+  let invites = [];
+  const mine = (ms || []).find(m => m.user_id === uid);
+  access = mine ? mine.access : null;
+  if (isAdmin()) { const { data: iv } = await client.from('invites').select('email,access,job_role,teams,invited_at,accepted_at').eq('workspace_id', wsId).is('accepted_at', null).order('invited_at'); invites = iv || []; }
+  team = {
+    members: (ms || []).map(m => { const p = pr.get(m.user_id) || {}; return { id: m.user_id, access: m.access, role: m.job_role || '', teams: m.teams || [], joinedAt: m.joined_at, email: p.email || '', name: p.name || p.email || '', photo: p.photo || '', timeZone: p.time_zone || '', status: p.status || '', statusNote: p.status_note || '' }; })
+      .sort((a, b) => (a.access === 'owner' ? -1 : b.access === 'owner' ? 1 : (a.name || '').localeCompare(b.name || ''))),
+    invites: invites.map(i => ({ email: i.email, access: i.access, role: i.job_role || '', teams: i.teams || [], invitedAt: i.invited_at })),
+  };
+  setStatus({ access });
+  teamSubs.forEach(f => f(team));
+  if (!teamChannel) {
+    teamChannel = client.channel('members-' + DEVICE_ID)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'members', filter: `workspace_id=eq.${wsId}` }, p => {
+        // Removed from the team on another PC: stop syncing here.
+        if (p.eventType === 'DELETE' && p.old && p.old.user_id === uid) { cloudSignOut().then(() => setStatus({ phase: 'removed' })).catch(() => {}); return; }
+        loadTeam().catch(() => {});
+      })
+      // A teammate's name and photo arrive a moment after they join (and whenever they edit them).
+      .on('postgres_changes', { event: '*', schema: 'public', table: PROFILE_TABLE }, p => {
+        const id = (p.new && p.new.user_id) || (p.old && p.old.user_id);
+        if (id && id !== uid && team.members.some(m => m.id === id)) loadTeam().catch(() => {});
+      })
+      .subscribe();
+  }
+}
+function dropTeamChannel() { if (teamChannel) { try { client.removeChannel(teamChannel); } catch (e) {} teamChannel = null; } }
+export const cloudReloadTeam = () => loadTeam();
+const teamErr = e => { const m = String((e && e.message) || e || ''); if (/row-level security|permission|42501/i.test(m)) return new Error('Only the Owner and Admins can do that.'); if (/duplicate|23505/i.test(m)) return new Error('That email is already invited.'); return new Error(m || 'That didn’t work. Try again.'); };
+const cleanTeams = t => [...new Set((t || []).map(x => String(x).trim()).filter(Boolean))];
+export async function cloudInvite({ email, access: a = 'member', role = '', teams = [] }) {
+  email = String(email || '').trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error('That doesn’t look like an email address.');
+  if (team.members.some(m => (m.email || '').toLowerCase() === email)) throw new Error('They’re already on the team.');
+  const { error } = await client.from('invites').insert([{ workspace_id: wsId, email, access: a === 'admin' ? 'admin' : 'member', job_role: role || null, teams: cleanTeams(teams) }]);
+  if (error) throw teamErr(error);
+  await loadTeam();
+}
+export async function cloudUpdateInvite(email, { access: a, role, teams }) {
+  const patch = {};
+  if (a) patch.access = a === 'admin' ? 'admin' : 'member';
+  if (role !== undefined) patch.job_role = role || null;
+  if (teams) patch.teams = cleanTeams(teams);
+  const { error } = await client.from('invites').update(patch).eq('workspace_id', wsId).eq('email', email);
+  if (error) throw teamErr(error);
+  await loadTeam();
+}
+export async function cloudCancelInvite(email) {
+  const { error } = await client.from('invites').delete().eq('workspace_id', wsId).eq('email', email);
+  if (error) throw teamErr(error);
+  await loadTeam();
+}
+export async function cloudUpdateMember(id, { access: a, role, teams }) {
+  const patch = {};
+  if (a) patch.access = a === 'admin' ? 'admin' : 'member';
+  if (role !== undefined) patch.job_role = role || null;
+  if (teams) patch.teams = cleanTeams(teams);
+  const { data, error } = await client.from('members').update(patch).eq('workspace_id', wsId).eq('user_id', id).select('user_id');
+  if (error) throw teamErr(error);
+  if (!data || !data.length) throw new Error('Only the Owner and Admins can change that, and nobody can change their own access.');
+  await loadTeam();
+}
+export async function cloudRemoveMember(id) {
+  const { data, error } = await client.from('members').delete().eq('workspace_id', wsId).eq('user_id', id).select('user_id');
+  if (error) throw teamErr(error);
+  if (!data || !data.length) throw new Error('You can’t remove yourself or the Owner.');
+  await loadTeam();
+}
+// Time-based automations: the first PC to claim a run does it. true: run it here; false: another PC did; null: couldn't ask.
+export async function cloudClaim(taskId, ruleKey) {
+  if (!client || !uid || !wsId || !st || !st.ready) return true; // not syncing: this PC is the only one
+  try {
+    const { error } = await client.from('automation_runs').insert([{ workspace_id: wsId, task_id: String(taskId), rule_key: String(ruleKey), device: DEVICE_ID }]);
+    if (!error) return true;
+    if (error.code === '23505' || /duplicate/i.test(error.message || '')) return false;
+    // automation_runs missing (teams update not run): this PC goes ahead. Offline or a hiccup: ask again later.
+    if (/automation_runs|schema cache|does not exist/i.test(error.message || '')) return true;
+    return null;
+  } catch (e) { return null; }
+}
+
 /* ---------- Setup, sign-in, first sync ---------- */
 const DEFAULT_STATE = () => ({ version: 1, stores: {}, docsUp: [], v2: [] });
 async function makeClient() {
   const { createClient } = await import('@supabase/supabase-js');
   client = createClient(st.url, st.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth' }, realtime: { params: { eventsPerSecond: 20 } } });
   client.auth.onAuthStateChange(ev => {
-    if (ev === 'SIGNED_OUT' && uid) { uid = null; caughtUp = false; setStatus({ phase: 'signin' }); }
+    if (ev === 'SIGNED_OUT' && uid) { uid = null; wsId = null; caughtUp = false; setStatus({ phase: 'signin' }); }
   });
 }
 const fail = e => setStatus({ phase: 'error', error: String(e && (e.message || e)) });
+async function dropSession() { const was = uid; uid = null; wsId = null; try { if (was) await client.auth.signOut(); } catch (e) {} }
 
 // Runs once in the main window at launch.
 export async function cloudStart() {
@@ -587,6 +804,18 @@ export async function cloudConfigure(url, key) {
   await makeClient();
   setStatus({ phase: 'signin', url, error: null });
 }
+// Google sign-in (0.20): the app's own Google window hands its ID token to Supabase. The token isn't kept.
+export async function cloudSignInGoogle(idToken) {
+  if (!client) throw new Error('Cloud sync isn’t set up on this PC yet.');
+  if (!idToken) throw new Error('Google didn’t send a sign-in token. Try again.');
+  const { data, error } = await client.auth.signInWithIdToken({ provider: 'google', token: idToken });
+  if (error) {
+    if (/invite/i.test(error.message || '') || error.status === 403) { setStatus({ phase: 'notinvited' }); return; }
+    throw new Error(error.message);
+  }
+  uid = data.user.id;
+  await begin(data.user);
+}
 export async function cloudSignIn(email, password) {
   const { data, error } = await client.auth.signInWithPassword({ email: email.trim(), password });
   if (error) throw new Error(/invalid login/i.test(error.message) ? 'Wrong email or password.' : error.message);
@@ -598,10 +827,28 @@ async function countLocal() {
   for (const name of await localStores()) if (isData(name)) n += Object.keys(split(name, await content(name))).filter(k => k.startsWith('t/')).length;
   return n;
 }
+// Joining the team workspace (0.20). Returns false when this person can't get in.
+async function joinTeam() {
+  const { data, error } = await client.rpc('join_workspace');
+  if (error) {
+    const m = String(error.message || '');
+    if (error.code === '42501' || /isn.?t invited/i.test(m)) { await dropSession(); setStatus({ phase: 'notinvited', email: st.email }); return false; }
+    if (error.code === 'PGRST202' || /could not find the function|schema cache|does not exist/i.test(m)) {
+      setStatus({ phase: 'error', error: 'This Supabase project hasn’t had the teams update yet. Run teams-0.20.sql in its SQL Editor, then try again.' });
+      return false;
+    }
+    throw error;
+  }
+  if (st.wsId && st.wsId !== data) { st = { ...DEFAULT_STATE(), url: st.url, key: st.key, uid: st.uid, email: st.email }; }
+  wsId = data; st.wsId = data; saveSoon();
+  await loadTeam().catch(() => {});
+  return true;
+}
 async function begin(user) {
   if (st.uid && st.uid !== user.id) { st = { ...DEFAULT_STATE(), url: st.url, key: st.key }; }
   st.uid = user.id; st.email = user.email || st.email; saveSoon();
   setStatus({ email: st.email });
+  if (!(await joinTeam())) return;
   if (st.ready) { setStatus({ phase: 'connecting' }); connect(); return; }
   setStatus({ phase: 'checking' });
   const { count, error } = await client.from(TABLE).select('key', { count: 'exact', head: true }).eq('deleted', false).like('key', 't/%');
@@ -645,7 +892,8 @@ export async function cloudFirstSync(mode) {
 }
 export async function cloudSignOut() {
   try { if (channel) client.removeChannel(channel); } catch (e) {}
-  channel = null; caughtUp = false; dropProfileChannel();
+  channel = null; caughtUp = false; dropProfileChannel(); dropTeamChannel();
+  wsId = null; access = null; team = { members: [], invites: [] }; teamSubs.forEach(f => f(team));
   const was = uid; uid = null;
   try { if (was) await client.auth.signOut(); } catch (e) {}
   uid = null;

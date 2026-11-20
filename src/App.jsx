@@ -15,7 +15,9 @@ import { register as registerShortcut, unregister as unregisterShortcut } from '
 import { isPermissionGranted, requestPermission, sendNotification } from '@tauri-apps/plugin-notification';
 import { readTheme, setTheme, toggleTheme } from './theme.js';
 import { Toaster, toast as sonner } from './components/ui/sonner.jsx';
-import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc, cloudProfileLive, cloudProfileNote } from './cloud.js';
+import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc, cloudProfileLive, cloudProfileNote,
+  cloudSignInGoogle, cloudMe, onCloudTeam, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudTeam as cloudTeamNow, cloudStatus } from './cloud.js';
+import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from './cloud-config.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
 /* =========================================================
@@ -343,7 +345,7 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
   const canSearch = searchable ?? options.length > 8;
   const nq = norm(q);
   // creatable(text) returns an option for what you typed when nothing matches it exactly (e.g. a new person).
-  const list = [...options.filter(o => !nq || norm(o.label).includes(nq)),
+  const list = [...options.filter(o => !nq || norm(o.label).includes(nq) || (o.search && norm(o.search).includes(nq))),
     ...(creatable && nq && !options.some(o => norm(o.label) === nq) ? [creatable(q.trim())] : [])];
   useEffect(() => {
     if (!open) return;
@@ -950,6 +952,13 @@ const joinedLate = (t, b) => { const s = scopeFrom(b); return s != null && !t.in
 const isAddedLater = (t, b) => joinedLate(t, b) && t.addedReason !== 'planned';
 const nDays = n => `${n} ${n === 1 ? 'day' : 'days'}`;
 const nTasks = n => `${n} ${n === 1 ? 'task' : 'tasks'}`;
+/* Impact of added tasks (0.19.15): their tracked time turned into working days (8h a day, Monday to Friday),
+   compared with how far the end has already moved. The app only suggests a new end; it never moves it by itself. */
+const DAY_HOURS = 8, DAY_MS = DAY_HOURS * 3600000;
+const isWeekend = d => d.getDay() === 0 || d.getDay() === 6;
+const addWorkdays = (d, n) => { let x = new Date(d); while (n > 0) { x = addDays(x, 1); if (!isWeekend(x)) n--; } return x; };
+const workdaysBetween = (a, b) => { if (+b === +a) return 0; if (b < a) return -workdaysBetween(b, a); let n = 0, x = new Date(a); while (x < b) { x = addDays(x, 1); if (!isWeekend(x)) n++; } return n; };
+const fmtWorkDays = ms => { const d = Math.round(ms / DAY_MS * 2) / 2; return d < 0.5 ? 'under half a working day' : d === 0.5 ? 'about half a working day' : `about ${String(d).replace('.5', '½')} working ${d === 1 ? 'day' : 'days'}`; };
 function bucketScope(b, tasks) {
   if (!b || !b.start) return null;
   const todayISO = toISO(new Date());
@@ -966,7 +975,12 @@ function bucketScope(b, tasks) {
   let warn = '';
   if (added.length && slip > 0) warn = `Ends ${nDays(slip)} later than planned. ${nTasks(added.length)} ${added.length === 1 ? 'was' : 'were'} added after it started.`;
   else if (added.length && late) warn = `Past its end date with ${nTasks(open.length)} open, ${openAdded.length} of them added after it started.`;
-  return { ts, added, planned: ts.length - added.length, reasons, open, openAdded, started, slip, late, time, total, moves, warn };
+  // How much of the added work the end date already allows for, and what's left to suggest.
+  const need = time >= 3600000 ? Math.ceil(time / DAY_MS - 0.25) : 0;
+  const covered = b.baseEnd && b.end ? Math.max(0, workdaysBetween(fromISO(b.baseEnd), fromISO(b.end))) : 0;
+  const extra = bucketStatus(b) !== 'done' && b.end && started ? Math.max(0, need - covered) : 0;
+  const suggestEnd = extra ? toISO(addWorkdays(fromISO(b.end), extra)) : null;
+  return { ts, added, planned: ts.length - added.length, reasons, open, openAdded, started, slip, late, time, total, moves, warn, need, covered, extra, suggestEnd };
 }
 
 /* Local storage: everything is written as JSON files in the app's data folder on this computer.
@@ -1038,7 +1052,7 @@ function useTasks(ws = 'product') {
   const [, bumpHist] = useState(0);
   const apply = d => {
     hist.current.mute += 1;
-    setTasks(d.tasks || {});
+    setTasks(tasksIn(d.tasks || {}));
     if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
     if (Array.isArray(d.projects)) setProjects(d.projects);
     setStages(Array.isArray(d.stages) ? d.stages : []);
@@ -1058,7 +1072,7 @@ function useTasks(ws = 'product') {
       if (!e.payload || e.payload.from === WINDOW_LABEL || e.payload.ws !== ws) return;
       remoteArch.current = JSON.stringify(e.payload.data);
       hist.current.mute += 1;
-      setArch(e.payload.data);
+      setArch({ archived: tasksIn(e.payload.data.archived), trash: tasksIn(e.payload.data.trash) });
     }).then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
     return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
   }, []);
@@ -1068,20 +1082,21 @@ function useTasks(ws = 'product') {
     hist.current.mute += 1;
     const tp = {}, m = {};
     Object.entries(patch).forEach(([k, v]) => { if (k.startsWith('t/')) tp[k.slice(2)] = v; else if (k.startsWith('m/')) m[k.slice(2)] = v; });
-    if (Object.keys(tp).length) setTasks(p => { const n = { ...p }; Object.entries(tp).forEach(([id, v]) => { if (v === null) delete n[id]; else n[id] = v; }); return n; });
+    if (Object.keys(tp).length) setTasks(p => { const n = { ...p }; Object.entries(tp).forEach(([id, v]) => { if (v === null) delete n[id]; else n[id] = taskIn(v); }); return n; });
     if (Array.isArray(m.rules)) setRules(m.rules.map(normalizeRule));
     if (Array.isArray(m.projects)) setProjects(m.projects);
     if (Array.isArray(m.stages)) setStages(m.stages);
     if (Array.isArray(m.buckets)) setBuckets(m.buckets);
     if (m.labels && typeof m.labels === 'object') setLabels(m.labels);
-    if (m.settings && typeof m.settings === 'object') setSettings(s => ({ archiveDays: ARCHIVE_DAYS_DEFAULT, ...m.settings, ...(s.watchFolders ? { watchFolders: s.watchFolders } : {}) }));
+    // Watch folders and the Trash cleanup list belong to this PC.
+    if (m.settings && typeof m.settings === 'object') setSettings(s => ({ archiveDays: ARCHIVE_DAYS_DEFAULT, ...m.settings, ...(s.watchFolders ? { watchFolders: s.watchFolders } : {}), ...(s.purgeFiles ? { purgeFiles: s.purgeFiles } : {}) }));
     if (Array.isArray(m.looseDocs)) setLooseDocs(m.looseDocs);
   };
   const cloudArch = patch => {
     hist.current.mute += 1;
     setArch(a => {
       const n = { archived: { ...a.archived }, trash: { ...a.trash } };
-      Object.entries(patch).forEach(([k, v]) => { const f = k.startsWith('a/') ? n.archived : k.startsWith('x/') ? n.trash : null; if (!f) return; const id = k.slice(2); if (v === null) delete f[id]; else f[id] = v; });
+      Object.entries(patch).forEach(([k, v]) => { const f = k.startsWith('a/') ? n.archived : k.startsWith('x/') ? n.trash : null; if (!f) return; const id = k.slice(2); if (v === null) delete f[id]; else f[id] = taskIn(v); });
       return n;
     });
   };
@@ -1098,7 +1113,7 @@ function useTasks(ws = 'product') {
       cloudUn.current.push(cloudLive(storeFor('data', ws), cloudData, d));
       try {
         const raw = await invoke('read_store', { name: storeFor('archive', ws) });
-        if (raw) { a = JSON.parse(raw); setArch({ archived: a.archived || {}, trash: a.trash || {} }); }
+        if (raw) { a = JSON.parse(raw); setArch({ archived: tasksIn(a.archived), trash: tasksIn(a.trash) }); }
       } catch (e) {}
       setArchLoaded(true);
       cloudUn.current.push(cloudLive(storeFor('archive', ws), cloudArch, a));
@@ -1106,16 +1121,17 @@ function useTasks(ws = 'product') {
   }, []);
   useEffect(() => {
     if (!loaded) return;
-    const data = { version: 4, tasks, rules, projects: projects || [], stages, buckets, labels, settings, looseDocs };
+    const data = { version: 4, tasks: tasksOut(tasks), rules, projects: projects || [], stages, buckets, labels, settings, looseDocs };
     if (JSON.stringify(data) === remote.current) return; // came from another window, already saved there
     persist(storeFor('data', ws), data);
     emit('tasks-data', { from: WINDOW_LABEL, ws, data }).catch(() => {});
   }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, loaded]);
   useEffect(() => {
     if (!archLoaded) return;
-    if (JSON.stringify(arch) === remoteArch.current) return;
-    persist(storeFor('archive', ws), { version: 1, ...arch });
-    emit('tasks-arch', { from: WINDOW_LABEL, ws, data: arch }).catch(() => {});
+    const out = { archived: tasksOut(arch.archived), trash: tasksOut(arch.trash) };
+    if (JSON.stringify(out) === remoteArch.current) return;
+    persist(storeFor('archive', ws), { version: 1, ...out });
+    emit('tasks-arch', { from: WINDOW_LABEL, ws, data: out }).catch(() => {});
   }, [arch, archLoaded]);
 
   useEffect(() => {
@@ -1128,21 +1144,44 @@ function useTasks(ws = 'product') {
     clearTimeout(h.timer);
     h.timer = setTimeout(() => { if (h.pending) { h.past.push(h.pending); if (h.past.length > 30) h.past.shift(); h.future = []; h.pending = null; bumpHist(x => x + 1); } }, 700);
   }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch, loaded, archLoaded]);
-  const restoreSnap = sn => {
+  // Undo and redo put back only what you changed (0.20), so a teammate's newer change to the same
+  // task or to another field is never wiped out.
+  const restoreSnap = (sn, from) => {
     hist.current.mute += 1;
-    setTasks(sn.tasks); setRules(sn.rules); setProjects(sn.projects); setStages(sn.stages); setBuckets(sn.buckets);
-    setLabels(sn.labels); setSettings(sn.settings); setLooseDocs(sn.looseDocs); setArch(sn.arch);
+    const back = (cur, a, b) => {
+      const n = { ...cur };
+      new Set([...Object.keys(a || {}), ...Object.keys(b || {})]).forEach(id => {
+        const f = (a || {})[id], t = (b || {})[id];
+        if (JSON.stringify(f) === JSON.stringify(t)) return;
+        if (!t) { delete n[id]; return; }
+        if (!f || !n[id]) { n[id] = t; return; }
+        const x = { ...n[id] };
+        new Set([...Object.keys(f), ...Object.keys(t)]).forEach(k => { if (JSON.stringify(f[k]) !== JSON.stringify(t[k])) { if (t[k] === undefined) delete x[k]; else x[k] = t[k]; } });
+        n[id] = x;
+      });
+      return n;
+    };
+    const ch = k => JSON.stringify(from[k]) !== JSON.stringify(sn[k]);
+    setTasks(c => back(c, from.tasks, sn.tasks));
+    if (ch('rules')) setRules(sn.rules);
+    if (ch('projects')) setProjects(sn.projects);
+    if (ch('stages')) setStages(sn.stages);
+    if (ch('buckets')) setBuckets(sn.buckets);
+    if (ch('labels')) setLabels(sn.labels);
+    if (ch('settings')) setSettings(sn.settings);
+    if (ch('looseDocs')) setLooseDocs(sn.looseDocs);
+    setArch(c => ({ archived: back(c.archived, from.arch.archived, sn.arch.archived), trash: back(c.trash, from.arch.trash, sn.arch.trash) }));
   };
   const flushHist = () => { const h = hist.current; clearTimeout(h.timer); if (h.pending) { h.past.push(h.pending); h.future = []; h.pending = null; } };
   const undo = useCallback(() => {
     flushHist();
     const h = hist.current; if (!h.past.length) return false;
-    const prev = h.past.pop(); h.future.push(h.last); h.last = prev; restoreSnap(prev); bumpHist(x => x + 1); return true;
+    const prev = h.past.pop(), from = h.last; h.future.push(from); h.last = prev; restoreSnap(prev, from); bumpHist(x => x + 1); return true;
   }, []);
   const redo = useCallback(() => {
     flushHist();
     const h = hist.current; if (!h.future.length) return false;
-    const next = h.future.pop(); h.past.push(h.last); h.last = next; restoreSnap(next); bumpHist(x => x + 1); return true;
+    const next = h.future.pop(), from = h.last; h.past.push(from); h.last = next; restoreSnap(next, from); bumpHist(x => x + 1); return true;
   }, []);
 
   // Every save stamps the time, and records when a task was completed (cleared again if it's reopened).
@@ -1155,6 +1194,8 @@ function useTasks(ws = 'product') {
         let doneAt = null;
         if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
         const x = { ...t, updatedAt: now, doneAt };
+        // Who made a task (0.20): members can delete only their own.
+        if (!prev && !x.createdBy && personKey !== 'local') x.createdBy = personKey;
         // Remember when the task joined its bucket, so tasks added after a bucket starts can be told apart.
         // Clearing the bucket keeps the record, so picking the same bucket again doesn't count as new.
         const bk = norm(x.bucket), j = x.bucketJoin;
@@ -1751,6 +1792,7 @@ const SETTINGS_PAGES = [
   { group: 'Account' },
   { id: 'profile', label: 'Profile', icon: 'user' },
   { id: 'members', label: 'Members', icon: 'users' },
+  { id: 'teams', label: 'Roles & teams', icon: 'layers' },
   { group: 'App' },
   { id: 'general', label: 'General', icon: 'gear' },
   { id: 'appearance', label: 'Appearance', icon: 'sun' },
@@ -1819,7 +1861,8 @@ function ShortcutCell({ value, onChange, error }) {
 }
 
 function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onPrefs, shortcutError, wsName, onRenameWorkspace, labels, onLabel, counts = {}, onEditStatuses, onEditBucketStatuses, onEditPlatforms,
-  rules, onRules, projects, watch, onAddFolder, onRemoveFolder, onSubfolders, status, onOpenCloud, onBackup, onRestore, onOpenDataFolder, updater, onWhatsNew, prof, workspaces = [], ws, onSwitchWorkspace, onSignOut }) {
+  rules, onRules, projects, watch, onAddFolder, onRemoveFolder, onSubfolders, status, onOpenCloud, onBackup, onRestore, onOpenDataFolder, updater, onWhatsNew, prof, workspaces = [], ws, onSwitchWorkspace, onSignOut,
+  teamsList = DEFAULT_TEAMS, rolesList = DEFAULT_ROLES, onSaveTeams = () => {}, onSaveRoles = () => {}, teamTaskCounts = {}, onMoveTasks = () => {} }) {
   const [page, setPage] = useState(startPage);
   const [allNotify, setAllNotify] = useState(false);
   useEffect(() => { if (open) setPage(startPage || 'general'); }, [open, startPage]);
@@ -1846,7 +1889,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
   const signedIn = !['off', 'signin', 'loading'].includes(c.phase);
   const navBtn = (p) => {
     const Icon = I[p.icon] || I.gear;
-    const n = p.id === 'notifications' ? onCount : p.id === 'folders' ? watch.length : p.id === 'members' ? 1 : 0;
+    const n = p.id === 'notifications' ? onCount : p.id === 'folders' ? watch.length : p.id === 'members' ? (c.access ? cloudTeamCount() : 1) : 0;
     return (
       <button key={p.id} type="button" onClick={() => setPage(p.id)} aria-current={page === p.id ? 'page' : undefined}
         className={cn('flex h-8 w-full items-center gap-2 rounded-md px-2.5 text-left text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
@@ -1860,7 +1903,8 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
   let body;
   if (page === 'profile') body = <ProfilePage prof={prof} workspaces={workspaces} ws={ws} cloud={c} onManageWorkspace={() => setPage('workspace')}
     onSwitchWorkspace={id => { if (id !== ws) { onClose(); onSwitchWorkspace(id); } }} onSignOut={() => { onClose(); onSignOut(); }} />;
-  else if (page === 'members') body = <MembersPage prof={prof} cloud={c} />;
+  else if (page === 'members') body = <MembersPage prof={prof} cloud={c} teamsList={teamsList} rolesList={rolesList} />;
+  else if (page === 'teams') body = <RolesTeamsPage teamsList={teamsList} rolesList={rolesList} onSaveTeams={onSaveTeams} onSaveRoles={onSaveRoles} taskCounts={teamTaskCounts} onMoveTasks={onMoveTasks} />;
   else if (page === 'general') body = <>
     {head('General')}
     <SRow label="Keep running in the tray" info="Closing the window hides Tasks instead of quitting, so quick capture and watch folders keep working. Quit from the tray icon.">
@@ -1881,7 +1925,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     </SRow>
   </>;
   else if (page === 'notifications') body = <>
-    {head('Notify me when a task', <InfoTip label="About notifications">Desktop notifications for {wsName}. Several at once arrive as one, like “12 tasks are overdue”.</InfoTip>)}
+    {head('Notify me when a task', <InfoTip label="About notifications">Desktop notifications for {wsName}. Several at once arrive as one, like “12 tasks are overdue”.{c.access ? ' These are just yours, on this PC, and only cover your tasks and your teams’ tasks.' : ''}</InfoTip>)}
     {shownTriggers.map(id => {
       const on = notifyOn(id), r = notifyRules.find(x => x.trigger === id);
       return (
@@ -2061,6 +2105,46 @@ function useProfile() {
   return { ...state, update, updateUser };
 }
 
+/* Timers per person (0.20). Each person's timer and time log live inside the task under their own
+   field, "tm_<person>": { at, dev, spent, ss }, so two people timing the same task never clash and the
+   cloud merges them field by field. Time logged before 0.20 stays in the old fields (timeSpent, sessions).
+   In memory a task shows *your* timer in the usual fields (timerStartedAt, timerDevice), with everyone's
+   time added up in timeSpent and sessions; it's turned back into the saved form before it's written. */
+let personKey = (() => { try { return localStorage.getItem('tasks-person') || 'local'; } catch (e) { return 'local'; } })();
+const setPersonKey = k => { if (!k || k === personKey) return; personKey = k; try { localStorage.setItem('tasks-person', k); } catch (e) {} };
+const TM = 'tm_';
+const sameSess = (a, b) => a.s === b.s && a.e === b.e;
+function taskIn(st) {
+  if (!st || typeof st !== 'object') return st;
+  const mineK = TM + personKey, keys = Object.keys(st).filter(k => k.startsWith(TM));
+  if (st._t0 !== undefined) return st;
+  if (!keys.length && personKey === 'local') return st; // not in a team: the old fields are the whole story
+  const t0 = { timeSpent: st.timeSpent, sessions: st.sessions, timerStartedAt: st.timerStartedAt, timerDevice: st.timerDevice };
+  const mine = st[mineK] || {};
+  let spent = t0.timeSpent || 0, sessions = [...(t0.sessions || [])];
+  keys.forEach(k => { const x = st[k] || {}; spent += x.spent || 0; (x.ss || []).forEach(y => sessions.push(k === mineK ? y : { ...y, by: k.slice(TM.length) })); });
+  const legacyMine = t0.timerStartedAt && timerHere(t0) && !mine.at;
+  return { ...st, timeSpent: spent, sessions, timerStartedAt: legacyMine ? t0.timerStartedAt : (mine.at || null), timerDevice: legacyMine ? t0.timerDevice : (mine.dev || undefined), _t0: t0 };
+}
+function taskOut(v) {
+  if (!v || typeof v !== 'object' || v._t0 === undefined) return v;
+  const { _t0: t0, ...rest } = v, mineK = TM + personKey;
+  const others = Object.keys(v).filter(k => k.startsWith(TM) && k !== mineK);
+  const othersSpent = others.reduce((n, k) => n + ((v[k] || {}).spent || 0), 0);
+  const known = [...(t0.sessions || []), ...others.flatMap(k => (v[k] || {}).ss || [])];
+  const was = v[mineK] || {};
+  const mineSs = (v.sessions || []).filter(x => !x.by && !known.some(y => sameSess(x, y)));
+  const legacyMine = t0.timerStartedAt && timerHere(t0) && !was.at;
+  let legacyAt = t0.timerStartedAt, legacyDev = t0.timerDevice, at = v.timerStartedAt || null;
+  if (legacyMine) { if (at === t0.timerStartedAt) at = null; else { legacyAt = null; legacyDev = undefined; } }
+  const spent = Math.max(0, (v.timeSpent || 0) - (t0.timeSpent || 0) - othersSpent);
+  const mine = { at, dev: at ? (v.timerDevice || DEVICE_ID) : null, spent, ss: mineSs };
+  const out = { ...rest, timeSpent: t0.timeSpent, sessions: t0.sessions, timerStartedAt: legacyAt, timerDevice: legacyDev };
+  if (v[mineK] !== undefined || at || spent || mineSs.length) out[mineK] = mine;
+  return out;
+}
+const tasksIn = m => { const n = {}; Object.entries(m || {}).forEach(([k, t]) => { n[k] = taskIn(t); }); return n; };
+const tasksOut = m => { const n = {}; Object.entries(m || {}).forEach(([k, t]) => { n[k] = taskOut(t); }); return n; };
 // A timer started on this PC (timers from before 0.19 have no PC and count as this one's).
 const timerHere = t => !t.timerDevice || t.timerDevice === DEVICE_ID;
 const elapsed = t => (t.timeSpent || 0) + (t.timerStartedAt ? Date.now() - t.timerStartedAt : 0);
@@ -3004,16 +3088,16 @@ function CellEditor({ edit, task, ctx, onClose }) {
     placeholder = 'Search or add a person…';
     items = [
       { key: '', text: 'Unassigned', node: <span className="text-muted-foreground">Unassigned</span>, on: !task.assignee, pick: () => set({ assignee: '' }) },
-      ...ctx.people.map(n => ({ key: n, text: n, node: <span className="flex min-w-0 items-center gap-1.5"><Avatar name={n} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{n}</span></span>, on: norm(task.assignee) === norm(n), pick: () => set({ assignee: n }) })),
+      ...ctx.people.map(n => ({ key: n, text: n, search: peopleMeta[n] || '', node: <span className="flex min-w-0 items-center gap-1.5"><Avatar name={n} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate">{n}</span>{peopleMeta[n] && <span className="ml-auto truncate pl-2 text-xs text-muted-foreground">{peopleMeta[n].split(' · ')[0]}</span>}</span>, on: norm(task.assignee) === norm(n), pick: () => set({ assignee: n }) })),
     ];
-    creates = [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Assign to</span><Avatar name={name} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate font-medium">{name}</span></span>,
+    creates = teamMode ? [] : [{ key: 'new', text: name, node: <span className="flex min-w-0 items-center gap-1.5"><I.plus className="size-3.5 shrink-0 text-muted-foreground" /><span className="text-muted-foreground">Assign to</span><Avatar name={name} className="h-5 w-5 [&_span]:text-[9px]" /><span className="truncate font-medium">{name}</span></span>,
       pick: () => set({ assignee: name }) }];
   } else if (edit.field === 'priority') {
     items = ['high', 'normal', 'low'].map(x => ({ key: x, text: P[x].label, node: <PriorityPill priority={x} />, on: (task.priority || 'normal') === x, pick: () => set({ priority: x }) }));
   }
 
   const searchable = edit.field !== 'priority' && edit.field !== 'deadline';
-  const shown = items.filter(i => !nq || norm(i.text).includes(nq));
+  const shown = items.filter(i => !nq || norm(i.text).includes(nq) || (i.search && norm(i.search).includes(nq)));
   const list = [...shown, ...(name && !items.some(i => norm(i.text) === nq) ? creates : [])];
   const onKey = e => {
     if (e.key === 'ArrowDown') { e.preventDefault(); setHi(h => Math.min(h + 1, list.length - 1)); }
@@ -3271,7 +3355,7 @@ const formFrom = (task, stages) => ({
 });
 
 // Every change is saved automatically: choices right away, typing after a short pause.
-function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard }) {
+function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAccept, onLinkExisting, labels = LABEL_DEFAULTS, buckets = [], mode = 'side', onMode, onPopOut, open, task, people, projects, stages = [], rules, defaultProject, defaultAssignee, dropRef, allTasks, onOpen, onPatch, onClose, onSave, onDelete, onDiscardEmpty, onToggle, onReset, storageOk, busy, onUpload, onAttach, onPreview, onDownload, onRemoveFile, onDiscard, members = null, teams = null }) {
   const [form, setForm] = useState(null);
   const titleRef = useRef(null);
   const pending = useRef({}), pendingId = useRef(null), timer = useRef(null), saveRef = useRef(onSave);
@@ -3412,8 +3496,20 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
               </div>
             </PropRow>
             <PropRow label={labels.assignee} htmlFor="t-assignee">
-              <Combobox id="t-assignee" value={form.assignee} onChange={set('assignee')} options={people} placeholder="Add assignee" hideIcon inputClassName={ghostField} />
+              {members ? (
+                // In a team (0.20): pick a member. Type to find someone by name, role or team.
+                <Select id="t-assignee" variant="ghost" value={(memberFor(form.assignee, members) || {}).name || form.assignee} placeholder="Add assignee" searchable
+                  onChange={v => change({ assignee: v })}
+                  options={[{ value: '', label: 'Unassigned' }, ...(form.assignee && !memberFor(form.assignee, members) ? [{ value: form.assignee, label: form.assignee }] : []),
+                    ...members.map(m => ({ value: m.name, label: m.name, search: peopleMeta[m.name] || '', icon: <Avatar name={m.name} className="h-5 w-5 [&_span]:text-[9px]" /> }))]} />
+              ) : <Combobox id="t-assignee" value={form.assignee} onChange={set('assignee')} options={people} placeholder="Add assignee" hideIcon inputClassName={ghostField} />}
             </PropRow>
+            {teams && (
+              <PropRow label="Teams" htmlFor="t-teams">
+                <Select id="t-teams" variant="ghost" multiple value={(task && task.teams) || []} placeholder="Add teams" searchable={false} renderValue={sel => <span className="truncate">{sel.map(o => o.label).join(', ')}</span>}
+                  onChange={v => change({ teams: v })} options={teams.map(t => ({ value: t.id, label: t.name }))} />
+              </PropRow>
+            )}
             <PropRow label={labels.bucket} htmlFor="t-bucket">
               <Combobox id="t-bucket" value={form.bucket} onChange={set('bucket')} options={buckets} placeholder={`Add ${labels.bucket.toLowerCase()}`} hideIcon inputClassName={ghostField}
                 createLabel={v => `Use “${v}”`} icon={() => <I.layers className="text-muted-foreground" />} />
@@ -4322,6 +4418,43 @@ function BucketStatusesDialog({ open, buckets, noun = 'Bucket', onClose, onSave 
 /* Buckets page: a compact list (name and description, status, progress). Click a bucket for its details. */
 /* Every page uses the same header: a title with a short summary, then one bar with filter tabs on
    the left and the page's own controls on the right. */
+// The Tasks title doubles as the switch between your tasks, everyone's, or one team's (0.20).
+function ScopeMenu({ scope, onScope, teams, myTeams }) {
+  const [open, setOpen] = useState(false);
+  const a = useRef(null), p = useRef(null);
+  useDismiss(open, setOpen, [a, p]);
+  const tid = scope.startsWith('team:') ? scope.slice(5) : null;
+  const title = scope === 'all' ? 'Everyone’s tasks' : tid ? `${(teams.find(t => t.id === tid) || {}).name || 'Team'} tasks` : 'Tasks for me';
+  const pick = v => { onScope(v); setOpen(false); };
+  const row = 'flex w-full cursor-default select-none items-center gap-2.5 rounded-md px-2 text-left outline-none transition-colors hover:bg-accent focus-visible:bg-accent';
+  const check = on => <span className="flex w-3.5 shrink-0 justify-center">{on && <I.check className="size-3.5" />}</span>;
+  return (
+    <>
+      <button ref={a} type="button" aria-haspopup="menu" aria-expanded={open} onClick={e => { e.stopPropagation(); setOpen(o => !o); }}
+        className="-ml-2 inline-flex items-center gap-1.5 rounded-lg px-2 hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        {title}<I.down className={cn('size-4 text-muted-foreground transition-transform', open && 'rotate-180')} />
+      </button>
+      <Floating anchorRef={a} panelRef={p} open={open} align="start" className="w-[280px] p-1">
+        <div role="menu" aria-label="Show tasks" onClick={e => e.stopPropagation()} className="text-sm font-normal tracking-normal">
+          <button type="button" role="menuitemradio" aria-checked={scope === 'me'} onClick={() => pick('me')} className={cn(row, 'py-2')}>
+            <span className="min-w-0 flex-1"><span className="block">For me</span><span className="block truncate text-xs text-muted-foreground">{myTeams.length ? `${myTeams.join(', ')} and anything that’s yours` : 'Anything assigned to you or made by you'}</span></span>{check(scope === 'me')}
+          </button>
+          <button type="button" role="menuitemradio" aria-checked={scope === 'all'} onClick={() => pick('all')} className={cn(row, 'py-2')}>
+            <span className="min-w-0 flex-1"><span className="block">Everyone</span><span className="block text-xs text-muted-foreground">Every task across all teams</span></span>{check(scope === 'all')}
+          </button>
+          <div className="-mx-1 my-1 h-px bg-muted" />
+          <div className="px-2 pb-0.5 pt-1 text-xs text-muted-foreground">Just one team</div>
+          {teams.map(t => (
+            <button key={t.id} type="button" role="menuitemradio" aria-checked={tid === t.id} onClick={() => pick('team:' + t.id)} className={cn(row, 'h-[30px]')}>
+              <span className="min-w-0 flex-1 truncate">{t.name}</span>{check(tid === t.id)}
+            </button>
+          ))}
+          <div className="px-2 pb-1.5 pt-1 text-xs text-muted-foreground">Ctrl + 1 and Ctrl + 2 switch for you</div>
+        </div>
+      </Floating>
+    </>
+  );
+}
 const PageTitle = ({ title, children }) => (
   <div className="flex min-w-0 flex-wrap items-baseline gap-x-3.5 gap-y-1">
     <h1 className="shrink-0 text-[28px] font-semibold leading-9 tracking-tight">{title}</h1>
@@ -4523,7 +4656,7 @@ const ReasonBar = ({ reasons, total }) => (
     {reasons.map(r => <div key={r.id} className={r.dot} style={{ width: `${(r.n / total) * 100}%` }} />)}
   </div>
 );
-function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit }) {
+function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit, onMoveEnd }) {
   const [all, setAll] = useState(false);
   if (!sc) return (
     <div className="mt-4 rounded-lg border border-dashed px-3 py-2.5 text-xs text-muted-foreground">
@@ -4553,6 +4686,22 @@ function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit }) {
         </div>
       )}
       {sc.time >= 60000 && <div className="mt-2 text-xs text-muted-foreground">{fmtShort(sc.time)} spent on added tasks{sc.total >= 60000 ? `, ${Math.round(sc.time / sc.total * 100)}% of this ${lower}’s time` : ''}</div>}
+      {sc.need > 0 && (
+        <div className={cn('mt-2 rounded-lg border px-2.5 py-2 text-xs', sc.extra ? 'border-amber-500/40 bg-amber-500/5' : '')} aria-label="Impact">
+          <div className="text-foreground">Added tasks took {fmtShort(sc.time)}, {fmtWorkDays(sc.time)}.</div>
+          <div className="mt-0.5 text-muted-foreground">
+            {sc.extra
+              ? (sc.covered ? `The end has moved ${nDays(sc.covered)} for it so far, ${sc.extra} short.` : 'The end hasn’t moved for it.') + ` Counting ${DAY_HOURS}h a day, Monday to Friday.`
+              : `The end has already moved ${nDays(sc.covered)}, which covers it.`}
+          </div>
+          {sc.extra > 0 && onMoveEnd && (
+            <div className="mt-2 flex items-center gap-2">
+              <Button size="sm" variant="outline" onClick={() => onMoveEnd(b, sc.suggestEnd)}>Move end to {shortDate(sc.suggestEnd)}</Button>
+              <span className="text-muted-foreground">+{nDays(sc.extra)}, from {shortDate(b.end)}</span>
+            </div>
+          )}
+        </div>
+      )}
       {sc.moves.length > 0 && (
         <div className="mt-1 text-xs text-muted-foreground">
           End moved {sc.moves.length === 1 ? 'once' : `${sc.moves.length} times`}: {sc.moves.slice(-3).map(m => `${shortDate(m.from)} → ${shortDate(m.to)}`).join(', ')}{sc.moves.length > 3 ? ', …' : ''}
@@ -4579,7 +4728,7 @@ function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit }) {
   );
 }
 
-function BucketsView({ list, tasks, scopeTasks, onSetReason, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus, onEditStatuses }) {
+function BucketsView({ list, tasks, scopeTasks, onSetReason, onMoveEnd, noun, onNew, onEdit, onDelete, onOpen, onStatus, onPlan, onOpenTask, onAddTask, focus, onEditStatuses }) {
   const [tab0, setTab] = useState('active');
   const tab = tab0 === 'active' || BS[tab0] ? tab0 : 'active';
   const [mode, setModeRaw] = useState(() => { try { return localStorage.getItem('tasks-buckets-view') || 'list'; } catch (e) { return 'list'; } });
@@ -4684,7 +4833,7 @@ function BucketsView({ list, tasks, scopeTasks, onSetReason, noun, onNew, onEdit
           {prop('Progress', progress(st, true))}
           {created && prop('Created', created)}
         </div>
-        {!cur.none && <ScopePanel b={b} sc={cur.sc} lower={lower} onOpenTask={onOpenTask} onSetReason={onSetReason} onEdit={() => onEdit(b)} />}
+        {!cur.none && <ScopePanel b={b} sc={cur.sc} lower={lower} onOpenTask={onOpenTask} onSetReason={onSetReason} onEdit={() => onEdit(b)} onMoveEnd={onMoveEnd} />}
         <div className="mt-4">
           <div className="mb-1 flex items-center justify-between text-xs font-medium text-muted-foreground"><span>Open tasks · {st.open.length}</span>{!cur.none && <button type="button" className="hover:text-foreground" onClick={() => onOpen(b.name)}>Show in Tasks</button>}</div>
           {st.open.length ? <div className="grid max-h-72 overflow-y-auto">{st.open.slice().sort((x, y) => (x.deadline || '9999').localeCompare(y.deadline || '9999')).map(taskRow)}</div>
@@ -5404,7 +5553,7 @@ function buildScope({ tasks, buckets, S0, E0, includeTime, noun }) {
     if (!wk.length && !movedWk.length && !(active && sc.added.length)) return;
     const parts = [];
     if (sc.added.length) parts.push(`${nTasks(sc.added.length)} added after it started${wk.length && wk.length !== sc.added.length ? ` (${wk.length} this week)` : wk.length ? ' (all this week)' : ''}: ${reasonText(sc.reasons)}`);
-    if (includeTime && sc.time >= 60000) parts.push(`${fmtShort(sc.time)} spent on them${sc.total >= 60000 ? ` (${Math.round(sc.time / sc.total * 100)}% of its time)` : ''}`);
+    if (includeTime && sc.time >= 60000) parts.push(`${fmtShort(sc.time)} spent on them${sc.total >= 60000 ? ` (${Math.round(sc.time / sc.total * 100)}% of its time)` : ''}${sc.need ? `, ${fmtWorkDays(sc.time)}` : ''}`);
     if (sc.slip > 0) parts.push(`ends ${fmtMD(fromISO(b.end))}, ${nDays(sc.slip)} later than the original ${fmtMD(fromISO(b.baseEnd))}${sc.moves.length > 1 ? ` (moved ${sc.moves.length} times)` : ''}`);
     else if (sc.late) parts.push(`past its end date (${fmtMD(fromISO(b.end))}) with ${nTasks(sc.open.length)} open`);
     else if (b.baseEnd && b.end) parts.push(`still ends ${fmtMD(fromISO(b.end))} as planned`);
@@ -5703,6 +5852,20 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.20.1', title: 'Taskit is a team app now', img: 'members.webp',
+    points: ['Everyone shares one team workspace: the same tasks, buckets, documents and automations, synced live. Your watch folders, theme, sidebar and notification choices stay yours.', 'Settings › Members shows who’s on the team, their role, teams and access (Owner, Admin or Member).'] },
+  { v: '0.20.1', title: 'Invite people', img: 'invite-people.webp',
+    points: ['Invite people opens a small window: add their emails, pick a role and teams, and choose Member or Admin. Only invited emails can sign in.', 'We don’t send any email, so give them a quick heads-up. The ⋯ next to an invite copies a ready-made message.'] },
+  { v: '0.20.1', title: 'Tasks for me, or everyone’s', img: 'team-scope.webp',
+    points: ['Click the title on Tasks to switch between Tasks for me (your teams plus anything that’s yours), Everyone, or just one team.', 'Ctrl + 1 and Ctrl + 2 switch between For me and Everyone. Tag a task with teams in its panel so the right people see it.'] },
+  { v: '0.20.1', title: 'Roles and teams, your way', img: 'roles-teams.webp',
+    points: ['Settings › Roles & teams lists your teams and job titles. The Owner and Admins can add, rename or delete them, and a rename updates everyone at once.', 'Deleting one that’s in use asks where its people and tasks should go.'] },
+  { v: '0.20.1', title: 'A friendly first run', img: 'welcome.webp',
+    points: ['New teammates sign in with Google, check their name, photo and time zone, and they’re in.', 'People who weren’t invited get a kind note and a message they can copy for their admin.'] },
+  { v: '0.20.1', title: 'A quick tour for each team', img: 'team-tour.webp',
+    points: ['Right after the first run, a three-step tour shows what matters for their team: designers, developers, QA, marketing or leads.', 'Skip it anytime, and replay it from ⋯ › Team tour.'] },
+  { v: '0.19.15', title: 'What added tasks cost', img: 'scope-impact.webp',
+    points: ['A bucket’s Scope section turns the time spent on added tasks into working days, at 8 hours a day, Monday to Friday.', 'If the end hasn’t moved enough to cover it, Move end suggests a new date. Nothing moves until you press it, and the move is logged against the original end. The weekly report shows the working days too.'] },
   { v: '0.19.14', title: 'A new top of the window', img: 'title-bar.webp',
     points: ['The Windows title bar is gone. A slim top row shows where you are and the cloud status, with the app’s own minimize, maximize and close buttons. Close turns red when you point at it.', 'Each page has a big title, with search, the theme button, ⋯ and Create task on the right. Drag the top row to move the window, and double-click it to maximize.'] },
   { v: '0.19.14', title: 'Running timers, up top', img: 'timers-topbar.webp',
@@ -6128,18 +6291,36 @@ function FilterChips({ f, sort }) {
   );
 }
 
-function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null }) {
+function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null,
+  teamsList = DEFAULT_TEAMS, rolesList = DEFAULT_ROLES, onSaveTeams = () => {}, onSaveRoles = () => {}, onReplayTour = () => {} }) {
   const me = prof.data.user;
+  const team = useTeam();
+  const canAdmin = !team.on || team.admin;
+  const canAdminRef = useRef(canAdmin); canAdminRef.current = canAdmin;
+  // Statuses, buckets, platforms, automations, column names and team settings: Owner and Admins only (0.20).
+  const denied = () => toast('That one’s for admins', 'Only the Owner and Admins can change team settings. Ask one of them if it needs a tweak.');
+  const guard = f => (...a) => { if (!canAdminRef.current) { denied(); return; } return f(...a); };
   const {
-    tasks, saveMany, remove, rules: storedRules, saveRules: storeRules, projects: storedProjects, saveProjects, stages, saveStages, loaded,
-    buckets: storedBuckets, saveBuckets, labels, saveLabels, settings, saveSettings, looseDocs, saveLooseDocs,
-    archived, trash, trashTasks, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
+    tasks, saveMany, remove, rules: storedRules, saveRules: storeRules0, projects: storedProjects, saveProjects: saveProjects0, stages, saveStages: saveStages0, loaded,
+    buckets: storedBuckets, saveBuckets: saveBuckets0, labels, saveLabels: saveLabels0, settings, saveSettings, looseDocs, saveLooseDocs,
+    archived, trash, trashTasks: trashTasks0, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
   } = useTasks(ws);
+  const storeRules = guard(storeRules0), saveProjects = guard(saveProjects0), saveStages = guard(saveStages0), saveBuckets = guard(saveBuckets0), saveLabels = guard(saveLabels0);
+  const saveTeamSettings = guard(saveSettings);
+  // Members delete only tasks they made; the Owner and Admins can delete any.
+  const trashTasks = ids => {
+    const all0 = { ...tasksRef.current, ...archived };
+    const ok = ids.filter(id => canDelete(all0[id], team));
+    if (ok.length < ids.length) toast(ok.length ? `${ids.length - ok.length} of those aren’t yours to delete` : 'That one isn’t yours to delete', 'You can delete tasks you made. The Owner and Admins can delete any task.');
+    if (ok.length) trashTasks0(ok);
+  };
+  const askDelete = id => { const t = tasksRef.current[id]; if (!canDelete(t, team)) { toast('That one isn’t yours to delete', 'You can delete tasks you made. The Owner and Admins can delete any task.'); return; } setConfirmId(id); };
   applyBucketStatuses(settings.bucketStatuses);
   STAGES_NOW = stages;
   // Automations as this version reads them (see ruleIn / ruleOut); saved back in a form older PCs skip safely.
   const rules = useMemo(() => (storedRules || []).map(ruleIn), [storedRules]);
   const saveRules = list => storeRules(list.map(ruleOut));
+  const teamRef = useRef(team); teamRef.current = team;
   const doUndo = () => { if (undo()) toast('Undone'); else toast('Nothing to undo'); };
   const doRedo = () => { if (redo()) toast('Redone'); else toast('Nothing to redo'); };
   undoHook.current = undo;
@@ -6161,6 +6342,16 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [prefs, setPrefs] = useState(readPrefs);
   const savePrefs = p => setPrefs(x => { const n = { ...x, ...p }; try { localStorage.setItem('tasks-prefs', JSON.stringify(n)); } catch (e) {} return n; });
+  /* Notifications are personal in a team (0.20): yours live on this PC, start from the team's old ones,
+     and only cover your tasks and your teams' tasks. The team's own notify automations are set aside. */
+  const isNote = r => r.action === 'notify' && r.scope !== 'bucket';
+  const notifyKey = 'notify-' + ws;
+  useEffect(() => {
+    if (team.on && !Array.isArray(prefs[notifyKey]) && rules.length) savePrefs({ [notifyKey]: rules.filter(isNote).map(r => ({ ...r, id: 'pn-' + r.id })) });
+  }, [team.on, rules.length]);
+  const myNotes = useMemo(() => (team.on ? (prefs[notifyKey] || []) : null), [team.on, prefs[notifyKey]]);
+  const teamTaskCounts = useMemo(() => { const c = {}; Object.values(tasks).forEach(t => (t.teams || []).forEach(x => { c[x] = (c[x] || 0) + 1; })); return c; }, [tasks]);
+  const runRules = useMemo(() => team.on ? [...rules.filter(r => !isNote(r)), ...(myNotes || []).map(r => ({ ...normalizeRule(r), personal: true }))] : rules, [rules, team.on, myNotes]);
   const [quickAdd, setQuickAdd] = useState(false);
   const [shortcutError, setShortcutError] = useState('');
   const [addTime, setAddTime] = useState(null);
@@ -6239,7 +6430,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const runs = all.filter(t => t.timerStartedAt).sort((a, b) => a.timerStartedAt - b.timerStartedAt), running = runs[0];
   useEffect(() => { if (!running) return; const i = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(i); }, [!!running]);
 
-  const people = useMemo(() => [...new Set([me.name, ...all.map(t => (t.assignee || '').trim())].filter(Boolean))].sort((a, b) => a.localeCompare(b)), [all, me.name]);
+  // In a team, people are the members (typed names from before stay until they're linked to someone).
+  teamMode = team.on;
+  peopleMeta = useMemo(() => Object.fromEntries(team.members.map(m => [m.name, [roleName(m.role, rolesList), ...teamNames(m.teams, teamsList), m.email].filter(Boolean).join(' · ')])), [team.members, rolesList, teamsList]);
+  const people = useMemo(() => team.on
+    ? [...new Set([...team.members.map(m => m.name), ...all.map(t => (t.assignee || '').trim()).filter(n => n && !memberFor(n, team.members))].filter(Boolean))].sort((a, b) => a.localeCompare(b))
+    : [...new Set([me.name, ...all.map(t => (t.assignee || '').trim())].filter(Boolean))].sort((a, b) => a.localeCompare(b)), [all, me.name, team.on, team.members]);
   // Managed projects, plus any project name still used by a task or automation.
   const projectList = useMemo(() => {
     const list = storedProjects.map(p => ({ ...p }));
@@ -6318,6 +6514,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [bucketList, all]);
   const [bucketFilter, setBucketFilter] = useState([]);
   const [dueFilter, setDueFilter] = useState('');
+  // "Tasks for me" (0.20): 'me', 'all', or 'team:<id>'. Remembered on this PC.
+  const [scope, setScope0] = useState(() => { try { return localStorage.getItem('tasks-scope') || 'me'; } catch (e) { return 'me'; } });
+  const setScope = v => { setScope0(v); try { localStorage.setItem('tasks-scope', v); } catch (e) {} };
+  const inScope = t => !team.on || scope === 'all' || (scope.startsWith('team:') ? (t.teams || []).includes(scope.slice(5)) : isForMe(t, team));
+  useEffect(() => {
+    if (!team.on) return;
+    const k = e => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+      if (e.key === '1' || e.key === '2') { e.preventDefault(); setScope(e.key === '1' ? 'me' : 'all'); setView('tasks'); }
+    };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, [team.on]);
   const [cleanUpOpen, setCleanUpOpen] = useState(false);
   const COLS_KEY = 'tasks-cols-' + ws;
   // Column widths, hidden columns and (0.19.14) column order are kept on this PC, like before.
@@ -6448,6 +6657,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     toast(`${b.name}: ${BS[status].label}`, made.length ? `${made.length === 1 ? `“${made[0].title}” was` : `${made.length} tasks were`} created.` : undefined, { undo: true });
   };
   // Timeline: set (or clear) a bucket's planned start and end dates.
+  // From the Scope section's suggestion: the move is logged against the original end like any other.
+  const moveBucketEnd = (b, end) => {
+    const cur = bucketList.find(x => norm(x.name) === norm(b.name)); if (!cur || !end || cur.end === end) return;
+    const from = cur.end;
+    saveBuckets([...bucketList.filter(x => x !== cur), bucketRecord(cur, { end })]);
+    toast(`${cur.name} now ends ${shortDate(end)}`, `Moved from ${shortDate(from)} for the added tasks.`, { undo: true });
+  };
   const planBucket = (name, start, end) => {
     const b = bucketList.find(x => norm(x.name) === norm(name)); if (!b || (b.start === start && b.end === end)) return;
     saveBuckets([...bucketList.filter(x => x !== b), bucketRecord(b, { start, end })]);
@@ -6492,7 +6708,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       else moves.push({ at: now, from: b.trackedEnd || b.baseEnd, to: b.end, added: scopeRef.current.filter(t => norm(t.bucket) === norm(b.name) && isAddedLater(t, b)).length });
       return { ...b, trackedEnd: b.end, moves };
     });
-    if (changed) saveBuckets(next);
+    if (changed && canAdminRef.current) saveBuckets0(next);
   }, [storedBuckets, loaded, dayKey]);
   // A heads-up when a task is added to a bucket that has already started.
   const lateSeen = useRef(null);
@@ -6542,7 +6758,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const saveBucketStatuses = list => {
     const ids = new Set(list.map(x => x.id)), first = (list.find(x => x.id !== 'done') || list[0]).id;
     const moved = bucketList.filter(b => !ids.has(bucketStatus(b)));
-    saveSettings(x => ({ ...x, bucketStatuses: list }));
+    saveTeamSettings(x => ({ ...x, bucketStatuses: list }));
     if (moved.length) saveBuckets(bucketList.map(b => moved.includes(b) ? bucketRecord(b, { status: first }) : b));
     setBucketStatusesOpen(false);
     toast(`${labels.bucket} statuses saved`, moved.length ? `${moved.length} ${moved.length === 1 ? labels.bucket.toLowerCase() + ' moved' : plural(labels.bucket.toLowerCase()) + ' moved'} to ${list.find(x => x.id === first).label}.` : undefined, { undo: true });
@@ -6575,10 +6791,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   }, [bucketEnds, tasks, loaded]);
   const scoped = useMemo(() => {
     const q = norm(query);
-    return all.filter(t => (!projectFilter.length || projectFilter.some(v => v === 'none' ? !t.project : t.project === v))
+    return all.filter(t => inScope(t) && (!projectFilter.length || projectFilter.some(v => v === 'none' ? !t.project : t.project === v))
       && (!bucketFilter.length || bucketFilter.some(v => v === 'none' ? !t.bucket : norm(t.bucket) === norm(v)))
       && (!q || [t.title, t.description, t.assignee, t.project, t.bucket, statusLabel(t, stages), ...(t.checklist || []).map(c => c.text), ...(t.files || []).map(f => f.name)].some(v => norm(v).includes(q))));
-  }, [all, projectFilter, bucketFilter, query]);
+  }, [all, projectFilter, bucketFilter, query, scope, team.on, team.me, team.members]);
   // Counts beside each filter option: open tasks in this workspace.
   const filterCounts = useMemo(() => {
     const c = { bucket: {}, project: {}, due: {} };
@@ -6623,7 +6839,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
     if (!prefsRef.current.oneAtATime || next.status !== 'doing' || (prev && prev.status === 'doing')) return [];
-    return Object.values(tasks).filter(o => o.id !== next.id && o.status === 'doing')
+    // In a team it only touches your own tasks (assigned to you, or unassigned ones you made).
+    const tm = teamRef.current, mine = o => { if (!tm.on) return true; const m = memberFor(o.assignee, tm.members); return m ? m.id === tm.uid : !o.assignee && o.createdBy === tm.uid; };
+    return Object.values(tasks).filter(o => o.id !== next.id && o.status === 'doing' && mine(o))
       .map(o => ({ ...stopT(o), status: 'blocked', blockedBy: next.id }));
   };
   const merge = list => Object.values(list.reduce((m, t) => { m[t.id] = { ...(m[t.id] || {}), ...t }; return m; }, {}));
@@ -6704,7 +6922,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         const have = new Set((t.checklist || []).map(c => norm(c.text)));
         const add = r.target.split(/[,\n]/).map(x => x.trim()).filter(x => x && !have.has(norm(x))).map(text => ({ id: newId(), text, done: false }));
         if (add.length) t = { ...t, checklist: [...(t.checklist || []), ...add] };
-      } else if (r.action === 'notify') notes.push({ kind: r.trigger, message: r.target || '', taskId: t.id, taskTitle: t.title });
+      } else if (r.action === 'notify') { if (!r.personal || isForMe(t, teamRef.current)) notes.push({ kind: r.trigger, message: r.target || '', taskId: t.id, taskTitle: t.title }); }
     }
     return { task: t, created, notes };
   };
@@ -6719,7 +6937,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     let task = next, before = prev;
     const created = [], fired = [], notes = [], others = [];
     for (let pass = 0; pass < 3; pass++) {
-      const list = rules.filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r, task, before) && condOk(r, before || task));
+      const list = runRules.filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r, task, before) && condOk(r, before || task));
       if (!list.length) break;
       const res = runActions(task, list, { noStart: depth > 0 });
       before = task; task = res.task;
@@ -6740,7 +6958,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   };
   // "Its bucket moves to [status]": run those automations on every task in the bucket.
   const bucketTaskRules = (b, status) => {
-    const list = rules.filter(r => r.enabled && r.scope !== 'bucket' && r.trigger === 'bucket_moved' && (r.when || {}).bstatus === status);
+    const list = runRules.filter(r => r.enabled && r.scope !== 'bucket' && r.trigger === 'bucket_moved' && (r.when || {}).bstatus === status);
     if (!list.length) return [];
     return Object.values(tasksRef.current).filter(t => !t.inbox && norm(t.bucket) === norm(b.name)).flatMap(t => {
       const fire = list.filter(r => ruleMatches(r, t) && condOk(r, t));
@@ -6766,11 +6984,13 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   // if you change the deadline, "has been in" again after the status changes, "timer runs longer" once per run.
   useEffect(() => {
     if (!loaded || standaloneId) return; // only the main window runs time-based automations
-    const scan = () => {
-      const list = rules.filter(r => r.enabled && r.scope !== 'bucket' && TIME_TRIGGERS.includes(r.trigger));
+    let busy = false;
+    const scan = async () => {
+      if (busy) return;
+      const list = runRules.filter(r => r.enabled && r.scope !== 'bucket' && TIME_TRIGGERS.includes(r.trigger));
       if (!list.length) return;
       const now = Date.now();
-      const updates = [], made = [], notes = [];
+      const updates = [], made = [], notes = [], pending = [], quiet = [];
       Object.values(tasksRef.current).forEach(t => {
         if (t.inbox) return;
         const days = t.deadline ? dayDiff(t.deadline) : null, open = t.status !== 'done';
@@ -6790,15 +7010,35 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             hit = !!t.timerStartedAt && timerHere(t) && now - t.timerStartedAt >= Number(w.hours || 4) * 36e5;
             key = `${r.id}@${t.timerStartedAt}`;
           }
-          if (hit && !(t.autoFired || {})[key]) { fire.push(r); keys[key] = true; }
+          if (r.personal) key += '~' + personKey; // your own notifications: one per person
+          if (hit && !(t.autoFired || {})[key]) { fire.push({ r, key }); keys[key] = true; }
         });
-        if (!fire.length) return;
+        if (fire.length) pending.push({ t, fire, keys });
+      });
+      // In a team, the first PC to claim a run does it, so a "make a copy" never happens twice.
+      busy = true;
+      const ready = [];
+      try {
+        for (const p of pending) {
+          const ok = [], keys = { ...p.keys };
+          for (const f of p.fire) {
+            const c = f.r.personal || f.r.action === 'notify' ? true : await cloudClaim(p.t.id, f.key);
+            if (c === true) ok.push(f.r);
+            else if (c === null) delete keys[f.key]; // couldn't reach the cloud: try again next minute
+          }
+          if (Object.keys(keys).length) ready.push({ ...p, fire: ok, keys });
+        }
+      } finally { busy = false; }
+      ready.forEach(({ t: t0, fire, keys }) => {
+        const t = tasksRef.current[t0.id]; if (!t) return;
+        if (!fire.length) { quiet.push({ ...t, autoFired: { ...(t.autoFired || {}), ...keys } }); return; } // another PC ran it
         const res = runActions(t, fire, { noStart: !!prefsRef.current.oneAtATime });
         // What the change sets off ("timer is paused", "status changes to"…) runs too.
         const sub = automate(res.task, t, { depth: 1 });
         updates.push({ ...sub.task, autoFired: { ...(sub.task.autoFired || {}), ...keys } });
         made.push(...res.created, ...sub.created); notes.push(...res.notes, ...sub.notes);
       });
+      if (quiet.length) saveMany(quiet);
       if (updates.length) {
         saveMany([...updates, ...made]);
         notes.forEach(queueNote);
@@ -6808,7 +7048,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     scan();
     const i = setInterval(scan, 60000);
     return () => clearInterval(i);
-  }, [loaded, rules, stages]);
+  }, [loaded, runRules, stages]);
   // Changes made directly in the table go through the same rules as the task panel.
   const updateTask = (id, p) => {
     const t = tasksRef.current[id]; if (!t) return;
@@ -7404,8 +7644,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   if (standaloneId) return (
     <>
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
-        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} members={team.on ? team.members : null} teams={team.on ? teamsList : null} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => askDelete(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <PreviewDialog file={preview} onClose={() => setPreview(null)} onDownload={downloadFile} />
@@ -7490,7 +7730,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           <div data-tauri-drag-region className="min-w-[8rem] flex-1">
             <div ref={setHeadSlot} className="min-w-0" />
             {view === 'tasks' && (
-              <PageTitle title={pageName}>
+              <PageTitle title={team.on && !(filter === 'inbox' && !query) ? <ScopeMenu scope={scope} onScope={setScope} teams={teamsList} myTeams={teamNames((team.me && team.me.teams) || [], teamsList)} /> : pageName}>
                 <span className="text-sm text-muted-foreground">{query ? `Searching for “${query}”` : `${overview.open} open${viewMode === 'list' ? `, grouped by ${(labels[groupBy === 'project' ? 'platform' : groupBy] || '').toLowerCase()}` : ''}`}</span>
           {!query && overview.overdue > 0 && <button type="button" aria-pressed={dueFilter === 'overdue'} onClick={() => setDueFilter(d => d === 'overdue' ? '' : 'overdue')} title="Show only overdue tasks"
             className={cn('rounded-sm text-sm text-red-600 underline-offset-4 hover:underline dark:text-red-400', dueFilter === 'overdue' && 'font-medium underline')}>{overview.overdue} overdue</button>}
@@ -7557,6 +7797,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
               { label: 'Settings', icon: <I.gear />, onSelect: () => setSettingsOpen(true) },
               { label: 'Keyboard shortcuts', icon: <I.keyboard />, shortcut: '?', onSelect: () => setSettingsOpen('shortcuts') },
               { label: 'What’s new', icon: <I.sparkles />, onSelect: openWhatsNew },
+              ...(team.on ? [{ label: 'Team tour', icon: <I.info />, onSelect: onReplayTour }] : []),
             ]} />
           {primary && <Button className="shrink-0 shadow-none" onClick={primary.run}><I.plus />{primary.label}</Button>}
           </div>
@@ -7566,7 +7807,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <div className="w-full px-4 pb-10 md:px-6">
 
       {view === 'projects' ? (
-        <BucketsView list={bucketList} tasks={all} scopeTasks={scopeTasks} onSetReason={setAddedReason} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
+        <BucketsView list={bucketList} tasks={all} scopeTasks={scopeTasks} onSetReason={setAddedReason} onMoveEnd={moveBucketEnd} noun={labels.bucket} onNew={() => setBucketEdit({ bucket: null })} onEdit={b => setBucketEdit({ bucket: b })}
           onDelete={b => setBucketDelete(b)} onOpen={n => openBucket(n === 'none' ? 'none' : n)} onStatus={setBucketStatus} onPlan={planBucket}
           onOpenTask={id => openTask(id)} onAddTask={n => createTask({ preset: { bucket: n === 'none' ? '' : n } })} focus={bucketFocus} onEditStatuses={() => setBucketStatusesOpen(true)} />
       ) : view === 'home' ? (
@@ -7600,7 +7841,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             f.onload = () => { try { f.contentWindow.focus(); f.contentWindow.print(); } catch (e) { toast.error('Couldn’t open printing', String(e)); } setTimeout(() => f.remove(), 60000); };
           }} />
       ) : view === 'archive' ? (
-        <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveSettings(x => ({ ...x, archiveDays: d }))}
+        <ArchiveView items={archived} labels={labels} days={settings.archiveDays} onDays={d => saveTeamSettings(x => ({ ...x, archiveDays: d }))}
           onRestore={id => { restoreTask(id); toast('Task restored'); }} onTrash={id => { trashTasks([id]); toast('Moved to Trash', undefined, { undo: true }); }} onCleanUp={() => setCleanUpOpen(true)} />
       ) : view === 'trash' ? (
         <TrashView items={trash} onRestore={id => { restoreTask(id); toast('Task restored'); }} onDeleteNow={t => setPurgeConfirm([t.id])} onEmpty={() => setPurgeConfirm(Object.keys(trash))} />
@@ -7853,7 +8094,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                               ...(done ? [] : [{ label: 'Mark as done', icon: <I.check />, onSelect: () => markDone(t.id) }]),
                               { label: 'Duplicate', icon: <I.copy />, onSelect: () => duplicate(t.id) },
                               'sep',
-                              { label: 'Delete', icon: <I.trash />, destructive: true, onSelect: () => setConfirmId(t.id) },
+                              { label: 'Delete', icon: <I.trash />, destructive: true, onSelect: () => askDelete(t.id) },
                             ]} />
                         </div>
                       </td>
@@ -7897,8 +8138,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </div>
       </>
 
-      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
-        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => setConfirmId(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
+      <TaskSheet bucketMap={bucketMap} bucketEnds={bucketEnds} oneAtATime={!!prefs.oneAtATime} onPick={id => setSheet({ open: true, id })} onAccept={acceptTask} mode={standaloneId ? 'window' : openMode} onMode={onSheetMode} onPopOut={popOut} open={sheet.open} task={sheetTask} people={people} members={team.on ? team.members : null} teams={team.on ? teamsList : null} stages={stages} labels={labels} buckets={bucketNames} defaultAssignee={me.name} dropRef={sheetDrop} projects={projects} rules={rules} defaultProject={onlyPick(projectFilter)} allTasks={all} onOpen={id => openTask(id)} onPatch={patch} onClose={closeSheet}
+        onSave={saveSheet} onDiscardEmpty={discardEmpty} onDelete={() => askDelete(sheet.id)} onToggle={toggleTimer} onReset={resetTimer}
         storageOk={storageOk} busy={busy} onUpload={uploadMany} onAttach={attach} onPreview={setPreview} onDownload={downloadFile}
         onRemoveFile={(file, taskId) => unlinkDoc(file, taskId)} onLinkExisting={id => setLinkFor(id)} onDiscard={fs => fs.forEach(f => deleteIfUnused(f, []))} />
       <AlertDialog open={!!confirmId} title="Move this task to the Trash?"
@@ -7910,7 +8151,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       )}
       <BucketStatusesDialog open={bucketStatusesOpen} buckets={bucketList} noun={labels.bucket} onClose={() => setBucketStatusesOpen(false)} onSave={saveBucketStatuses} />
       <StatusesDialog open={statusesOpen} stages={stages} tasks={all} onClose={() => setStatusesOpen(false)}
-        onSave={list => { saveStages(list); setStatusesOpen(false); toast('Statuses saved'); }} />
+        onSave={list => { saveStages(list); setStatusesOpen(false); if (canAdmin) toast('Statuses saved'); }} />
       <ProjectDialog open={!!projectEdit} noun={labels.platform} project={projectEdit && projectEdit.project} names={projects} onClose={() => setProjectEdit(null)} onSave={saveProject} />
       <BucketDialog open={!!bucketEdit} noun={labels.bucket} bucket={bucketEdit && bucketEdit.bucket} names={bucketNames} onClose={() => setBucketEdit(null)} onSave={saveBucket}
         handoffs={st => pendingHandoffs(bucketEdit && bucketEdit.bucket ? bucketEdit.bucket : {}, st).length} />
@@ -7943,7 +8184,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         })() : ''}
         confirmLabel={`Delete ${labels.platform.toLowerCase()}`} onConfirm={deleteProject} onCancel={() => setProjectDelete(null)} />
       <AutomationsDialog open={rulesOpen} onClose={() => setRulesOpen(false)} onOpenNotifications={() => { setRulesOpen(false); setSettingsOpen('notifications'); }} rules={rules} projects={projects} people={people} me={me.name} bucketNoun={labels.bucket} stages={stages} buckets={bucketNames}
-        onSave={list => { saveRules(list); setRulesOpen(false); toast('Automations saved'); }} />
+        onSave={list => { saveRules(list); setRulesOpen(false); if (canAdmin) toast('Automations saved'); }} />
       <ShortcutsDialog open={false} onClose={() => setKeysOpen(false)} />
       {paletteOpen && <CommandPalette open onClose={() => setPaletteOpen(false)} items={paletteItems} />}
       <WhatsNewDialog open={!!whatsNew} items={whatsNew || []} onClose={() => setWhatsNew(null)} />
@@ -7951,7 +8192,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         onRenameWorkspace={v => onRenameWorkspace(ws, v)} labels={labels} onLabel={(k, v) => saveLabels(l => ({ ...l, [k]: v }))}
         counts={{ stages: statusList(stages).length, bucketStatuses: BUCKET_STATUSES.length, platforms: projectList.length }}
         onEditStatuses={() => { setSettingsOpen(false); setStatusesOpen(true); }} onEditBucketStatuses={() => { setSettingsOpen(false); setBucketStatusesOpen(true); }} onEditPlatforms={() => { setSettingsOpen(false); setPlatformsOpen(true); }}
-        rules={rules} onRules={saveRules} projects={projects}
+        teamsList={teamsList} rolesList={rolesList} onSaveTeams={guard(onSaveTeams)} onSaveRoles={guard(onSaveRoles)} teamTaskCounts={teamTaskCounts}
+        onMoveTasks={(from, to) => { const moved = Object.values(tasksRef.current).filter(t => (t.teams || []).includes(from)).map(t => ({ ...t, teams: [...new Set(t.teams.filter(x => x !== from).concat(to ? [to] : []))] })); if (moved.length) saveMany(moved); }}
+        rules={myNotes || rules} onRules={myNotes ? list => savePrefs({ [notifyKey]: list.filter(isNote) }) : saveRules} projects={projects}
         onOpenCloud={() => setCloudOpen(true)} onBackup={backup} onRestore={chooseRestore} onOpenDataFolder={() => invoke('open_data_folder').catch(e => toast.error('Couldn’t open the folder', String(e)))}
         updater={up} onWhatsNew={() => { setSettingsOpen(false); openWhatsNew(); }}
         watch={settings.watchFolders || []} status={watchStatus} onAddFolder={addWatchFolder} onSubfolders={setFolderSubfolders}
@@ -7994,7 +8237,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <AlertDialog open={!!fileConfirm} title="Remove this document?"
         description={fileConfirm ? (fileConfirm.taskId ? `“${fileConfirm.file.name}” will be removed from this task.` : `“${fileConfirm.file.name}” will be deleted from this computer’s copy of your documents.`) : ''}
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
-      <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} />
+      <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} prof={prof} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
         description="Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first."
         confirmLabel="Replace and restore" onConfirm={doRestore} onCancel={() => setRestoreSrc(null)} />
@@ -8037,19 +8280,40 @@ function UpdateCard({ up }) {
 /* =========================================================
    Sign-in & profile
    ========================================================= */
+// The Google client built into the app (cloud-config.js), else the one pasted on this PC.
+const googleClient = prof => (GOOGLE_CLIENT_ID ? { clientId: GOOGLE_CLIENT_ID, clientSecret: GOOGLE_CLIENT_SECRET } : prof.data.google || {});
+const GoogleMark = () => (
+  <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.5 12.3c0-.8-.1-1.5-.2-2.2H12v4.2h5.9a5 5 0 0 1-2.2 3.3v2.7h3.5c2.1-1.9 3.3-4.7 3.3-8z" /><path fill="#34A853" d="M12 23c3 0 5.5-1 7.2-2.7l-3.5-2.7c-1 .7-2.2 1.1-3.7 1.1-2.9 0-5.3-1.9-6.2-4.5H2.2v2.8A11 11 0 0 0 12 23z" /><path fill="#FBBC05" d="M5.8 14.2a6.6 6.6 0 0 1 0-4.3V7.1H2.2a11 11 0 0 0 0 9.9l3.6-2.8z" /><path fill="#EA4335" d="M12 5.4c1.6 0 3 .6 4.2 1.6l3.1-3.1A11 11 0 0 0 2.2 7.1l3.6 2.8C6.7 7.3 9.1 5.4 12 5.4z" /></svg>
+);
+// Signs in with Google and, when the app has a cloud, hands that sign-in to Supabase too (0.20), so the
+// same Google account is your Taskit account. Returns { user } or { notInvited: email }. The ID token is never saved.
+async function googleSignIn(prof) {
+  const g = googleClient(prof);
+  const { id_token, ...u } = await invoke('google_sign_in', { clientId: g.clientId, clientSecret: g.clientSecret });
+  const c = cloudStatus();
+  if (c.phase !== 'off' && c.url && id_token) {
+    try { await cloudSignInGoogle(id_token); }
+    catch (e) { toast.error('Signed in, but cloud sync didn’t connect', String((e && e.message) || e)); }
+    if (cloudStatus().phase === 'notinvited') return { notInvited: u.email || '' };
+  }
+  const access = cloudStatus().access;
+  return { user: { ...u, via: 'google', signedInAt: Date.now(), ...(access && access !== 'owner' ? { welcome: 'pending' } : {}) } };
+}
 function SignIn({ prof }) {
-  const g = prof.data.google || {};
+  const g = googleClient(prof);
   const [setup, setSetup] = useState(!g.clientId);
   const [cid, setCid] = useState(g.clientId || '');
   const [secret, setSecret] = useState(g.clientSecret || '');
   const [busy, setBusy] = useState(false);
   const [manual, setManual] = useState(false);
   const [name, setName] = useState('');
+  const [notInvited, setNotInvited] = useState(null);
   const signIn = async () => {
     setBusy(true);
     try {
-      const u = await invoke('google_sign_in', { clientId: g.clientId, clientSecret: g.clientSecret });
-      prof.update({ user: { ...u, via: 'google', signedInAt: Date.now() } });
+      const r = await googleSignIn(prof);
+      if (r.notInvited !== undefined) setNotInvited(r.notInvited);
+      else prof.update({ user: r.user });
     } catch (e) { toast.error('Sign-in didn’t finish', String(e)); }
     setBusy(false);
   };
@@ -8059,13 +8323,29 @@ function SignIn({ prof }) {
     prof.update({ google: { clientId: cid.trim(), clientSecret: secret.trim() } });
     setSetup(false);
   };
+  if (notInvited !== null) return (
+    <div className="flex min-h-full items-center justify-center p-6">
+      <Card className="w-full max-w-sm p-8">
+        <div className="mb-6 flex flex-col items-center text-center">
+          <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground"><I.user className="size-6" /></div>
+          <h1 className="text-xl font-semibold tracking-tight">Hmm, we don’t know this account yet</h1>
+          <p className="mt-2 text-sm text-muted-foreground"><b className="font-medium text-foreground">{notInvited || 'This Google account'}</b> isn’t on your team’s invite list. Try your work account, or ask your admin to add this one.</p>
+        </div>
+        <div className="grid gap-3">
+          <Button className="h-10" variant="outline" onClick={() => { setNotInvited(null); signIn(); }} disabled={busy}>Try another Google account</Button>
+          <button type="button" className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground"
+            onClick={() => copyText(`Hey! Could you invite ${notInvited || 'me'} to our Taskit team? Settings › Members › Invite people. Thanks!`).then(() => toast('Copied', 'Paste it to your admin in a chat or email.'))}>Copy a quick note for your admin</button>
+        </div>
+      </Card>
+    </div>
+  );
   return (
     <div className="flex min-h-full items-center justify-center p-6">
       <Card className="w-full max-w-sm p-8">
         <div className="mb-6 flex flex-col items-center text-center">
           <div className="mb-4 flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground"><I.check className="size-6" /></div>
-          <h1 className="text-xl font-semibold tracking-tight">Tasks</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Sign in so your name and photo appear on your tasks.</p>
+          <h1 className="text-xl font-semibold tracking-tight">Welcome to Taskit</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Sign in with the Google account your team invited, and you’re in.</p>
         </div>
         {manual ? (
           <form className="grid gap-4" onSubmit={e => { e.preventDefault(); if (name.trim()) prof.update({ user: { name: name.trim(), email: '', picture: '', via: 'local', signedInAt: Date.now() } }); }}>
@@ -8083,9 +8363,9 @@ function SignIn({ prof }) {
           </form>
         ) : (
           <div className="grid gap-3">
-            <Button className="h-10" onClick={signIn} disabled={busy}>{busy ? 'Waiting for Google in your browser…' : 'Sign in with Google'}</Button>
-            {busy && <p className="text-center text-xs text-muted-foreground">Finish signing in in the browser window that opened, then come back here.</p>}
-            <Button variant="ghost" size="sm" onClick={() => setSetup(true)} disabled={busy}>Change Google settings</Button>
+            <Button className="h-10 gap-2.5" onClick={signIn} disabled={busy}>{!busy && <GoogleMark />}{busy ? 'Waiting for Google in your browser…' : 'Continue with Google'}</Button>
+            <p className="text-center text-xs text-muted-foreground">{busy ? 'Finish signing in there, then hop back here.' : 'We’ll pop open your browser. Sign in there, then hop back here.'}</p>
+            {!GOOGLE_CLIENT_ID && <Button variant="ghost" size="sm" onClick={() => setSetup(true)} disabled={busy}>Change Google settings</Button>}
           </div>
         )}
         {!manual && (
@@ -8097,6 +8377,161 @@ function SignIn({ prof }) {
     </div>
   );
 }
+
+// First run for a teammate (0.20), step 1 of 2: how the team will see you. Step 2 is the team tour.
+function Welcome({ prof, team, rolesList, teamsList, onDone }) {
+  const u = prof.data.user || {};
+  const [name, setName] = useState(u.name || '');
+  const [photo, setPhoto] = useState(photoOf(u));
+  const fileRef = useRef(null);
+  const owner = team.members.find(m => m.access === 'owner');
+  const ownerName = owner ? (owner.name || owner.email).split(' ')[0] : 'your admin';
+  const first = (name || u.name || '').trim().split(' ')[0];
+  const pick = async e => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return; try { setPhoto(await squarePhoto(f)); } catch (x) { toast.error('Couldn’t use that photo', x.message); } };
+  const done = () => {
+    if (!name.trim()) { toast.error('Add the name you’d like to go by'); return; }
+    prof.updateUser({ name: name.trim(), photo: photo || '', timeZone: myZone(), welcome: 'tour' });
+    onDone();
+  };
+  const row = (k, v) => <><dt className="text-muted-foreground">{k}</dt><dd className="min-w-0 truncate">{v}</dd></>;
+  return (
+    <div className="flex min-h-full items-center justify-center p-6">
+      <Card className="w-full max-w-md p-8">
+        <div className="text-xs text-muted-foreground">Step 1 of 2</div>
+        <h1 className="mt-1 text-xl font-semibold tracking-tight">Hey{first ? ` ${first}` : ''}, welcome aboard!</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Quick check before you dive in: this is how the team will see you. You can tweak your name and photo anytime in Settings.</p>
+        <div className="mt-6 flex items-center gap-4">
+          <Avatar name={name} picture={photo || undefined} className="h-14 w-14 [&_span]:text-base" />
+          <div className="grid gap-1.5">
+            <span className="text-xs text-muted-foreground">{photo && photo === photoOf(u) && u.picture ? 'We grabbed this from your Google account' : photo ? 'Looking good' : 'No photo yet'}</span>
+            <Button size="sm" variant="outline" onClick={() => fileRef.current && fileRef.current.click()}>{photo ? 'Pick another' : 'Pick a photo'}</Button>
+            <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={pick} />
+          </div>
+        </div>
+        <Field label="What should we call you?" htmlFor="w-name" className="mt-5"><Input id="w-name" value={name} onChange={e => setName(e.target.value)} /></Field>
+        <dl className="mt-5 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-2 text-sm">
+          {row('Role', roleName(team.me && team.me.role, rolesList) || 'Not set yet')}
+          {row('Teams', teamNames((team.me && team.me.teams) || [], teamsList).join(', ') || 'Not set yet')}
+          {row('Time zone', `${myZone() || 'Unknown'} (from this PC)`)}
+        </dl>
+        <p className="mt-4 text-xs text-muted-foreground">{owner && team.me && owner.id === team.me.id ? 'You set these up in Settings › Members.' : `${ownerName} set up your role and teams when inviting you. Something off? Just ping ${ownerName}.`}</p>
+        <div className="mt-6 flex justify-end"><Button onClick={done}>All good, let’s go</Button></div>
+      </Card>
+    </div>
+  );
+}
+
+// A short tour for your team (0.20), three steps, skippable, replayable from the menu.
+const TOURS = {
+  everyone: { name: 'Quick', steps: [
+    ['These are your tasks', 'Tasks for me shows your teams’ tasks, plus anything assigned to you or made by you. Want the full picture? Pick Everyone from the title, or press Ctrl + 2.'],
+    ['Tag tasks with teams', 'Open a task and add teams under Teams. Everyone on those teams sees it under For me right away.'],
+    ['It all syncs on its own', 'Changes pop up on everyone’s PC within a second or two. If two people edit the same task at once, both changes are kept.'],
+  ] },
+  design: { name: 'Designer', steps: [
+    ['Design requests come to you', 'Whenever marketing, web, mobile or backend need something designed, they tag the task with Design and it shows up in Tasks for me, right next to yours. Want the full picture? Switch to Everyone.'],
+    ['Ready for feedback? Set it to In review', 'Whoever asked can see it’s their turn. Drop your files on the task so they’ve got everything in one place.'],
+    ['Your timer is yours', 'Start the timer on a task and it only tracks your time, even if a teammate times the same task.'],
+  ] },
+  dev: { name: 'Developer', steps: [
+    ['Your team’s tasks, all in one place', 'Tasks tagged with your team show up under For me, plus anything assigned to you.'],
+    ['Need a design? Tag Design', 'Add Design under Teams on a task and the designers see it right away. Attach files and links so they’ve got the full story.'],
+    ['One task at a time', 'Switch it on in Settings › General and starting a timer pauses your other ones. It only ever touches your own tasks.'],
+  ] },
+  qa: { name: 'QA', steps: [
+    ['Stuff to test lands here', 'Tasks tagged QA show up under For me, plus anything assigned to you.'],
+    ['Found something? Tag who fixes it', 'Add their team under Teams, like Web or Mobile, and it pops up for them right away.'],
+    ['Your timer is yours', 'Start the timer on a task and it only tracks your time, even if a teammate times the same task.'],
+  ] },
+  marketing: { name: 'Marketing', steps: [
+    ['Campaign tasks live here', 'Tasks tagged Marketing show up under For me, plus anything assigned to you.'],
+    ['Need a graphic? Tag Design', 'Add Design under Teams on a task and the designers see it right away. Drop in the brief so they’ve got everything.'],
+    ['Pings are just for you', 'Pick what notifies you in Settings › Notifications. It only covers your tasks and your teams’ tasks.'],
+  ] },
+  lead: { name: 'Team lead', steps: [
+    ['See it all with Everyone', 'Ctrl + 2 shows every task across all teams, and Ctrl + 1 brings you back to yours.'],
+    ['Zoom in on one team', 'Open the title menu and pick a team to see just its tasks.'],
+    ['Pings are just for you', 'Pick what notifies you in Settings › Notifications. It only covers your tasks and your teams’ tasks.'],
+  ] },
+};
+const tourFor = (team, rolesList) => {
+  const t = (team.me && team.me.teams) || [], role = rolesList.find(r => r.id === (team.me && team.me.role)) || {};
+  if (role.group === 'Management') return TOURS.lead;
+  if (t.includes('design')) return TOURS.design;
+  if (t.includes('marketing')) return TOURS.marketing;
+  if (t.includes('qa')) return TOURS.qa;
+  if (t.some(x => ['web', 'mobile', 'backend', 'wordpress'].includes(x))) return TOURS.dev;
+  return TOURS.everyone;
+};
+function TeamTour({ tour, onClose }) {
+  const [i, setI] = useState(0);
+  useEffect(() => { const k = e => { if (e.key === 'Escape') onClose(); }; document.addEventListener('keydown', k); return () => document.removeEventListener('keydown', k); }, []);
+  const [title, text] = tour.steps[i], last = i === tour.steps.length - 1;
+  return createPortal(
+    <section role="dialog" aria-label={`Tour, step ${i + 1} of ${tour.steps.length}`} className="fixed bottom-6 right-6 z-[60] w-[360px] max-w-[calc(100vw-2rem)] rounded-xl border bg-background p-5 shadow-2xl anim-zoom">
+      <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
+        <span>{tour.name} tour · {i + 1} of {tour.steps.length}</span>
+        <span className="flex gap-1" aria-hidden="true">{tour.steps.map((_, j) => <span key={j} className={cn('h-1.5 w-4 rounded-full', j <= i ? 'bg-foreground' : 'bg-muted')} />)}</span>
+      </div>
+      <h2 className="text-[15px] font-semibold">{title}</h2>
+      <p className="mt-1.5 text-sm text-muted-foreground">{text}</p>
+      <div className="mt-4 flex items-center justify-between gap-2">
+        <Button variant="ghost" size="sm" onClick={onClose}>{last ? 'Close' : 'Skip for now'}</Button>
+        <span className="flex gap-2">
+          {i > 0 && <Button variant="outline" size="sm" onClick={() => setI(i - 1)}>Back</Button>}
+          <Button size="sm" onClick={() => (last ? onClose() : setI(i + 1))}>{last ? 'Got it' : 'Next'}</Button>
+        </span>
+      </div>
+      {!last && <p className="mt-3 text-[11px] text-muted-foreground">Replay it anytime from the ⋯ menu › Team tour.</p>}
+    </section>, document.body);
+}
+
+/* =========================================================
+   The team (0.20): members, their access, job roles and teams
+   ========================================================= */
+const DEFAULT_TEAMS = ['Design', 'Web', 'Mobile', 'Backend', 'QA', 'Marketing', 'WordPress'].map(name => ({ id: name.toLowerCase(), name }));
+const DEFAULT_ROLES = [
+  ['Product Designer', 'Design'], ['Graphics Designer', 'Design'],
+  ['Web Frontend Developer', 'Development'], ['Mobile Frontend Developer', 'Development'], ['Backend Developer', 'Development'], ['QA', 'Development'], ['WordPress Developer', 'Development'],
+  ['SM Marketing & SEO', 'Marketing'], ['Email Marketing', 'Marketing'],
+  ['Product Owner', 'Management'], ['Project Manager', 'Management'],
+].map(([name, group]) => ({ id: norm(name).replace(/[^a-z0-9]+/g, '-'), name, group }));
+const ACCESS_LABEL = { owner: 'Owner', admin: 'Admin', member: 'Member' };
+// Who you are in the team. Not in a team (cloud sync off, or a Supabase project without the teams
+// update): on is false and everything works as before.
+function useTeam() {
+  const [t, setT] = useState({ members: [], invites: [] });
+  const c = useCloud();
+  useEffect(() => onCloudTeam(x => setT({ ...x })), []);
+  const signedIn = !['off', 'signin', 'loading', 'notinvited', 'removed'].includes(c.phase);
+  const access = signedIn ? c.access || null : null;
+  const uid = cloudMe();
+  useEffect(() => { if (access && uid) setPersonKey(uid); }, [access, uid]);
+  const me = t.members.find(m => m.id === uid) || null;
+  return { on: !!access, access, admin: access === 'owner' || access === 'admin', owner: access === 'owner', me, uid, members: t.members, invites: t.invites };
+}
+const teamNames = (ids, teams) => (ids || []).map(id => (teams.find(x => x.id === id) || {}).name || id);
+const roleName = (id, roles) => (roles.find(r => r.id === id || norm(r.name) === norm(id)) || {}).name || id || '';
+// A typed assignee from before teams ("Ayesha") belongs to the member with that name, or that first name.
+function memberFor(name, members) {
+  const n = norm(name); if (!n) return null;
+  return members.find(m => norm(m.name) === n) || (members.filter(m => norm(m.name).split(' ')[0] === n).length === 1 ? members.find(m => norm(m.name).split(' ')[0] === n) : null);
+}
+// "For me": your teams' tasks, plus ones assigned to you or made by you. Tasks not tagged with a team
+// yet show to the Owner and Admins, so they can be sorted out.
+const isForMe = (t, team) => {
+  if (!team.on) return true;
+  const mine = (team.me && team.me.teams) || [];
+  if ((t.teams || []).some(x => mine.includes(x))) return true;
+  if (t.createdBy && t.createdBy === team.uid) return true;
+  const m = memberFor(t.assignee, team.members);
+  if (m && m.id === team.uid) return true;
+  return !(t.teams || []).length && team.admin;
+};
+const canDelete = (t, team) => !team.on || team.admin || (t && t.createdBy === team.uid);
+// Searching people by name, role or team (filled in by the app while you're in a team).
+let peopleMeta = {}, teamMode = false;
+const cloudTeamCount = () => { const t = cloudTeamNow(); return t.members.length + t.invites.length; };
 
 /* =========================================================
    Cloud sync (Supabase)
@@ -8117,6 +8552,8 @@ const CLOUD_TONE = {
   error: { dot: 'bg-red-500', text: 'Not syncing' },
   choose: { dot: 'bg-amber-500', text: 'Needs your choice' },
   signin: { dot: 'bg-zinc-400', text: 'Signed out' },
+  notinvited: { dot: 'bg-amber-500', text: 'Not on the invite list' },
+  removed: { dot: 'bg-amber-500', text: 'Not on the team anymore' },
   off: { dot: '', text: 'Off' },
 };
 // While these run, the cloud icon drifts gently.
@@ -8159,7 +8596,14 @@ function CloudNote({ onOpen }) {
   );
 }
 
-function CloudDialog({ open, onClose }) {
+function CloudDialog({ open, onClose, prof }) {
+  const [withEmail, setWithEmail] = useState(false);
+  const google = () => run(async () => {
+    const g = googleClient(prof);
+    if (!g.clientId) throw new Error('Google sign-in isn’t set up on this PC yet. Sign in with email instead.');
+    const { id_token } = await invoke('google_sign_in', { clientId: g.clientId, clientSecret: g.clientSecret });
+    await cloudSignInGoogle(id_token);
+  });
   const c = useCloud();
   const [url, setUrl] = useState(''); const [key, setKey] = useState('');
   const [email, setEmail] = useState(''); const [pw, setPw] = useState('');
@@ -8172,7 +8616,7 @@ function CloudDialog({ open, onClose }) {
   let body, footer;
   if (phase === 'off') {
     body = (
-      <form id="cloud-setup" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(() => cloudConfigure(url, key)); }}>
+      <form id="cloud-setup" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(async () => { await cloudConfigure(url, key); setEditProject(false); }); }}>
         <p className="text-sm text-muted-foreground">Keep your tasks and documents in your own free Supabase project, so every PC you sign in on has the same data and changes show up on the others within seconds. Your data stays on this PC too, so Tasks keeps working offline.</p>
         <Field label="Project URL" htmlFor="cl-url" hint="Supabase → Project Settings → Data API."><Input id="cl-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://abcdefgh.supabase.co" autoFocus spellCheck={false} /></Field>
         <Field label="Publishable key" htmlFor="cl-key" hint="Supabase → Project Settings → API Keys. Use the publishable (anon) key, never the secret one."><Input id="cl-key" value={key} onChange={e => setKey(e.target.value)} placeholder="sb_publishable_… or eyJ…" spellCheck={false} /></Field>
@@ -8180,10 +8624,25 @@ function CloudDialog({ open, onClose }) {
       </form>
     );
     footer = <>{editProject && <Button variant="outline" onClick={() => setEditProject(false)}>Cancel</Button>}<Button type="submit" form="cloud-setup" disabled={busy || !url.trim() || !key.trim()}>{busy ? 'Checking…' : 'Next'}</Button></>;
+  } else if (phase === 'notinvited' || phase === 'removed') {
+    body = <div className="grid gap-3 text-sm">
+      <p className="font-medium">{phase === 'removed' ? 'You’re no longer on this team' : 'Hmm, we don’t know this account yet'}</p>
+      <p className="text-muted-foreground">{phase === 'removed' ? 'An admin took you off the team, so this PC stopped syncing. Your tasks are still here on this PC.' : `${c.email || 'That Google account'} isn’t on your team’s invite list. Try your work account, or ask your admin to add this one.`}</p>
+    </div>;
+    footer = <><Button variant="outline" onClick={onClose}>Close</Button><Button onClick={google} disabled={busy}>{busy ? 'Waiting for Google…' : 'Try another Google account'}</Button></>;
+  } else if (phase === 'signin' && !withEmail) {
+    body = <div className="grid gap-3">
+      <p className="text-sm text-muted-foreground">Sign in with the Google account your team invited, and your tasks and documents sync across every PC and teammate.</p>
+      <Button className="h-10 gap-2.5" onClick={google} disabled={busy}>{!busy && <GoogleMark />}{busy ? 'Waiting for Google in your browser…' : 'Continue with Google'}</Button>
+      <div className="flex justify-between gap-3">
+        <button type="button" onClick={() => setWithEmail(true)} className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">Sign in with email and password</button>
+        <button type="button" onClick={() => setEditProject(true)} className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">Use a different Supabase project</button>
+      </div>
+    </div>;
   } else if (phase === 'signin') {
     body = (
       <form id="cloud-signin" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(() => cloudSignIn(email, pw)); }}>
-        <p className="text-sm text-muted-foreground">Sign in to sync your tasks and documents across your PCs. Use the same email and password on every PC.</p>
+        <p className="text-sm text-muted-foreground">Sign in with the email and password you set up for cloud sync. <button type="button" onClick={() => setWithEmail(false)} className="underline underline-offset-4 hover:text-foreground">Use Google instead</button></p>
         <Field label="Email" htmlFor="cl-email"><Input id="cl-email" type="email" value={email} onChange={e => setEmail(e.target.value)} autoFocus={!email} autoComplete="username" /></Field>
         <Field label="Password" htmlFor="cl-pw"><Input id="cl-pw" type="password" value={pw} onChange={e => setPw(e.target.value)} autoFocus={!!email} autoComplete="current-password" /></Field>
         <button type="button" onClick={() => setEditProject(true)} className="justify-self-start text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">Use a different Supabase project</button>
@@ -8219,7 +8678,7 @@ function CloudDialog({ open, onClose }) {
         </div>
         {c.phase === 'offline' && <p className="text-sm text-muted-foreground">You’re offline. Your changes are saved on this PC and sent as soon as you’re back online.</p>}
         {c.phase === 'error' && <p className="text-sm text-destructive break-words">{c.error}</p>}
-        <p className="text-xs text-muted-foreground">Sign in with the same account on your other PCs. Changes show up there within a second or two. If the same task is changed on two PCs at once, the newer edit is kept and you’ll see a notice. A timer belongs to the PC that started it, so closing one PC never stops a timer running on another.</p>
+        <p className="text-xs text-muted-foreground">{c.access ? 'Everyone on the team sees changes within a second or two. If two people change the same task at once, both changes are kept; if they change the same field, the newer one wins. Your timer is yours alone, and belongs to the PC that started it.' : 'Sign in with the same account on your other PCs. Changes show up there within a second or two. If the same task is changed on two PCs at once, the newer edit is kept and you’ll see a notice. A timer belongs to the PC that started it, so closing one PC never stops a timer running on another.'}</p>
       </div>
     );
     footer = <>
@@ -8443,17 +8902,278 @@ function ProfilePage({ prof, workspaces, ws, onSwitchWorkspace, onManageWorkspac
   </>;
 }
 
-// Settings › Members. Just you until teams arrive.
-function MembersPage({ prof, cloud }) {
+// Settings › Members (0.20). Everyone on the team, and the people invited who haven't signed in yet.
+// The Owner and Admins invite people, change their role, access and teams, and remove them.
+function MembersPage({ prof, cloud, teamsList = DEFAULT_TEAMS, rolesList = DEFAULT_ROLES }) {
+  const team = useTeam();
   const u = prof.data.user || {};
-  const email = u.email || (cloud.email && !['off', 'signin', 'loading'].includes(cloud.phase) ? cloud.email : '');
+  const [dlg, setDlg] = useState(null); // { kind: 'invite' } | { kind: 'member', m } | { kind: 'invite-edit', inv }
+  const [removing, setRemoving] = useState(null);
+  if (!team.on) {
+    const email = u.email || (cloud.email && !['off', 'signin', 'loading'].includes(cloud.phase) ? cloud.email : '');
+    return <>
+      <h3 className="mb-1.5 flex items-center gap-2 text-[15px] font-semibold">Members<InfoTip label="About members">Your teammates show up here once cloud sync is on and your Supabase project has the teams update.</InfoTip></h3>
+      <div className="flex min-h-12 items-center gap-3 rounded-md px-2 text-sm">
+        <StatusAvatar u={u} className="h-[30px] w-[30px] [&_span]:text-xs" dot="size-2.5" />
+        <div className="min-w-0 flex-1"><div className="truncate">{u.name} <span className="text-muted-foreground">(you)</span></div><div className="truncate text-xs text-muted-foreground">{[u.role, email].filter(Boolean).join(' · ') || 'No email'}</div></div>
+        <span className="px-2 text-[13px] text-muted-foreground">Owner</span>
+      </div>
+    </>;
+  }
+  const teamsText = ids => (ids && ids.length ? (ids.length === teamsList.length ? 'All teams' : teamNames(ids, teamsList).join(', ')) : 'No team yet');
+  const n = team.members.length, ni = team.invites.length;
+  const canEdit = m => team.admin && m.id !== team.uid && m.access !== 'owner';
+  const remove = async () => {
+    const m = removing; setRemoving(null);
+    try { await cloudRemoveMember(m.id); toast(`${m.name || m.email} is off the team`, 'Their tasks stay right where they are.'); }
+    catch (e) { toast.error('Couldn’t remove them', e.message); }
+  };
+  const cancelInvite = async inv => {
+    try { await cloudCancelInvite(inv.email); toast('Invite cancelled', inv.email); }
+    catch (e) { toast.error('Couldn’t cancel the invite', e.message); }
+  };
   return <>
-    <h3 className="mb-1.5 flex items-center gap-2 text-[15px] font-semibold">Members<InfoTip label="About members">Everyone in your workspaces. Teammates will show here once teams are set up; for now it’s just you.</InfoTip></h3>
-    <div className="flex min-h-12 items-center gap-3 rounded-md px-2 text-sm">
-      <StatusAvatar u={u} className="h-[30px] w-[30px] [&_span]:text-xs" dot="size-2.5" />
-      <div className="min-w-0 flex-1"><div className="truncate">{u.name} <span className="text-muted-foreground">(you)</span></div><div className="truncate text-xs text-muted-foreground">{[u.role, email].filter(Boolean).join(' · ') || 'No email'}</div></div>
-      <span className="px-2 text-[13px] text-muted-foreground">Owner</span>
+    <div className="mb-3 flex items-start justify-between gap-3">
+      <div>
+        <h3 className="text-[15px] font-semibold">Members</h3>
+        <p className="text-xs text-muted-foreground">{n} {n === 1 ? 'member' : 'members'}{ni ? ` · ${ni} invited` : ''}</p>
+      </div>
+      {team.admin && <Button size="sm" onClick={() => setDlg({ kind: 'invite' })}><I.plus className="size-3.5" />Invite people</Button>}
     </div>
+    <div className="grid gap-0.5">
+      {team.members.map(m => (
+        <div key={m.id} className="group/row flex min-w-0 min-h-12 items-center gap-3 rounded-md px-2 text-sm hover:bg-muted/50">
+          {m.id === team.uid ? <StatusAvatar u={u} className="h-[30px] w-[30px] [&_span]:text-xs" dot="size-2.5" /> : <Avatar name={m.name || m.email} picture={m.photo || undefined} className="h-[30px] w-[30px] [&_span]:text-xs" />}
+          <div className="min-w-0 flex-1">
+            <div className="truncate">{m.name || m.email || 'New teammate'}{m.id === team.uid && <span className="text-muted-foreground"> (you)</span>}</div>
+            <div className="truncate text-xs text-muted-foreground">{[roleName(m.role, rolesList), m.email].filter(Boolean).join(' · ')}</div>
+          </div>
+          <span className="hidden max-w-32 shrink-0 truncate text-right text-xs text-muted-foreground sm:block">{teamsText(m.teams)}</span>
+          <span className="w-16 text-right text-[13px] text-muted-foreground">{ACCESS_LABEL[m.access] || 'Member'}</span>
+          <span className="flex w-7 justify-end">
+            {canEdit(m) && <DropdownMenu align="end" trigger={p => <button {...p} type="button" aria-label={`Options for ${m.name || m.email}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 aria-expanded:opacity-100"><I.more className="size-3.5" /></button>}
+              items={[
+                { icon: <I.pencil className="size-3.5" />, label: 'Change role, access or teams', onSelect: () => setDlg({ kind: 'member', m }) },
+                'sep',
+                { icon: <I.logout className="size-3.5" />, label: 'Remove from team', destructive: true, onSelect: () => setRemoving(m) },
+              ]} />}
+          </span>
+        </div>
+      ))}
+    </div>
+    {ni > 0 && <>
+      <div className="mb-1 mt-5 text-xs text-muted-foreground">Invited, not signed in yet</div>
+      <div className="grid gap-0.5">
+        {team.invites.map(inv => (
+          <div key={inv.email} className="group/row flex min-w-0 min-h-11 items-center gap-3 rounded-md px-2 text-sm hover:bg-muted/50">
+            <span className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full border border-dashed text-muted-foreground"><I.mail className="size-3.5" /></span>
+            <div className="min-w-0 flex-1"><div className="truncate">{inv.email}</div><div className="truncate text-xs text-muted-foreground">{roleName(inv.role, rolesList) || 'No role yet'}</div></div>
+            <span className="hidden max-w-32 shrink-0 truncate text-right text-xs text-muted-foreground sm:block">{teamsText(inv.teams)}</span>
+            <span className="w-16 text-right text-[13px] text-muted-foreground">{ACCESS_LABEL[inv.access] || 'Member'}</span>
+            <span className="flex w-7 justify-end">
+              {team.admin && <DropdownMenu align="end" trigger={p => <button {...p} type="button" aria-label={`Options for ${inv.email}`} className="flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 hover:bg-muted hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100 aria-expanded:opacity-100"><I.more className="size-3.5" /></button>}
+                items={[
+                  { icon: <I.pencil className="size-3.5" />, label: 'Change role, access or teams', onSelect: () => setDlg({ kind: 'invite-edit', inv }) },
+                  { icon: <I.copy className="size-3.5" />, label: 'Copy a heads-up message', onSelect: () => copyText(inviteNote(inv.email, u.name)).then(() => toast('Copied', 'Paste it in a chat or email to them.')) },
+                  'sep',
+                  { icon: <I.x className="size-3.5" />, label: 'Cancel invite', destructive: true, onSelect: () => cancelInvite(inv) },
+                ]} />}
+            </span>
+          </div>
+        ))}
+      </div>
+    </>}
+    {!team.admin && <p className="mt-4 text-xs text-muted-foreground">The Owner and Admins invite people and set their roles and teams.</p>}
+    <InviteDialog state={dlg} onClose={() => setDlg(null)} teamsList={teamsList} rolesList={rolesList} inviter={u.name} />
+    <AlertDialog open={!!removing} title={`Remove ${removing ? (removing.name || removing.email) : ''} from the team?`}
+      description="They won’t be able to sign in or see the team’s tasks anymore. Tasks they made or worked on stay put. You can invite them again anytime."
+      confirmLabel="Remove" onConfirm={remove} onCancel={() => setRemoving(null)} />
+  </>;
+}
+const copyText = t => (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject(new Error('no clipboard'))).catch(() => {});
+const inviteNote = (email, from) => `Hey! ${from ? `${from} added` : 'You’re on'} you to our Taskit team. Install Taskit, click “Continue with Google” and sign in with ${email}. That’s it, you’re in.`;
+
+// Invite people, or change someone's role, access and teams.
+function InviteDialog({ state, onClose, teamsList, rolesList, inviter }) {
+  const open = !!state;
+  const kind = state && state.kind, cur = state && (state.m || state.inv);
+  const [emails, setEmails] = useState([]); const [typed, setTyped] = useState('');
+  const [role, setRole] = useState(''); const [access, setAccess] = useState('member'); const [teams, setTeams] = useState([]);
+  const [busy, setBusy] = useState(false); const [err, setErr] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    setErr(''); setTyped(''); setEmails([]);
+    setRole(cur ? (rolesList.find(r => r.id === cur.role || norm(r.name) === norm(cur.role)) || {}).id || cur.role || '' : '');
+    setAccess(cur ? (cur.access === 'admin' ? 'admin' : 'member') : 'member');
+    setTeams(cur ? cur.teams || [] : []);
+  }, [open]);
+  const take = text => {
+    const parts = String(text).split(/[\s,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+    const bad = parts.filter(x => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(x));
+    setEmails(l => [...new Set([...l, ...parts.filter(x => !bad.includes(x))])]);
+    setTyped(bad.join(', '));
+    setErr(bad.length ? `${bad.length === 1 ? 'That doesn’t' : 'Those don’t'} look like an email: ${bad.join(', ')}` : '');
+  };
+  const save = async () => {
+    setBusy(true); setErr('');
+    try {
+      if (kind === 'invite') {
+        const list = [...emails]; if (typed.trim()) { take(typed); setBusy(false); return; }
+        const failed = [];
+        for (const email of list) { try { await cloudInvite({ email, access, role, teams }); } catch (e) { failed.push(`${email}: ${e.message}`); } }
+        if (failed.length) { setErr(failed.join('\n')); setEmails(list.filter(e => failed.some(f => f.startsWith(e + ':')))); setBusy(false); return; }
+        toast(list.length === 1 ? `${list[0]} is invited` : `${list.length} people invited`, 'Give them a quick heads-up so they know to sign in with Google.');
+      } else if (kind === 'member') { await cloudUpdateMember(cur.id, { access, role, teams }); toast(`${cur.name || cur.email} is updated`); }
+      else { await cloudUpdateInvite(cur.email, { access, role, teams }); toast('Invite updated', cur.email); }
+      onClose();
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+  const count = kind === 'invite' ? emails.length : 1;
+  const roleOptions = [{ value: '', label: 'No role' }, ...rolesList.map(r => ({ value: r.id, label: r.name, group: r.group || 'Other' }))];
+  const title = kind === 'invite' ? 'Invite people' : `Update ${cur ? (cur.name || cur.email) : ''}`;
+  return (
+    <Dialog open={open} onClose={onClose} title={title} className="max-w-lg"
+      description={kind === 'invite' ? 'They’ll sign in with Google using this email. We don’t send anything, so give them a quick heads-up.' : 'Changes show up for them right away.'}
+      footer={<>
+        <Button variant="outline" onClick={onClose}>Cancel</Button>
+        <Button onClick={save} disabled={busy || (kind === 'invite' && !emails.length && !typed.trim())}>
+          {busy ? 'Saving…' : kind === 'invite' ? `Invite ${count > 1 ? `${count} people` : count === 1 ? '1 person' : 'people'}` : 'Save'}
+        </Button>
+      </>}>
+      {kind === 'invite' && (
+        <Field label="Emails" htmlFor="inv-emails">
+          <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring">
+            {emails.map(e => (
+              <span key={e} className="inline-flex h-6 max-w-full items-center gap-1 rounded-full bg-muted pl-2.5 pr-1 text-xs">
+                <span className="truncate">{e}</span>
+                <button type="button" aria-label={`Remove ${e}`} onClick={() => setEmails(l => l.filter(x => x !== e))} className={cn('flex size-4 items-center justify-center rounded-full text-muted-foreground', danger)}><I.x className="size-3" /></button>
+              </span>
+            ))}
+            <input id="inv-emails" autoFocus value={typed} onChange={e => { const v = e.target.value; if (/[,;\s]$/.test(v)) take(v); else setTyped(v); }}
+              onKeyDown={e => { if (e.key === 'Enter' && typed.trim()) { e.preventDefault(); take(typed); } if (e.key === 'Backspace' && !typed && emails.length) setEmails(l => l.slice(0, -1)); }}
+              onBlur={() => typed.trim() && take(typed)} onPaste={e => { e.preventDefault(); take(typed + ' ' + e.clipboardData.getData('text')); }}
+              placeholder={emails.length ? 'Add more, comma separated' : 'name@company.com, another@company.com'} className="min-w-[10rem] flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground" />
+          </div>
+        </Field>
+      )}
+      <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
+        <Field label="Role" htmlFor="inv-role"><Select id="inv-role" value={role} onChange={setRole} options={roleOptions} placeholder="Pick a role" searchable /></Field>
+        <div className="grid gap-2">
+          <Label>Access</Label>
+          <ToggleGroup label="Access" value={access} onChange={setAccess} items={[{ value: 'member', label: 'Member' }, { value: 'admin', label: 'Admin' }]} />
+        </div>
+      </div>
+      <p className="-mt-3 text-xs text-muted-foreground">{access === 'admin' ? 'Admins can also invite people and change statuses, buckets, automations, platforms, roles and teams.' : 'Members can add and edit any task, and delete the ones they made.'}</p>
+      <div className="grid gap-2">
+        <Label>Teams <span className="font-normal text-muted-foreground">· they’ll see these teams’ tasks under For me</span></Label>
+        <div className="flex flex-wrap gap-1.5">
+          {teamsList.map(t => {
+            const on = teams.includes(t.id);
+            return <button key={t.id} type="button" aria-pressed={on} onClick={() => setTeams(l => on ? l.filter(x => x !== t.id) : [...l, t.id])}
+              className={cn('h-7 rounded-full border px-3 text-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', on ? 'border-primary bg-primary text-primary-foreground' : 'border-input text-foreground hover:bg-muted')}>{t.name}</button>;
+          })}
+        </div>
+      </div>
+      {err && <p className="whitespace-pre-line break-words text-sm text-destructive">{err}</p>}
+    </Dialog>
+  );
+}
+
+// Settings › Roles & teams (0.20). Owner and Admins add, rename and remove; everyone else can look.
+function RolesTeamsPage({ teamsList, rolesList, onSaveTeams, onSaveRoles, taskCounts = {}, onMoveTasks }) {
+  const team = useTeam();
+  const can = !team.on || team.admin;
+  const [edit, setEdit] = useState(null); // { kind, id, name, group }
+  const [del, setDel] = useState(null); // { kind, item, to }
+  const people = (kind, id) => (kind === 'team' ? team.members.filter(m => (m.teams || []).includes(id)) : team.members.filter(m => m.role === id || norm(m.role) === norm((rolesList.find(r => r.id === id) || {}).name)));
+  const countText = (kind, id) => {
+    const p = people(kind, id).length, t = kind === 'team' ? taskCounts[id] || 0 : 0;
+    return [team.on ? `${p} ${p === 1 ? 'person' : 'people'}` : '', kind === 'team' ? `${t} ${t === 1 ? 'task' : 'tasks'}` : ''].filter(Boolean).join(' · ');
+  };
+  const saveEdit = () => {
+    const name = (edit.name || '').trim();
+    if (!name) { setEdit(null); return; }
+    const list = edit.kind === 'team' ? teamsList : rolesList;
+    if (list.some(x => x.id !== edit.id && norm(x.name) === norm(name))) { toast.error(`There’s already a ${edit.kind} called “${name}”`); return; }
+    if (edit.kind === 'team') onSaveTeams(edit.id ? teamsList.map(t => t.id === edit.id ? { ...t, name } : t) : [...teamsList, { id: 't-' + newId(), name }]);
+    else onSaveRoles(edit.id ? rolesList.map(r => r.id === edit.id ? { ...r, name, group: (edit.group || '').trim() || r.group } : r) : [...rolesList, { id: 'r-' + newId(), name, group: (edit.group || '').trim() || 'Other' }]);
+    setEdit(null);
+  };
+  const askDelete = (kind, item) => {
+    const used = people(kind, item.id).length + (kind === 'team' ? taskCounts[item.id] || 0 : 0);
+    if (!used) { doDelete(kind, item, ''); return; }
+    setDel({ kind, item, to: '' });
+  };
+  const doDelete = async (kind, item, to) => {
+    setDel(null);
+    const failed = [];
+    for (const m of people(kind, item.id)) {
+      try {
+        if (kind === 'team') await cloudUpdateMember(m.id, { teams: [...new Set((m.teams || []).filter(x => x !== item.id).concat(to ? [to] : []))] });
+        else await cloudUpdateMember(m.id, { role: to });
+      } catch (e) { failed.push(m.name || m.email); }
+    }
+    if (kind === 'team') { onMoveTasks(item.id, to); onSaveTeams(teamsList.filter(t => t.id !== item.id)); }
+    else onSaveRoles(rolesList.filter(r => r.id !== item.id));
+    toast(`${item.name} is gone`, failed.length ? `Couldn’t update ${failed.join(', ')}. Change them by hand in Members.` : to ? 'Its people and tasks moved over.' : undefined);
+  };
+  const row = (kind, x) => (
+    <div key={x.id} className="group/row flex min-w-0 min-h-10 items-center gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-muted/50">
+      {edit && edit.kind === kind && edit.id === x.id ? (
+        <form className="flex min-w-0 flex-1 items-center gap-2" onSubmit={e => { e.preventDefault(); saveEdit(); }}>
+          <Input autoFocus value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setEdit(null); } }} className="h-8" aria-label={`${kind === 'team' ? 'Team' : 'Role'} name`} />
+          {kind === 'role' && <Input value={edit.group || ''} onChange={e => setEdit({ ...edit, group: e.target.value })} className="h-8 w-36" placeholder="Group" aria-label="Group" />}
+          <Button size="sm" type="submit">Save</Button>
+        </form>
+      ) : <>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{x.name}</span>
+          {kind === 'role' && x.group && <span className="block truncate text-xs text-muted-foreground">{x.group}</span>}
+        </span>
+        <span className="relative flex shrink-0 items-center justify-end">
+          <span className={cn('truncate text-right text-xs text-muted-foreground', can && 'transition-opacity group-focus-within/row:opacity-0 group-hover/row:opacity-0')}>{countText(kind, x.id)}</span>
+          {can && <span className="absolute right-0 flex gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover/row:opacity-100">
+            <button type="button" className={quietBtn} onClick={() => setEdit({ kind, id: x.id, name: x.name, group: x.group })}>Rename</button>
+            <button type="button" className={cn(quietBtn, 'hover:!bg-destructive/10', danger)} onClick={() => askDelete(kind, x)}>Delete</button>
+          </span>}
+        </span>
+      </>}
+    </div>
+  );
+  const addRow = kind => edit && edit.kind === kind && !edit.id && (
+    <form className="flex items-center gap-2 px-2 py-1" onSubmit={e => { e.preventDefault(); saveEdit(); }}>
+      <Input autoFocus value={edit.name} onChange={e => setEdit({ ...edit, name: e.target.value })} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); setEdit(null); } }} className="h-8" placeholder={kind === 'team' ? 'Team name' : 'Role name'} aria-label={kind === 'team' ? 'Team name' : 'Role name'} />
+      {kind === 'role' && <Input value={edit.group || ''} onChange={e => setEdit({ ...edit, group: e.target.value })} className="h-8 w-36" placeholder="Group" aria-label="Group" />}
+      <Button size="sm" type="submit">Add</Button>
+      <Button size="sm" variant="ghost" onClick={() => setEdit(null)}>Cancel</Button>
+    </form>
+  );
+  const others = del ? (del.kind === 'team' ? teamsList : rolesList).filter(x => x.id !== del.item.id) : [];
+  return <>
+    <h3 className="text-[15px] font-semibold">Roles &amp; teams</h3>
+    <p className="mb-4 text-xs text-muted-foreground">Shape how your team is set up. {can ? 'Only the Owner and Admins can change these, and a rename updates everyone at once.' : 'The Owner and Admins look after these.'}</p>
+    <div className="mb-1 flex items-center justify-between gap-2">
+      <h4 className="text-sm font-medium">Teams <span className="font-normal text-muted-foreground">· tasks are tagged with these</span></h4>
+      {can && <button type="button" className={quietBtn} onClick={() => setEdit({ kind: 'team', id: null, name: '' })}><I.plus className="size-3.5" />Add team</button>}
+    </div>
+    <div className="mb-6 grid gap-0.5">{teamsList.map(t => row('team', t))}{addRow('team')}</div>
+    <div className="mb-1 flex items-center justify-between gap-2">
+      <h4 className="text-sm font-medium">Roles <span className="font-normal text-muted-foreground">· job titles, grouped</span></h4>
+      {can && <button type="button" className={quietBtn} onClick={() => setEdit({ kind: 'role', id: null, name: '', group: '' })}><I.plus className="size-3.5" />Add role</button>}
+    </div>
+    <div className="grid gap-0.5">{rolesList.map(r => row('role', r))}{addRow('role')}</div>
+    {can && <p className="mt-3 text-xs text-muted-foreground">Removing one that’s in use? We’ll ask where its people{' '}and tasks should go first, so nothing gets lost.</p>}
+    <Dialog open={!!del} onClose={() => setDel(null)} title={del ? `Where should ${del.item.name}’s ${del.kind === 'team' ? 'people and tasks' : 'people'} go?` : ''} className="max-w-md"
+      description={del ? (del.kind === 'team' ? `${countText('team', del.item.id)} use ${del.item.name}. Pick a team to move them to, or just drop the tag.` : `${countText('role', del.item.id)} ${people('role', del.item.id).length === 1 ? 'has' : 'have'} this role. Pick a new one for them.`) : ''}
+      footer={<>
+        <Button variant="outline" onClick={() => setDel(null)}>Cancel</Button>
+        <Button variant="destructive" onClick={() => doDelete(del.kind, del.item, del.to)}>Delete {del ? del.item.name : ''}</Button>
+      </>}>
+      {del && <Field label={del.kind === 'team' ? 'Move to' : 'New role'} htmlFor="del-to">
+        <Select id="del-to" value={del.to} onChange={v => setDel(d => ({ ...d, to: v }))} options={[{ value: '', label: del.kind === 'team' ? 'No team, just drop the tag' : 'No role' }, ...others.map(x => ({ value: x.id, label: x.name }))]} />
+      </Field>}
+    </Dialog>
   </>;
 }
 
@@ -8513,26 +9233,40 @@ const STANDALONE_WS = HASH.get('ws') || 'product';
 const DEFAULT_WORKSPACES = [{ id: 'product', name: 'Product' }, { id: 'marketing', name: 'Marketing' }];
 
 // Product and Marketing (and any you add later): each has its own tasks, statuses and settings.
+// The same file holds the team's teams and job roles (0.20), which are shared by every workspace.
 function useWorkspaces() {
-  const [list, setList] = useState(null);
+  const [doc, setDoc] = useState(null);
+  const docRef = useRef(null); docRef.current = doc;
   const [active, setActive] = useState(() => { try { return STANDALONE_ID ? STANDALONE_WS : (localStorage.getItem('tasks-ws') || 'product'); } catch (e) { return 'product'; } });
+  const save = n => { setDoc(n); persist('workspaces', n); };
   useEffect(() => {
+    let un = () => {};
     invoke('read_store', { name: 'workspaces' }).then(raw => {
       const v = raw ? JSON.parse(raw) : null;
-      if (v && Array.isArray(v.list) && v.list.length) setList(v.list);
-      else { setList(DEFAULT_WORKSPACES); persist('workspaces', { version: 1, list: DEFAULT_WORKSPACES }); }
-      // A workspace added or renamed on another PC.
+      if (v && Array.isArray(v.list) && v.list.length) setDoc({ version: 1, ...v });
+      else save({ version: 1, ...(v || {}), list: DEFAULT_WORKSPACES });
+      // A workspace, team or role added or renamed on another PC.
       un = cloudLive('workspaces', patch => {
-        const l = patch['m/list'];
-        if (Array.isArray(l) && l.length) { setList(l); persist('workspaces', { version: 1, list: l }); }
+        const cur = docRef.current || { version: 1, list: DEFAULT_WORKSPACES }, n = { ...cur };
+        if (Array.isArray(patch['m/list']) && patch['m/list'].length) n.list = patch['m/list'];
+        ['teams', 'roles'].forEach(f => { if (`m/${f}` in patch) { if (Array.isArray(patch[`m/${f}`])) n[f] = patch[`m/${f}`]; else delete n[f]; } });
+        save(n);
       }, v);
-    }).catch(() => setList(DEFAULT_WORKSPACES));
-    let un = () => {};
-    return () => un();
+    }).catch(() => setDoc({ version: 1, list: DEFAULT_WORKSPACES }));
+    // Task windows hear about changes from the main window.
+    const l = listen('tasks-workspaces', e => { if (e.payload && e.payload.from !== WINDOW_LABEL) setDoc(e.payload.doc); });
+    return () => { un(); l.then(f => f()).catch(() => {}); };
   }, []);
+  const update = f => { const cur = docRef.current || { version: 1, list: DEFAULT_WORKSPACES }; const n = { ...cur, ...f(cur) }; save(n); emit('tasks-workspaces', { from: WINDOW_LABEL, doc: n }).catch(() => {}); };
+  const list = (doc && doc.list) || DEFAULT_WORKSPACES;
   const switchTo = id => { setActive(id); if (!STANDALONE_ID) { try { localStorage.setItem('tasks-ws', id); } catch (e) {} } };
-  const rename = (id, name) => setList(l => { const n = l.map(w => w.id === id ? { ...w, name } : w); persist('workspaces', { version: 1, list: n }); return n; });
-  return { list: list || DEFAULT_WORKSPACES, ready: !!list, active: (list || DEFAULT_WORKSPACES).some(w => w.id === active) ? active : 'product', switchTo, rename };
+  const rename = (id, name) => update(d => ({ list: d.list.map(w => w.id === id ? { ...w, name } : w) }));
+  return {
+    list, ready: !!doc, active: list.some(w => w.id === active) ? active : 'product', switchTo, rename,
+    teams: (doc && Array.isArray(doc.teams)) ? doc.teams : DEFAULT_TEAMS,
+    roles: (doc && Array.isArray(doc.roles)) ? doc.roles : DEFAULT_ROLES,
+    saveTeams: t => update(() => ({ teams: t })), saveRoles: r => update(() => ({ roles: r })),
+  };
 }
 
 export default function Root() {
@@ -8569,14 +9303,23 @@ function MainRoot() {
     });
   }, []);
   const [openOnLoad, setOpenOnLoad] = useState(null);
+  // First run in a team (0.20): confirm your profile, then a short tour for your team.
+  const team = useTeam();
+  const welcome = prof.data.user && prof.data.user.welcome;
+  const [tourOpen, setTourOpen] = useState(false);
+  useEffect(() => { if (welcome === 'tour' && team.on && !STANDALONE_ID) setTourOpen(true); }, [welcome, team.on]);
+  const closeTour = () => { setTourOpen(false); if (welcome === 'tour') prof.updateUser({ welcome: 'done' }, true); };
   return (
     <MeContext.Provider value={prof.data.user || null}>
       {!prof.loaded ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
         : !prof.data.user ? <SignIn prof={prof} />
         : !wsp.ready ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
+        : welcome === 'pending' && team.on && team.me && !STANDALONE_ID ? <Welcome prof={prof} team={team} rolesList={wsp.roles} teamsList={wsp.teams} onDone={() => {}} />
         : <App key={wsp.active} prof={prof} standaloneId={STANDALONE_ID} ws={wsp.active} workspaces={wsp.list} openOnLoad={openOnLoad}
             onRenameWorkspace={wsp.rename}
+            teamsList={wsp.teams} rolesList={wsp.roles} onSaveTeams={wsp.saveTeams} onSaveRoles={wsp.saveRoles} onReplayTour={() => setTourOpen(true)}
             onSwitchWorkspace={(id, taskId) => { setOpenOnLoad(taskId || null); wsp.switchTo(id); }} />}
+      {tourOpen && team.on && <TeamTour tour={tourFor(team, wsp.roles)} onClose={closeTour} />}
       <Toaster />
       <Toaster id="update" position="bottom-left" style={{ '--width': '384px' }} />
     </MeContext.Provider>

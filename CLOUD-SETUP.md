@@ -45,13 +45,26 @@ table for your name, photo, role, phone, status and time zone. Running it again 
 and documents aren't touched. Until you do, everything else keeps syncing and Settings → Cloud & backups
 says the profile is waiting.
 
+## Teams (0.20)
+Taskit 0.20 turns your cloud into one shared team workspace. Do this once, then update every PC to 0.20.
+1. **SQL Editor** → **New query**: paste `supabase/teams-0.20.sql` and **Run**. You become the Owner.
+   PCs still on 0.19 stop syncing from here until they update; their changes wait on the PC.
+2. **Authentication** → **Sign In / Providers** → **Google**: turn it on, paste the app's Google Client ID into
+   **Client IDs** and the secret into **Client Secret (for OAuth)**, and save.
+3. **Authentication** → **Hooks** → **Add hook** → **Before User Created** → Postgres → `public` → `gate_signup`.
+   Only invited emails can make an account.
+4. **Sign In / Providers**: turn on **Allow new users to sign up** (the hook keeps strangers out).
+5. On GitHub, **Settings** → **Secrets and variables** → **Actions**: add the variable `GOOGLE_CLIENT_ID` and the
+   secret `GOOGLE_CLIENT_SECRET`, so the Google sign-in is built into the app.
+Then invite people in Settings → Members. They sign in with Google using the invited email.
+
 ## Good to know
 - Your data stays on each PC too, so Tasks works offline and sends your changes when you're back online.
-- Each task syncs on its own, so working on two PCs at once is fine. If the same task is changed on
-  both at the same moment, the newer edit is kept and you see a notice.
-- A running timer shows on every PC, but it belongs to the PC that started it: closing or shutting
+- Each task syncs on its own, so working on two PCs at once is fine. If two people change the same task,
+  their edits are merged field by field; only when both change the same field does the newer edit win.
+- Timers are per person. A running timer belongs to the PC that started it: closing or shutting
   down one PC only stops the timers started there.
 - Watch folders are paths on one PC, so each PC keeps its own list.
-- Your profile syncs as one row. Anyone signed in to your Supabase project can see it, which today is only you.
+- Your profile syncs as one row. Your teammates can see it; only you can change it.
 - Free plan limits: 500 MB of data, 1 GB of documents, files up to 50 MB. A free project is paused after
   a week with no use at all; open it at supabase.com to wake it up (your data is kept).

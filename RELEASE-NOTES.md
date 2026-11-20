@@ -1,3 +1,21 @@
+Taskit is a team app: invite people, see Tasks for me or everyone's, and sign in with Google.
+- One team workspace: everyone shares the same tasks, buckets, platforms, documents and automations, synced live. Your watch folders, theme, sidebar pin and notification choices stay personal.
+- Members: Settings > Members lists the team with role, teams and access. Invite people takes emails, a role, teams and Member or Admin. Only invited emails can sign in, and no email is sent, so the ⋯ menu copies a heads-up message. The Owner and Admins can change or remove people, and someone removed is signed out right away.
+- Access: Members can create and edit any task and delete the ones they made. Admins also change statuses, buckets, automations, platforms, teams, roles, column names and team settings.
+- Roles & teams: a new Settings page where the Owner and Admins add, rename or delete teams and job titles. Deleting one in use asks where its people and tasks go.
+- For me / Everyone: click the title on Tasks to see Tasks for me (your teams plus anything that's yours), Everyone, or one team. Ctrl + 1 and Ctrl + 2 switch. Tasks get a Teams field, and the assignee is picked from a searchable list of members.
+- Sign-in: Continue with Google, then a short first run to confirm your name, photo and time zone, and a three-step tour for your team (skippable, replay from ⋯ > Team tour). Email and password still work for the Owner.
+- Sync: two people editing the same task merge field by field instead of the newer one winning. Time-based automations run once for the team, not once per PC. Timers and time logs are per person. Undo only reverts your own changes. Notifications are personal and only for your tasks and teams. Teammates download documents when they open them; the Owner keeps a full copy.
+- Fixes: the Cloud sync box no longer stays on the project screen after Next.
+- Supabase: run supabase/teams-0.20.sql once, turn on the Google provider with the app's Client ID and secret, add the Before User Created hook (public.gate_signup), and allow sign-ups. Steps are in CLOUD-SETUP.md. PCs still on 0.19 stop syncing once the update is run, until they update; their changes wait on the PC.
+- GitHub: add the GOOGLE_CLIENT_ID variable and GOOGLE_CLIENT_SECRET secret under Settings > Secrets and variables > Actions, so the Google sign-in is built in.
+
+See what added tasks cost a bucket, and move its end in one click.
+- Impact: a bucket's Scope section now turns the time spent on tasks added after it started into working days (8 hours a day, Monday to Friday), for example "Added tasks took 14h, about 2 working days".
+- Suggested end: when the end date hasn't moved far enough to cover that time, it says how many days short it is and offers "Move end to …". Nothing moves on its own. Pressing it moves the end, logs the move against the original end like any other, and can be undone from the toast.
+- Weekly report: Scope changes adds the working days next to the time spent on added tasks.
+- Supabase: no SQL changes and no new fields. Moving the end is a normal bucket edit and syncs as before.
+
 A new top of the window, new Filter and Sort, movable columns, more automations, and smoother motion.
 - Title bar: the Windows title bar is gone. A slim top row shows the workspace and page, the cloud status, and the app's own minimize, maximize and close buttons (close turns red on hover). Drag the row to move the window and double-click it to maximize. Close still hides to the tray when that setting is on. Pointing at maximize no longer shows the Windows 11 snap layouts; Win + Z and dragging to a screen edge still snap.
 - Page header: every page has a big title and summary, with search, the theme button, ⋯ and Create task on the right. The theme button switches light and dark in one click; Match Windows is in Settings > Appearance.

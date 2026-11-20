@@ -299,11 +299,15 @@ struct Profile {
     name: String,
     email: String,
     picture: String,
+    // Google's signed ID token (0.20). The app hands it to Supabase to sign in to the team's cloud,
+    // then drops it; it is never saved.
+    id_token: String,
 }
 
 #[derive(Deserialize)]
 struct TokenResponse {
     access_token: Option<String>,
+    id_token: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -416,6 +420,7 @@ async fn google_sign_in(app: AppHandle, client_id: String, client_secret: String
         .json()
         .await
         .map_err(err)?;
+    let id_token = token.id_token.clone().unwrap_or_default();
     let access = token.access_token.ok_or_else(|| {
         format!(
             "Google refused the sign-in: {}. Check the Client ID and secret.",
@@ -456,6 +461,7 @@ async fn google_sign_in(app: AppHandle, client_id: String, client_secret: String
         name: info.name.unwrap_or_else(|| email.split('@').next().unwrap_or("Me").to_string()),
         email,
         picture,
+        id_token,
     })
 }
 
