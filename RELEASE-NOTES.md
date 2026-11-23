@@ -1,3 +1,12 @@
+A Documents library with a reader, a borderless look, Inter, and a softer dark mode.
+- Documents library: the page opens as a table grouped by status (Approved, In review, Draft, Outdated), each group folds. Columns: document, status (click to change), linked tasks (first task plus a count), size and updated. Pointing at a row shows Open, Save a copy and Delete (red on hover). The file type tabs only show when the folder has more than one file type.
+- Clean titles: names like "68-kaufes-sow-item-verification-EN.pdf" show as "SOW · Item Verification". The leading number, the word most names start with, language codes, version tags and the extension are dropped from the label only. The real file name shows on hover and in the details panel, and search still matches it.
+- Reader: click a document to read it. Library (or Esc) goes back. The list on the left is grouped the same way and can fold into a narrow rail. One slim bar holds find, open, save, link and more. Details (linked tasks, file name, type, size, versions, Delete) open from the panel button and stay hidden until you open them.
+- Borderless look: no outlines on cards, buttons, fields, chips, menus or dialogs, one shared set of styles. The task table keeps faint row lines and solid column lines.
+- Font: Inter for text, Geist Mono for numbers.
+- Softer dark mode: the page is #1A1A1A instead of #0A0A0A, with cards, fills, menus and lines one step lighter each.
+- Supabase: no SQL changes and no new synced data. The library's folded groups, the rail and the details panel are remembered on each PC only.
+
 Taskit is a team app: invite people, see Tasks for me or everyone's, and sign in with Google.
 - One team workspace: everyone shares the same tasks, buckets, platforms, documents and automations, synced live. Your watch folders, theme, sidebar pin and notification choices stay personal.
 - Members: Settings > Members lists the team with role, teams and access. Invite people takes emails, a role, teams and Member or Admin. Only invited emails can sign in, and no email is sent, so the ⋯ menu copies a heads-up message. The Owner and Admins can change or remove people, and someone removed is signed out right away.

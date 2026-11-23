@@ -122,8 +122,8 @@ const I = {
 const buttonVariants = {
   default: 'bg-primary text-primary-foreground shadow hover:bg-primary/90',
   destructive: 'bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90',
-  outline: 'border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground',
-  secondary: 'bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80',
+  outline: 'border ui-fill hover:text-accent-foreground', // 0.20.2: filled grey, no outline (see .ui-fill in index.css)
+  secondary: 'ui-fill text-secondary-foreground',
   ghost: 'hover:bg-accent hover:text-accent-foreground',
   link: 'text-primary underline-offset-4 hover:underline',
 };
@@ -132,10 +132,10 @@ const Button = React.forwardRef(({ variant = 'default', size = 'default', classN
   <button ref={ref} type={type} className={cn('inline-flex items-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50', /(^|\s)justify-/.test(className || '') ? '' : 'justify-center', buttonVariants[variant], buttonSizes[size], className)} {...p} />
 ));
 
-const inputCls = 'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-base shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm';
+const inputCls = 'flex h-9 w-full rounded-md border border-input px-3 py-1 text-base transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm ui-field';
 const Input = React.forwardRef(({ className, ...p }, ref) => <input ref={ref} className={cn(inputCls, className)} {...p} />);
 const Textarea = React.forwardRef(({ className, ...p }, ref) => (
-  <textarea ref={ref} className={cn('flex min-h-[60px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-base shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm', className)} {...p} />
+  <textarea ref={ref} className={cn('flex min-h-[60px] w-full rounded-md border border-input px-3 py-2 text-base placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring md:text-sm ui-field', className)} {...p} />
 ));
 const Label = ({ className, ...p }) => <label className={cn('text-sm font-medium leading-none', className)} {...p} />;
 const Field = ({ label, htmlFor, children, className, hint }) => (
@@ -160,13 +160,13 @@ const badgeVariants = {
   outline: 'text-foreground',
 };
 const Badge = ({ variant = 'default', className, ...p }) => (
-  <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors whitespace-nowrap', badgeVariants[variant], className)} {...p} />
+  <span className={cn('inline-flex items-center gap-1.5 rounded-md border px-2.5 py-0.5 text-xs font-semibold transition-colors whitespace-nowrap ui-fill', badgeVariants[variant], className)} {...p} />
 );
 
-const Card = ({ className, ...p }) => <div className={cn('rounded-xl border bg-card text-card-foreground', className)} {...p} />;
+const Card = ({ className, ...p }) => <div className={cn('rounded-xl border text-card-foreground ui-card', className)} {...p} />;
 
 const Kbd = ({ children, className }) => (
-  <kbd className={cn('pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground', className)}>{children}</kbd>
+  <kbd className={cn('pointer-events-none inline-flex h-5 select-none items-center gap-1 rounded border bg-muted px-1.5 font-mono text-[10px] font-medium text-muted-foreground ui-fill', className)}>{children}</kbd>
 );
 
 // The signed-in person, so their Google photo can be shown wherever their name appears.
@@ -202,7 +202,7 @@ const Tabs = ({ value, onChange, items }) => (
   </div>
 );
 
-const Alert = ({ className, ...p }) => <div role="status" className={cn('relative w-full rounded-lg border px-4 py-3 text-sm', className)} {...p} />;
+const Alert = ({ className, ...p }) => <div role="status" className={cn('relative w-full rounded-lg border px-4 py-3 text-sm ui-inset', className)} {...p} />;
 
 const Table = ({ className, ...p }) => (
   <div className="relative w-full overflow-auto"><table className={cn('w-full caption-bottom text-sm', className)} {...p} /></div>
@@ -289,7 +289,7 @@ function Floating({ anchorRef, open, align = 'start', matchWidth, minMatch, clas
   if (!shown) return null;
   return createPortal(
     <div ref={closing ? undefined : panelRef} data-float={closing ? undefined : '1'} aria-hidden={closing || undefined} style={{ position: 'fixed', top: pos ? pos.top : -9999, left: pos ? pos.left : -9999, width: pos && pos.width, minWidth: pos && pos.minWidth, maxWidth: 'calc(100vw - 16px)' }}
-      className={cn('z-[80] rounded-md border bg-popover text-popover-foreground shadow-md outline-none anim-pop', closing && 'anim-out', className)}>
+      className={cn('z-[80] rounded-md border bg-popover text-popover-foreground outline-none anim-pop ui-float', closing && 'anim-out', className)}>
       {kids}
     </div>, document.body);
 }
@@ -371,11 +371,11 @@ function Select({ value, onChange, options, placeholder = 'Choose…', variant =
     else if (e.key === 'Tab') setOpen(false);
   };
   const triggerCls = {
-    field: 'flex h-9 w-full items-center gap-2 rounded-md border border-input bg-background px-3 text-left text-base md:text-sm transition-colors hover:border-foreground/20',
-    ghost: 'inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-transparent bg-transparent px-2 text-left text-sm transition-colors hover:bg-muted',
-    chip: 'inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-border bg-transparent px-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground',
+    field: 'flex h-9 w-full items-center gap-2 rounded-md border border-input px-3 text-left text-base md:text-sm transition-colors hover:border-foreground/20 ui-field',
+    ghost: 'inline-flex h-8 max-w-full items-center gap-2 rounded-md border border-transparent px-2 text-left text-sm transition-colors hover:bg-muted ui-quiet',
+    chip: 'inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-full border border-border px-2.5 text-xs text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground ui-fill',
     // A dropdown that reads as one word in a sentence (Automations, 0.19.12).
-    word: 'inline-flex h-7 max-w-[16rem] items-center gap-1 rounded-md border border-border bg-secondary px-2 text-left text-[13px] font-medium text-foreground transition-colors hover:border-foreground/20',
+    word: 'inline-flex h-7 max-w-[16rem] items-center gap-1 rounded-md border border-border bg-secondary px-2 text-left text-[13px] font-medium text-foreground transition-colors hover:border-foreground/20 ui-fill',
   }[variant];
   let lastGroup = null;
   return (
@@ -454,7 +454,7 @@ const ToggleGroup = ({ value, onChange, items, label }) => (
   <div role="radiogroup" aria-label={label} className="inline-flex items-center rounded-md shadow-sm">
     {items.map((it, i) => (
       <button key={it.value} type="button" role="radio" aria-checked={value === it.value} data-state={value === it.value ? 'on' : 'off'} onClick={e => onChange(it.value, e.currentTarget)}
-        className={cn('inline-flex h-9 items-center justify-center gap-1.5 border border-input bg-transparent px-3 text-sm font-medium transition-colors hover:bg-muted hover:text-muted-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=on]:bg-accent data-[state=on]:text-accent-foreground',
+        className={cn('inline-flex h-9 items-center justify-center gap-1.5 border border-input px-3 text-sm font-medium transition-colors hover:bg-muted hover:text-muted-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring data-[state=on]:bg-accent data-[state=on]:text-accent-foreground ui-field',
           i === 0 ? 'rounded-l-md' : '-ml-px', i === items.length - 1 && 'rounded-r-md')}>
         {it.icon}{it.label}
       </button>
@@ -474,7 +474,7 @@ function Calendar({ selected, onSelect, max }) {
   const start = new Date(month); start.setDate(1 - month.getDay());
   const days = Array.from({ length: 42 }, (_, i) => { const d = new Date(start); d.setDate(start.getDate() + i); return d; });
   const today = toISO(new Date());
-  const nav = 'inline-flex items-center justify-center rounded-md h-7 w-7 border border-input bg-transparent p-0 opacity-50 hover:opacity-100 hover:bg-accent';
+  const nav = 'inline-flex items-center justify-center rounded-md h-7 w-7 border border-input p-0 opacity-50 hover:opacity-100 hover:bg-accent ui-field';
   return (
     <div className="p-3">
       <div className="relative flex items-center justify-center pt-1 pb-3">
@@ -586,7 +586,7 @@ function useLockScroll(on) {
 }
 const SHEET_VARIANTS = {
   side: 'fixed inset-y-0 right-0 z-50 flex h-full w-full flex-col border-l bg-background shadow-lg sm:w-[max(28rem,40vw)] sm:max-w-full anim-sheet',
-  center: 'fixed left-1/2 top-1/2 z-50 flex h-[min(88vh,920px)] w-[min(880px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border bg-background shadow-2xl anim-zoom',
+  center: 'fixed left-1/2 top-1/2 z-50 flex h-[min(88vh,920px)] w-[min(880px,calc(100%-2rem))] flex-col overflow-hidden rounded-xl border bg-background anim-zoom ui-float',
   full: 'fixed inset-0 z-50 flex flex-col bg-background anim-fade',
 };
 function Sheet({ open, onClose, children, labelledBy, variant = 'side', onPick }) {
@@ -636,7 +636,7 @@ function AlertDialog({ open, title, description, confirmLabel, onConfirm, onCanc
   return createPortal(
     <>
       <div className={cn('fixed inset-0 z-[70] bg-black/80 anim-fade', closing && 'anim-out')} />
-      <div role="alertdialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} className={cn('fixed left-1/2 top-1/2 z-[70] grid w-[calc(100%-2rem)] max-w-lg gap-4 rounded-lg border bg-background p-6 shadow-lg anim-zoom', closing && 'anim-out')} style={{ transform: 'translate(-50%,-50%)' }}>
+      <div role="alertdialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} className={cn('fixed left-1/2 top-1/2 z-[70] grid w-[calc(100%-2rem)] max-w-lg gap-4 rounded-lg border bg-background p-6 anim-zoom ui-float', closing && 'anim-out')} style={{ transform: 'translate(-50%,-50%)' }}>
         <div className="flex flex-col space-y-2 text-center sm:text-left">
           <h2 className="text-lg font-semibold">{text.title}</h2>
           <p className="text-sm text-muted-foreground">{text.description}</p>
@@ -672,7 +672,7 @@ function Dialog({ open, onClose, title, description, children, footer, className
     <>
       <div className={cn('fixed inset-0 z-[70] bg-black/80 anim-fade', closing && 'anim-out')} onClick={closing ? undefined : onClose} />
       <div role="dialog" aria-modal={closing ? undefined : 'true'} aria-hidden={closing || undefined} aria-labelledby={closing ? undefined : 'dlg-title'}
-        className={cn('fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col gap-5 overflow-hidden rounded-lg border bg-background p-6 shadow-lg anim-zoom', closing && 'anim-out', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
+        className={cn('fixed left-1/2 top-1/2 z-[70] flex max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] flex-col gap-5 overflow-hidden rounded-lg border bg-background p-6 anim-zoom ui-float', closing && 'anim-out', className || 'max-w-2xl')} style={{ transform: 'translate(-50%,-50%)' }}>
         <div className="flex shrink-0 flex-col space-y-1.5 pr-6 text-left">
           <h2 id={closing ? undefined : 'dlg-title'} className="text-lg font-semibold leading-none tracking-tight break-words">{view.title}</h2>
           {view.description && <p className="text-sm text-muted-foreground">{view.description}</p>}
@@ -697,14 +697,14 @@ function DialogBody({ children }) {
 const undoHook = { current: null };
 function ToastCard({ id, title, description, undo }) {
   return (
-    <div className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-background p-4 text-sm text-foreground shadow-lg">
+    <div className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-background p-4 text-sm text-foreground ui-float">
       <div className="min-w-0 flex-1">
         <div className="font-medium">{title}</div>
         {description && <div className="text-muted-foreground mt-0.5">{description}</div>}
       </div>
       {undo && (
         <button type="button" onClick={() => { undoHook.current && undoHook.current(); sonner.dismiss(id); }}
-          className="shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted">Undo</button>
+          className="shrink-0 rounded-md border px-2.5 py-1 text-xs font-medium hover:bg-muted ui-fill">Undo</button>
       )}
     </div>
   );
@@ -1585,7 +1585,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); onCancel(); }
   };
   const chip = (kind, name, dot, clear) => (
-    <span key={kind} className="inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border bg-muted/60 pl-2 pr-1 text-xs">
+    <span key={kind} className="inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border bg-muted/60 pl-2 pr-1 text-xs ui-fill">
       <span className="text-muted-foreground">{kind === 'bucket' ? '@' : '#'}</span>
       {dot && <span className={cn('size-2 shrink-0 rounded-full', dot)} />}
       <span className="truncate font-medium">{name}</span>
@@ -1609,7 +1609,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
     </div>
   );
   const pill = (kind, name) => name ? (
-    <span key={kind} className="inline-flex h-[30px] max-w-[15rem] items-center gap-1.5 rounded-lg border bg-muted pl-3 pr-1.5 text-[13px]">
+    <span key={kind} className="inline-flex h-[30px] max-w-[15rem] items-center gap-1.5 rounded-lg border bg-muted pl-3 pr-1.5 text-[13px] ui-fill">
       {dotOf(kind, name) && <span className={cn('size-2 shrink-0 rounded-full', dotOf(kind, name))} />}
       <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => startPick(kind === 'bucket' ? '@' : '#')} title={`Change ${L[kind].toLowerCase()}`} className="truncate font-medium">{name}</button>
       <button type="button" onMouseDown={e => e.preventDefault()} onClick={() => kind === 'bucket' ? setBucket('') : setPlatform('')} aria-label={`Remove ${L[kind].toLowerCase()} ${name}`}
@@ -1617,7 +1617,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
     </span>
   ) : (
     <button key={kind} type="button" onMouseDown={e => e.preventDefault()} onClick={() => startPick(kind === 'bucket' ? '@' : '#')}
-      className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border px-3 text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground">
+      className="inline-flex h-[30px] items-center gap-1.5 rounded-lg border px-3 text-[13px] text-muted-foreground hover:bg-muted hover:text-foreground ui-fill">
       {kind === 'bucket' ? <I.layers className="size-3.5" /> : <span className="w-3.5 text-center text-[15px] leading-none">#</span>}{L[kind]}
     </button>
   );
@@ -1660,7 +1660,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
           onChange={e => { const t = e.target.value.replace(/\r?\n/g, ' '); setV(t); look(t, e.target.selectionStart); }}
           onSelect={e => look(e.target.value, e.target.selectionStart)}
           onKeyDown={onKey}
-          className={cn('min-w-0 flex-1 resize-none bg-transparent py-[5px] text-base leading-6 placeholder:text-muted-foreground focus-visible:outline-none', compact && 'rounded-md border border-input px-3 shadow-sm focus-visible:ring-1 focus-visible:ring-ring')} />
+          className={cn('min-w-0 flex-1 resize-none bg-transparent py-[5px] text-base leading-6 placeholder:text-muted-foreground focus-visible:outline-none', compact && 'rounded-md border border-input px-3 focus-visible:ring-1 focus-visible:ring-ring ui-field')} />
         {!compact && <Kbd className="mt-[7px]">Enter ↵</Kbd>}
       </div>
       {(bucket || platform) && (
@@ -1670,7 +1670,7 @@ function CaptureBox({ lists, maxHeight, onSave, onCancel, onPicking, compact }) 
         </div>
       )}
       {picking && (
-        <div role="listbox" aria-label={L[tok.kind]} className={cn('rounded-lg border bg-popover p-1 text-popover-foreground shadow-sm anim-pop', !compact && 'ml-10')}>
+        <div role="listbox" aria-label={L[tok.kind]} className={cn('rounded-lg border bg-popover p-1 text-popover-foreground anim-pop ui-float', !compact && 'ml-10')}>
           <div className="px-2 pb-1 pt-0.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{plural(L[tok.kind])}</div>
           {options.length ? options.map((o, i) => (
             <div key={o.name} role="option" aria-selected={i === hi} onMouseDown={e => e.preventDefault()} onMouseEnter={() => setHi(i)} onClick={() => pick(o)}
@@ -1811,7 +1811,7 @@ const NOTIFY_TRIGGERS = ['due_soon', 'overdue', 'blocked', 'unblocked', 'done', 
 const InfoTip = ({ children, label = 'More info' }) => (
   <span className="group/tip relative inline-flex">
     <button type="button" aria-label={label} className="flex size-5 items-center justify-center rounded text-muted-foreground/60 transition-colors hover:text-foreground focus-visible:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.info className="size-3.5" /></button>
-    <span role="tooltip" className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-64 -translate-x-1/2 rounded-md border bg-popover px-3 py-2 text-xs font-normal leading-snug text-popover-foreground opacity-0 shadow-lg transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100">{children}</span>
+    <span role="tooltip" className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 w-64 -translate-x-1/2 rounded-md border bg-popover px-3 py-2 text-xs font-normal leading-snug text-popover-foreground opacity-0 transition-opacity group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 ui-float">{children}</span>
   </span>
 );
 const SRow = ({ label, info, children, className }) => (
@@ -1828,7 +1828,7 @@ function QuietInput({ value, onSave, label, placeholder }) {
   const commit = () => { const t = v.trim(); if (t && t !== value) onSave(t); else setV(value || ''); };
   return <input value={v} onChange={e => setV(e.target.value)} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setV(value || ''); setTimeout(() => e.target.blur()); } }}
     aria-label={label} placeholder={placeholder} spellCheck={false}
-    className="h-7 w-44 rounded-md border border-transparent bg-transparent px-2 text-right text-[13px] transition-colors hover:border-input focus:border-input focus:text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />;
+    className="h-7 w-44 rounded-md border border-transparent px-2 text-right text-[13px] transition-colors hover:border-input focus:border-input focus:text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-quiet" />;
 }
 // The quick capture key: shows the keys; click to record new ones. Reset and Off appear on hover.
 function ShortcutCell({ value, onChange, error }) {
@@ -1851,7 +1851,7 @@ function ShortcutCell({ value, onChange, error }) {
             if (!r.ok) { setMsg('Include Ctrl or Alt. Function keys work alone.'); return; }
             setRec(false); setMsg(''); onChange(r.combo);
           }}
-          className={cn('flex h-7 items-center gap-1 rounded-md border border-transparent px-1.5 transition-colors hover:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', rec && 'border-input ring-1 ring-ring')}>
+          className={cn('flex h-7 items-center gap-1 rounded-md border border-transparent px-1.5 transition-colors hover:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-quiet', rec && 'border ring-1 ring-ring ui-quiet')}>
           {rec ? <span className="px-1 text-[13px] text-muted-foreground">Press keys…</span> : keys ? keys.map(k => <Kbd key={k} className="h-6 px-2 text-[11px]">{k}</Kbd>) : <span className="px-1 text-[13px] text-muted-foreground">Off</span>}
         </button>
       </div>
@@ -2054,7 +2054,7 @@ function PausedTimersDialog({ note, tasks, oneAtATime, onResume, onClose }) {
         <Button variant="outline" onClick={onClose}>{resumed.length ? 'Done' : 'Keep paused'}</Button>
         {left.length > 0 && !(oneAtATime && left.length > 1) && <Button onClick={() => resume(left.map(t => t.id))}><I.play className="size-3.5" />{left.length > 1 ? `Resume all ${left.length}` : 'Resume'}</Button>}
       </>}>
-      <ul className="divide-y rounded-md border" data-testid="paused-list">
+      <ul className="divide-y rounded-md border ui-inset" data-testid="paused-list">
         {list.map(t => {
           const on = resumed.includes(t.id) || !!t.timerStartedAt;
           return (
@@ -2274,7 +2274,7 @@ function DropZone({ onFiles, compact, busy }) {
 
 function FileRow({ f, onPreview, onDownload, onRemove }) {
   return (
-    <div className="flex items-center gap-3 rounded-md border px-3 py-2">
+    <div className="flex items-center gap-3 rounded-md border px-3 py-2 ui-inset">
       <FileBadge kind={f.kind} />
       <button type="button" onClick={() => onPreview(f)} className="min-w-0 flex-1 text-left focus-visible:outline-none group">
         <div className="truncate text-sm font-medium group-hover:underline group-focus-visible:underline underline-offset-4">{f.name}</div>
@@ -2427,7 +2427,7 @@ function DocPreview({ file, className, find, findIdx = 0, onFindCount }) {
   const pdfPage = st && st.pdf && fq.length > 1 && pdfHits.current[findIdx];
   const msg = t => <div className="flex h-full items-center justify-center p-6 text-center text-sm text-muted-foreground">{t}</div>;
   return (
-    <div className={cn('overflow-hidden rounded-md border bg-muted/30', className)}>
+    <div className={cn('overflow-hidden rounded-md border bg-muted/30 ui-inset', className)}>
       {!file ? msg('Select a document to preview it.')
         : !st || st.loading ? msg('Loading preview…')
         : st.error ? msg('Couldn’t show a preview of this file. Use “Open in its app” instead.')
@@ -2473,7 +2473,7 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
         {n > 0 && (
           <div className="grid gap-1.5">
             {files.map((f, i) => (
-              <div key={i} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-1.5">
+              <div key={i} className="flex flex-wrap items-center gap-3 rounded-md border px-3 py-1.5 ui-inset">
                 <FileBadge kind={kindOf(f.name)} className="h-8 w-7" />
                 <span className="min-w-0 flex-1 truncate text-sm">{f.name}</span>
                 {(() => { const m = findVersionTarget(f.name, library); return m ? (
@@ -2525,11 +2525,11 @@ const docStatus = d => (d && DSt[d.status] ? d.status : 'draft');
 const DocStatusPill = ({ status, className }) => (
   <span className={cn('inline-flex min-w-0 items-center gap-1.5', className)}><span className={cn('size-1.5 shrink-0 rounded-full', DSt[status].dot)} /><span className="truncate">{DSt[status].label}</span></span>
 );
-function DocStatusPicker({ doc, onSetStatus, compact }) {
+function DocStatusPicker({ doc, onSetStatus, compact, quiet }) {
   const st = docStatus(doc);
   return (
     <DropdownMenu align="start"
-      trigger={p => <button {...p} type="button" title="Status (1–4)" className={cn('inline-flex shrink-0 items-center gap-1 rounded-md border text-muted-foreground hover:text-foreground', compact ? 'h-5 px-1.5 text-[11px]' : 'h-6 px-2 text-xs')}><DocStatusPill status={st} /><I.down className="size-3" /></button>}
+      trigger={p => <button {...p} type="button" title="Status (1–4)" className={cn('inline-flex shrink-0 items-center gap-1 rounded-md border hover:text-foreground', quiet ? 'group/st h-6 max-w-full px-1.5 text-xs text-muted-foreground ui-quiet' : 'text-muted-foreground ui-fill', !quiet && (compact ? 'h-5 px-1.5 text-[11px]' : 'h-6 px-2 text-xs'))}><DocStatusPill status={st} className={quiet && st === 'approved' ? 'font-medium text-emerald-700 dark:text-emerald-400' : undefined} /><I.down className={cn('size-3', quiet && 'opacity-0 group-hover/st:opacity-100')} /></button>}
       items={DOC_STATUSES.map(s => ({ label: s.label, icon: <span className={cn('mx-1 size-2 rounded-full', s.dot)} />, shortcut: s.key + (s.id === st ? ' ✓' : ''), onSelect: () => onSetStatus(doc, s.id) }))} />
   );
 }
@@ -2579,7 +2579,7 @@ function MergeDocsDialog({ doc, docs, onClose, onMerge }) {
       <Checkbox checked={order.includes(d.id)} onChange={() => toggle(d)} label={d.name} />
       <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
       <span className="min-w-0 flex-1 truncate text-[13px]">{d.name}</span>
-      {(d.versions || []).length > 0 && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">v{versionCount(d)}</span>}
+      {(d.versions || []).length > 0 && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground ui-fill">v{versionCount(d)}</span>}
       <span className="shrink-0 text-[11px] text-muted-foreground">{fmtDay(d.addedAt)}</span>
     </label>
   );
@@ -2590,7 +2590,7 @@ function MergeDocsDialog({ doc, docs, onClose, onMerge }) {
       <div className="grid gap-4 md:grid-cols-2">
         <div className="flex min-h-0 flex-col gap-2">
           <PageSearch value={q} onChange={setQ} placeholder="Search documents" />
-          <div className="max-h-80 min-h-[12rem] overflow-y-auto rounded-md border p-1">
+          <div className="max-h-80 min-h-[12rem] overflow-y-auto rounded-md border p-1 ui-inset">
             {sugg.length > 0 && <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">Similar names</div>}
             {sugg.map(candRow)}
             {sugg.length > 0 && others.length > 0 && <div className="px-2 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Other documents</div>}
@@ -2603,7 +2603,7 @@ function MergeDocsDialog({ doc, docs, onClose, onMerge }) {
             <span className="text-xs font-medium">Version order <span className="font-normal text-muted-foreground">· drag to rearrange</span></span>
             <button type="button" onClick={sortByDate} className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">Sort by date</button>
           </div>
-          <div ref={listRef} className="relative max-h-80 overflow-y-auto rounded-md border p-1">
+          <div ref={listRef} className="relative max-h-80 overflow-y-auto rounded-md border p-1 ui-inset">
             {picked.map((d, i) => (
               <div key={d.id}>
                 {drag && drag.over === i && drag.id !== d.id && <div className="mx-1 h-0.5 rounded bg-primary" />}
@@ -2629,6 +2629,46 @@ function MergeDocsDialog({ doc, docs, onClose, onMerge }) {
 }
 
 const DOC_FILTERS = [{ value: 'all', label: 'All' }, { value: 'pdf', label: 'PDF' }, { value: 'word', label: 'Word' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }];
+
+// Clean titles (0.20.2): "68-kaufes-sow-item-verification-EN.pdf" shows as "SOW · Item Verification".
+// Only the label changes; the file name is untouched, shows in the tooltip and in the details panel, and is what search and sync use.
+const DOC_ACRONYMS = new Set(['sow', 'srs', 'api', 'faq', 'ui', 'ux', 'sla', 'nda', 'kpi', 'qa', 'vat', 'gdpr', 'b2b', 'b2c', 'crm', 'erp', 'sdk', 'mvp', 'prd', 'rfp', 'hr', 'pdf', 'html', 'csv', 'iban', 'ios']);
+const DOC_SMALL = new Set(['and', 'or', 'of', 'for', 'the', 'a', 'an', 'to', 'in', 'on', 'at', 'by', 'with', 'vs', 'via', 'per']);
+const docWords = name => {
+  const s = (name || '').replace(/\.[^.]+$/, '').replace(/^\s*\d+[\s._-]+(?=\D)/, '');
+  // Spaces or underscores separate words when the name has them; then hyphens stay part of a word ("Post-Purchase").
+  const sep = /[\s_]/.test(s) ? /[\s_]+/ : /[\s_-]+/;
+  return s.split(sep).filter(w => w && !/^[-–·.]+$/.test(w));
+};
+// The word most file names start with (often the client or project name), stripped when it is on at least 40% of them.
+const docCommonPrefix = docs => {
+  const n = {};
+  docs.forEach(d => { const w = norm(docWords(d.name)[0]); if (w && !DOC_ACRONYMS.has(w) && /[a-z]/.test(w)) n[w] = (n[w] || 0) + 1; });
+  const [w, c] = Object.entries(n).sort((a, b) => b[1] - a[1])[0] || [];
+  return w && c >= 3 && c >= docs.length * 0.4 ? w : '';
+};
+const docTitle = (name, prefix) => {
+  let w = docWords(name);
+  if (prefix && w.length > 1 && norm(w[0]) === prefix) w = w.slice(1);
+  const tail = x => /^(en|de|fr|it|es|nl|pt|ur|ar)$/i.test(x) || /^v\d+([.,]\d+)*$/i.test(x) || /^(final|copy|\(\d+\))$/i.test(x) || /^\d{1,2}$/.test(x);
+  while (w.length > 1 && tail(w[w.length - 1])) w.pop();
+  if (!w.length) return (name || '').replace(/\.[^.]+$/, '');
+  const fix = (x, i) => {
+    const l = x.toLowerCase();
+    if (DOC_ACRONYMS.has(l)) return x.toUpperCase();
+    if (/[A-Z]/.test(x.slice(1)) || /[A-Z]/.test(x[0])) return x;
+    if (i > 0 && DOC_SMALL.has(l)) return l;
+    return x.split('-').map(p => p ? p[0].toUpperCase() + p.slice(1) : p).join('-');
+  };
+  const out = w.map(fix);
+  if (out.length > 1 && DOC_ACRONYMS.has(out[0].toLowerCase())) return out[0] + ' · ' + out.slice(1).join(' ');
+  return out.join(' ');
+};
+// The order groups show in, in the library and in the reader's list.
+const DOC_GROUP_ORDER = ['approved', 'review', 'draft', 'outdated'];
+const readPref = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch { return d; } };
+const writePref = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} };
+
 function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, onRemove, onDelete, onOpenTask, onAttach, onAddVersion, onUploadVersion, onMakeCurrent, onSetStatus, onSeen, onMerge, dragOver, focusId }) {
   const [q, setQ] = useState('');
   const texts = useDocTexts(docs);
@@ -2640,35 +2680,49 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
   const [selKey, setSelKey] = useState(null);
   const [viewVer, setViewVer] = useState(null); // an older version being previewed
   const [spin, setSpin] = useState(false);
-  const wrap = useRef(null), listRef = useRef(null);
+  // 0.20.2: the page opens as a library table; clicking a document opens it in the reader. These are view settings on this PC only.
+  const [mode, setMode] = useState('table');
+  const [shut, setShutRaw] = useState(() => readPref('taskit.docs.shut', {}));
+  const setShut = id => setShutRaw(s => { const n = { ...s, [id]: !s[id] }; writePref('taskit.docs.shut', n); return n; });
+  const [details, setDetailsRaw] = useState(() => readPref('taskit.docs.details', false));
+  const setDetails = v => { setDetailsRaw(v); writePref('taskit.docs.details', v); };
+  const [railed, setRailedRaw] = useState(() => readPref('taskit.docs.rail', false));
+  const setRailed = v => { setRailedRaw(v); writePref('taskit.docs.rail', v); };
+  const wrap = useRef(null), listRef = useRef(null), tableRef = useRef(null);
   const [height, setHeight] = useState(600);
   // The page fits the window: the preview stretches to the bottom edge.
   useLayoutEffect(() => {
     const fit = () => { if (wrap.current) setHeight(Math.max(420, window.innerHeight - wrap.current.getBoundingClientRect().top - 20)); };
     fit(); window.addEventListener('resize', fit); return () => window.removeEventListener('resize', fit);
   }, []);
-  useEffect(() => { if (focusId) setSelKey(focusId); }, [focusId]);
+  useEffect(() => { if (focusId) { setSelKey(focusId); setMode('reader'); } }, [focusId]);
+  const prefix = useMemo(() => docCommonPrefix(docs), [docs]);
+  const titleOf = d => docTitle(d.name, prefix);
   const nq = norm(q);
   const isOther = d => !['pdf', 'word', 'html'].includes(d.kind);
   const counts = { all: docs.length, pdf: docs.filter(d => d.kind === 'pdf').length, word: docs.filter(d => d.kind === 'word').length, html: docs.filter(d => d.kind === 'html').length, other: docs.filter(isOther).length };
-  const sorter = { new: (a, b) => b.addedAt - a.addedAt, name: (a, b) => a.name.localeCompare(b.name), size: (a, b) => b.size - a.size }[sort];
+  // File type tabs only show when there is more than one type.
+  const mixed = ['pdf', 'word', 'html', 'other'].filter(k => counts[k] > 0).length > 1;
+  useEffect(() => { if (!mixed && kind !== 'all') setKind('all'); }, [mixed]);
+  const sorter = { new: (a, b) => b.addedAt - a.addedAt, name: (a, b) => titleOf(a).localeCompare(titleOf(b)), size: (a, b) => b.size - a.size }[sort];
   // Search also looks inside documents (2+ letters). hits: how many times the text appears in the file.
   const tq = q.trim().length > 1 ? q.trim() : '';
   const inText = d => !!tq && countHits(texts[d.file], tq) > 0;
   const indexing = docs.some(d => TEXT_KINDS.includes(d.kind) && texts[d.file] == null);
-  const match = d => (kind === 'all' || (kind === 'other' ? isOther(d) : d.kind === kind)) && (stF === 'all' || docStatus(d) === stF) && (!nq || inText(d) || [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq)));
-  const inbox = docs.filter(d => d.inbox && match(d)).sort((a, b) => b.addedAt - a.addedAt);
-  const hitsOf = d => (tq ? countHits(texts[d.file], tq) : 0) + (tq && norm(d.name).includes(norm(tq)) ? 1000 : 0);
-  const rest = docs.filter(d => !d.inbox && match(d)).sort(tq ? (a, b) => hitsOf(b) - hitsOf(a) || sorter(a, b) : sorter);
-  // While searching, results come in two groups: names (and linked tasks) and text inside documents.
-  const nameHit = d => !!tq && [d.name, ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)].some(v => norm(v).includes(nq));
+  const nameFields = d => [d.name, titleOf(d), ...d.links.map(l => l.task.title), ...d.links.map(l => l.task.bucket)];
   const filt = d => (kind === 'all' || (kind === 'other' ? isOther(d) : d.kind === kind)) && (stF === 'all' || docStatus(d) === stF);
+  const match = d => filt(d) && (!nq || inText(d) || nameFields(d).some(v => norm(v).includes(nq)));
+  const inbox = docs.filter(d => d.inbox && match(d)).sort((a, b) => b.addedAt - a.addedAt);
+  // Not searching: the documents are grouped by status (Approved, In review, Draft, Outdated). Each group folds away.
+  const groups = DOC_GROUP_ORDER.map(id => ({ id, label: DSt[id].label, dot: DSt[id].dot, docs: docs.filter(d => !d.inbox && match(d) && docStatus(d) === id).sort(sorter) })).filter(g => g.docs.length);
+  // While searching, results come in two groups: names (and linked tasks) and text inside documents.
+  const nameHit = d => !!tq && nameFields(d).some(v => norm(v).includes(nq));
   const byName = tq ? docs.filter(d => filt(d) && nameHit(d)).sort(sorter) : [];
   const byText = tq ? docs.filter(d => filt(d) && inText(d)).sort((a, b) => countHits(texts[b.file], tq) - countHits(texts[a.file], tq) || sorter(a, b)) : [];
   const textTotal = byText.reduce((n, d) => n + countHits(texts[d.file], tq), 0);
   const [moreOf, setMoreOf] = useState({});
-  const flat = tq ? [...byName, ...byText.filter(d => !byName.includes(d))] : [...inbox, ...rest];
-  const sel = flat.find(d => d.id === selKey) || flat[0] || null;
+  const flat = tq ? [...byName, ...byText.filter(d => !byName.includes(d))] : [...(shut.inbox ? [] : inbox), ...groups.flatMap(g => shut[g.id] ? [] : g.docs)];
+  const sel = docs.find(d => d.id === selKey && flat.includes(d)) || flat[0] || null;
   const pendingIdx = useRef(null);
   useEffect(() => { setViewVer(null); setFindIdx(pendingIdx.current ?? 0); pendingIdx.current = null; }, [sel && sel.id]);
   const jumpTo = (d, i) => { if (sel && sel.id === d.id) { setFindOpen(true); setFindQ(tq); setFindIdx(i); } else { pendingIdx.current = i; pick(d); } };
@@ -2678,16 +2732,130 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
   const openFind = () => { setFindOpen(true); setFocusTick(n => n + 1); };
   const stepFind = dir => setFindIdx(i => findN ? (i + dir + findN) % findN : 0);
   useEffect(() => {
-    const k = e => { if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f' && sel) { e.preventDefault(); e.stopPropagation(); openFind(); } };
+    const k = e => { if (mode === 'reader' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f' && sel) { e.preventDefault(); e.stopPropagation(); openFind(); } };
     window.addEventListener('keydown', k, true); return () => window.removeEventListener('keydown', k, true);
-  }, [sel && sel.id]);
+  }, [sel && sel.id, mode]);
+  // Esc in the reader goes back to the library (unless a menu, dialog or the find bar has it).
+  useEffect(() => {
+    if (mode !== 'reader') return;
+    const k = e => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+      if (document.querySelector('[role=dialog],[role=menu],[role=listbox][data-open]')) return;
+      const t = e.target; if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+      setMode('table');
+    };
+    window.addEventListener('keydown', k); return () => window.removeEventListener('keydown', k);
+  }, [mode]);
+  // Back in the library, the document you were reading stays highlighted and in view.
+  useEffect(() => { if (mode === 'table' && sel && tableRef.current) { const el = tableRef.current.querySelector(`[data-doc="${sel.id}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); } }, [mode]);
   const total = docs.reduce((n, d) => n + (d.size || 0), 0);
-  const move = dir => { const i = flat.findIndex(d => sel && d.id === sel.id); const n = flat[Math.min(flat.length - 1, Math.max(0, i + dir))]; if (n) { setSelKey(n.id); const el = listRef.current && listRef.current.querySelector(`[data-doc="${n.id}"],[data-doc-in="${n.id}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); } };
+  const move = (dir, box) => { const i = flat.findIndex(d => sel && d.id === sel.id); const n = flat[Math.min(flat.length - 1, Math.max(0, i + dir))]; if (n) { setSelKey(n.id); const el = box && box.querySelector(`[data-doc="${n.id}"],[data-doc-in="${n.id}"]`); if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' }); } };
   // Clicking a new document marks it as seen: it leaves the Inbox and stays selected.
   const viewerRef = useRef(null);
   const pick = (d, focusViewer) => { setSelKey(d.id); if (d.inbox) onSeen(d); if (focusViewer && viewerRef.current) viewerRef.current.focus(); };
+  const open = d => { pick(d); setMode('reader'); };
   const shownFile = sel && viewVer ? { ...sel, ...viewVer, id: sel.id + '@' + viewVer.file } : sel;
-  const row = (d, inside) => {
+  const listKeys = box => e => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === 'ArrowDown') { e.preventDefault(); move(1, box()); }
+    if (e.key === 'ArrowUp') { e.preventDefault(); move(-1, box()); }
+    if (e.key === 'Enter' && sel) { e.preventDefault(); if (mode === 'table') open(sel); else pick(sel, true); }
+    const ds = DOC_STATUSES.find(s => s.key === e.key); if (ds && sel && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); onSetStatus(sel, ds.id); }
+    if (e.key === 'U' && e.shiftKey && sel) { e.preventDefault(); onMerge(sel); }
+  };
+  const verChip = d => (d.versions || []).length > 0 && <span className="shrink-0 rounded px-1 font-mono text-[10px] text-muted-foreground ui-fill">v{versionCount(d)}</span>;
+  const inboxActs = (d, target) => (
+    <>
+      {target && <button type="button" title={`Add as v${versionCount(target) + 1} of ${titleOf(target)}`} onClick={e => { e.stopPropagation(); onAddVersion(target, d); }} className="flex h-6 items-center rounded px-1.5 text-[11px] ui-fill">New version</button>}
+      <button type="button" title="Link to a task" aria-label={`Link ${d.name} to a task`} onClick={e => { e.stopPropagation(); onAttach(d); }} className="flex size-6 items-center justify-center rounded text-muted-foreground hover:text-foreground ui-quiet"><I.paperclip className="size-3.5" /></button>
+      <button type="button" title="Dismiss" aria-label={`Dismiss ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, true); }} className={cn('flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10', danger)}><I.x className="size-3.5" /></button>
+    </>
+  );
+  const groupHead = (id, label, count, dot, badge) => (
+    <button type="button" onClick={() => setShut(id)} aria-expanded={!shut[id]}
+      className="flex min-w-0 items-center gap-1.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground hover:text-foreground">
+      <I.down className={cn('size-3 shrink-0 transition-transform', shut[id] && '-rotate-90')} />
+      {dot && <span className={cn('size-1.5 shrink-0 rounded-full', dot)} />}
+      <span className="truncate">{label}</span>
+      {badge ? <span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium normal-case tracking-normal text-white">{count} new</span> : <span className="tnum font-mono font-normal tracking-normal">{count}</span>}
+    </button>
+  );
+
+  /* ---------- Library table ---------- */
+  const linkCell = d => {
+    if (!d.links.length) return <span className="text-xs text-muted-foreground/70">None</span>;
+    const l = d.links[0];
+    return (
+      <span className="flex min-w-0 items-center gap-1.5" title={d.links.length > 1 ? d.links.map(x => x.task.title || 'Untitled').join(', ') : undefined}>
+        <button type="button" onClick={e => { e.stopPropagation(); onOpenTask(l.task.id, l.archived); }} className="inline-flex h-6 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium ui-fill">
+          <span className={cn('size-1.5 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} /><span className="truncate">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</span>
+        </button>
+        {d.links.length > 1 && <span className="tnum shrink-0 font-mono text-[11px] text-muted-foreground">+{d.links.length - 1}</span>}
+      </span>
+    );
+  };
+  const tRow = (d, hits) => {
+    const on = sel && sel.id === d.id;
+    const target = d.inbox ? findVersionTarget(d.name, docs, d.id) : null;
+    return (
+      <div key={(hits != null ? 't-' : '') + d.id} data-doc={hits != null ? undefined : d.id} role="option" aria-selected={on} onClick={() => open(d)}
+        className={cn('dg-row dg-body group cursor-default text-[13px]', on ? 'bg-muted/70' : 'hover:bg-muted/50')}>
+        <div className="pl-2.5">
+          {d.inbox && <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />}
+          <FileBadge kind={d.kind} className="h-5 w-5 shrink-0 rounded text-[6px]" />
+          <span className="min-w-0 truncate font-medium" title={d.name}>{tq ? <HL text={titleOf(d)} q={tq} /> : titleOf(d)}</span>
+          {verChip(d)}
+          {hits != null && <span className="shrink-0 font-mono text-[11px] text-amber-600 dark:text-amber-400">{hits}×</span>}
+        </div>
+        <div onClick={e => e.stopPropagation()}><DocStatusPicker doc={d} onSetStatus={onSetStatus} quiet /></div>
+        <div>{linkCell(d)}</div>
+        <div><span className="tnum font-mono text-xs text-muted-foreground">{fmtSize(d.size)}</span></div>
+        <div><span className="truncate font-mono text-xs text-muted-foreground" title={fmtDay(d.addedAt)}>{relTime(d.addedAt)}</span></div>
+        <div className="dg-acts">
+          {d.inbox ? inboxActs(d, target) : <>
+            <button type="button" title="Open in its Windows app" aria-label={`Open ${d.name} in its Windows app`} onClick={e => { e.stopPropagation(); openExternal(d); }} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.external className="size-3.5" /></button>
+            <button type="button" title="Save a copy" aria-label={`Save a copy of ${d.name}`} onClick={e => { e.stopPropagation(); onDownload(d); }} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.download className="size-3.5" /></button>
+            <button type="button" title="Delete document" aria-label={`Delete ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, false); }} className={cn('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10', danger)}><I.trash className="size-3.5" /></button>
+          </>}
+        </div>
+      </div>
+    );
+  };
+  const tHead = (id, label, count, dot, badge) => (
+    <div key={'h-' + id} className="dg-row dg-group"><div className="pl-2.5">{groupHead(id, label, count, dot, badge)}</div><div /><div /><div /><div /><div /></div>
+  );
+  const tSub = (label, n) => (
+    <div className="dg-row dg-group"><div className="pl-2.5 text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">{label}<span className="ml-1.5 font-mono font-normal normal-case tracking-normal">{n}</span></div><div /><div /><div /><div /><div /></div>
+  );
+  const table = (
+    <div ref={tableRef} role="listbox" tabIndex={0} aria-label="Documents" onKeyDown={listKeys(() => tableRef.current)}
+      className={cn('doc-grid mt-3 min-h-0 flex-1 overflow-auto rounded-lg pb-2 focus-visible:outline-none', dragOver && 'ring-2 ring-ring')}>
+      <div className="min-w-[760px]">
+        <div className="dg-row dg-headrow sticky top-0 z-[1] bg-[hsl(var(--page))]">
+          <div className="pl-[38px]">Document</div><div>Status</div><div>Linked tasks</div><div>Size</div><div>Updated</div><div />
+        </div>
+        {tq ? (
+          <>
+            {tSub('Names', byName.length)}
+            {byName.map(d => tRow(d))}
+            {byName.length === 0 && <div className="px-10 py-2 text-xs text-muted-foreground/70">No names match.</div>}
+            {tSub('Inside documents', `${textTotal} ${textTotal === 1 ? 'match' : 'matches'} in ${byText.length}`)}
+            {byText.map(d => tRow(d, countHits(texts[d.file], tq)))}
+            {byText.length === 0 && <div className="px-10 py-2 text-xs text-muted-foreground/70">{indexing ? 'Still reading your documents…' : 'No document contains this text.'}</div>}
+          </>
+        ) : (
+          <>
+            {inbox.length > 0 && <>{tHead('inbox', 'Inbox', inbox.length, null, true)}{!shut.inbox && inbox.map(d => tRow(d))}</>}
+            {groups.map(g => <React.Fragment key={g.id}>{tHead(g.id, g.label, g.docs.length, g.dot)}{!shut[g.id] && g.docs.map(d => tRow(d))}</React.Fragment>)}
+            {flat.length === 0 && inbox.length === 0 && groups.length === 0 && <div className="px-3 py-8 text-center text-sm text-muted-foreground">No documents match.</div>}
+          </>
+        )}
+      </div>
+    </div>
+  );
+
+  /* ---------- Reader ---------- */
+  const rRow = (d, inside) => {
     const on = sel && sel.id === d.id;
     const target = d.inbox ? findVersionTarget(d.name, docs, d.id) : null;
     const hits = inside ? countHits(texts[d.file], tq) : 0;
@@ -2695,33 +2863,20 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
     const shown = moreOf[d.id] ? snips : snips.slice(0, 3);
     return (
       <div key={(inside ? 't-' : '') + d.id} data-doc={inside ? undefined : d.id} data-doc-in={inside ? d.id : undefined} role="option" aria-selected={on} onClick={() => pick(d)} onDoubleClick={() => pick(d, true)}
-        className={cn('group cursor-default rounded-md px-2.5 text-[13px]', on ? 'bg-muted' : 'hover:bg-muted/50')}>
-        <div className="flex h-9 items-center gap-2">
-        {d.inbox && <span className="size-1.5 shrink-0 rounded-full bg-blue-500" />}
-        <FileBadge kind={d.kind} className="h-5 w-5 rounded text-[6px]" />
-        <span className={cn('min-w-0 flex-1 truncate', on && 'font-semibold')}>{inside || !tq ? d.name : <HL text={d.name} q={tq} />}</span>
-        {inside && <span className="shrink-0 font-mono text-[11px] text-amber-600 dark:text-amber-400">{hits}×</span>}
-        {(d.versions || []).length > 0 && <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">v{versionCount(d)}</span>}
-        {d.inbox ? (
-          <span className="flex shrink-0 items-center gap-0.5">
-            <span className="text-[11px] text-muted-foreground group-hover:hidden">{relTime(d.addedAt)}</span>
-            <span className="hidden gap-0.5 group-hover:flex [@media(hover:none)]:flex">
-              {target && <button type="button" title={`Add as v${versionCount(target) + 1} of ${target.name}`} onClick={e => { e.stopPropagation(); onAddVersion(target, d); }} className="flex h-6 items-center rounded border bg-card px-1.5 text-[11px] hover:bg-muted">New version</button>}
-              <button type="button" title="Link to a task" aria-label={`Link ${d.name} to a task`} onClick={e => { e.stopPropagation(); onAttach(d); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.paperclip className="size-3" /></button>
-              <button type="button" title="Dismiss" aria-label={`Dismiss ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, true); }} className="flex size-6 items-center justify-center rounded border bg-card hover:bg-muted"><I.x className="size-3" /></button>
+        className={cn('group cursor-default rounded-md px-2 text-[13px]', on ? 'bg-muted' : 'hover:bg-muted/50')}>
+        <div className="flex h-8 items-center gap-2">
+          {d.inbox ? <span className="size-1.5 shrink-0 rounded-full bg-blue-500" /> : <span className={cn('size-1.5 shrink-0 rounded-full', DSt[docStatus(d)].dot)} />}
+          <span className={cn('min-w-0 flex-1 truncate', on && 'font-semibold')} title={d.name}>{inside || !tq ? titleOf(d) : <HL text={titleOf(d)} q={tq} />}</span>
+          {inside && <span className="shrink-0 font-mono text-[11px] text-amber-600 dark:text-amber-400">{hits}×</span>}
+          {d.inbox ? (
+            <span className="flex shrink-0 items-center gap-0.5">
+              <span className="text-[11px] text-muted-foreground group-hover:hidden">{relTime(d.addedAt)}</span>
+              <span className="hidden gap-0.5 group-hover:flex [@media(hover:none)]:flex">{inboxActs(d, target)}</span>
             </span>
-          </span>
-        ) : (
-          <span className="flex shrink-0 items-center gap-2.5 text-[11px] text-muted-foreground">
-            <DocStatusPill status={docStatus(d)} className="w-[4.25rem]" />
-            {d.links.length ? <span className="inline-flex items-center gap-0.5" title={d.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{d.links.length}</span> : <span className="w-6" title="Not linked to a task" />}
-            <span className="tnum hidden w-12 text-right 2xl:inline">{fmtSize(d.size)}</span>
-            <span className="w-16 text-right">{relTime(d.addedAt)}</span>
-          </span>
-        )}
+          ) : d.links.length > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[11px] text-muted-foreground" title={d.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{d.links.length}</span>}
         </div>
         {inside && (
-          <div className="-mt-1 grid pb-1.5 pl-[1.6rem]">
+          <div className="-mt-1 grid pb-1.5 pl-3.5">
             {shown.map((m, i) => (
               <button key={i} type="button" onClick={e => { e.stopPropagation(); jumpTo(d, i); }} title={`Go to match ${i + 1}`}
                 className={cn('flex min-w-0 items-baseline gap-1.5 rounded px-1.5 py-0.5 text-left text-xs hover:bg-background/60 hover:text-foreground', on && findOpen && findIdx === i ? 'bg-background/70 text-foreground' : 'text-muted-foreground')}>
@@ -2735,138 +2890,211 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
       </div>
     );
   };
-  const kindChip = (id, label) => (
-    <button key={id} type="button" onClick={() => setKind(id)} aria-pressed={kind === id}
-      className={cn('inline-flex h-7 items-center gap-1.5 rounded-full border px-2.5 text-xs transition-colors', kind === id ? 'border-foreground/25 bg-card font-medium text-foreground' : 'bg-transparent text-muted-foreground hover:border-foreground/20 hover:text-foreground')}>
-      {label}<span className="tnum opacity-70">{counts[id]}</span>
-    </button>
+  const rHead = (id, label, count, dot, badge) => <div key={'h-' + id} className="flex h-8 items-center px-2 pt-1">{groupHead(id, label, count, dot, badge)}<span className="ml-2 h-px flex-1 bg-border" /></div>;
+  const readerList = railed ? (
+    <div className="flex w-11 shrink-0 flex-col items-center gap-1">
+      <button type="button" onClick={() => setRailed(false)} aria-label="Show the document list" title="Show the document list" className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.panelLeft className="size-4" /></button>
+      <div ref={listRef} role="listbox" tabIndex={0} aria-label="Documents" onKeyDown={listKeys(() => listRef.current)} className="flex min-h-0 w-full flex-1 flex-col items-center gap-1 overflow-y-auto py-1 focus-visible:outline-none">
+        {flat.map(d => (
+          <button key={d.id} data-doc={d.id} type="button" role="option" aria-selected={sel && sel.id === d.id} aria-label={titleOf(d)} title={`${titleOf(d)}\n${d.name}`} onClick={() => pick(d)}
+            className={cn('relative flex size-8 shrink-0 items-center justify-center rounded-md', sel && sel.id === d.id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted/50 hover:text-foreground')}>
+            <I.file className="size-4" />
+            <span className={cn('absolute bottom-1 right-1 size-1.5 rounded-full ring-2 ring-[hsl(var(--page))]', d.inbox ? 'bg-blue-500' : DSt[docStatus(d)].dot)} />
+          </button>
+        ))}
+      </div>
+    </div>
+  ) : (
+    <div className={cn('flex w-full shrink-0 flex-col gap-2 lg:w-[clamp(260px,24%,340px)]', 'max-h-[40%] lg:max-h-none')}>
+      <div className="flex items-center gap-1.5">
+        <PageSearch value={q} onChange={setQ} placeholder="Search documents" />
+        <button type="button" onClick={() => setRailed(true)} aria-label="Fold the list into a rail" title="Fold the list into a rail" className="hidden size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-fill lg:flex"><I.panelLeft className="size-4" /></button>
+      </div>
+      <div ref={listRef} role="listbox" tabIndex={0} aria-label="Documents" onKeyDown={listKeys(() => listRef.current)} className={cn('min-h-0 flex-1 overflow-y-auto pb-1 focus-visible:outline-none', dragOver && 'rounded-md ring-2 ring-ring')}>
+        {tq ? (
+          <>
+            <div className="flex items-center gap-1.5 px-2 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">Names<span className="font-mono font-normal normal-case tracking-normal">{byName.length}</span></div>
+            {byName.map(d => rRow(d, false))}
+            {byName.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground/70">No names match.</div>}
+            <div className="flex items-center gap-1.5 px-2 pb-1 pt-3 text-[11px] font-semibold uppercase tracking-[.05em] text-muted-foreground">Inside documents<span className="font-mono font-normal normal-case tracking-normal">{textTotal} in {byText.length}</span></div>
+            {byText.map(d => rRow(d, true))}
+            {byText.length === 0 && <div className="px-2 py-1.5 text-xs text-muted-foreground/70">{indexing ? 'Still reading your documents…' : 'No document contains this text.'}</div>}
+          </>
+        ) : (
+          <>
+            {inbox.length > 0 && <>{rHead('inbox', 'Inbox', inbox.length, null, true)}{!shut.inbox && inbox.map(d => rRow(d, false))}</>}
+            {groups.map(g => <React.Fragment key={g.id}>{rHead(g.id, g.label, g.docs.length, g.dot)}{!shut[g.id] && g.docs.map(d => rRow(d, false))}</React.Fragment>)}
+            {inbox.length === 0 && groups.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted-foreground">No documents match.</div>}
+          </>
+        )}
+      </div>
+    </div>
   );
-  const iconBtn = (icon, label, fn) => <Button variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={label} title={label} onClick={fn}>{icon}</Button>;
+  const ib = (icon, label, fn, on) => <button type="button" aria-label={label} title={label} onClick={fn} aria-pressed={on} className={cn('flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:text-foreground', on ? 'bg-muted text-foreground' : 'ui-quiet')}>{icon}</button>;
+  const cur = viewVer || sel;
+  const detailsPanel = sel && (
+    <aside aria-label="Document details" className="hidden w-64 shrink-0 flex-col gap-5 overflow-y-auto pb-2 pt-1 lg:flex">
+      <section className="flex flex-col gap-1.5">
+        <div className="text-[11px] font-medium uppercase tracking-[.05em] text-muted-foreground">Linked tasks</div>
+        {sel.links.map(l => (
+          <div key={l.task.id} className="group flex h-8 items-center gap-2 rounded-md pl-2 pr-1 ui-fill">
+            <span className={cn('size-1.5 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} />
+            <button type="button" onClick={() => onOpenTask(l.task.id, l.archived)} className="min-w-0 flex-1 truncate text-left text-[13px] font-medium hover:underline underline-offset-2">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</button>
+            {!l.archived && <button type="button" onClick={() => onRemove(sel, l.task.id)} aria-label={`Unlink from ${l.task.title || 'Untitled'}`} title="Unlink" className={cn('flex size-6 shrink-0 items-center justify-center rounded text-muted-foreground opacity-60 hover:bg-destructive/10 hover:opacity-100', danger)}><I.x className="size-3" /></button>}
+          </div>
+        ))}
+        <button type="button" onClick={() => onAttach(sel)} className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground hover:text-foreground ui-quiet"><I.plus className="size-3.5" />Link a task</button>
+      </section>
+      <section className="flex flex-col gap-1.5">
+        <div className="text-[11px] font-medium uppercase tracking-[.05em] text-muted-foreground">Details</div>
+        <dl className="m-0 grid grid-cols-[4.5rem_minmax(0,1fr)] gap-y-1.5 text-[13px]">
+          <dt className="text-muted-foreground">File</dt><dd className="m-0 truncate font-mono text-xs leading-5">{cur.name}</dd>
+          <dt className="text-muted-foreground">Type</dt><dd className="m-0 truncate">{(extOf(cur.name) || sel.kind || '').toUpperCase()}</dd>
+          <dt className="text-muted-foreground">Size</dt><dd className="m-0 font-mono text-xs leading-5">{fmtSize(cur.size)}</dd>
+          <dt className="text-muted-foreground">Added</dt><dd className="m-0 truncate" title={new Date(cur.addedAt).toLocaleString()}>{fmtDay(cur.addedAt)}</dd>
+        </dl>
+      </section>
+      <section className="flex flex-col gap-1">
+        <div className="mb-0.5 text-[11px] font-medium uppercase tracking-[.05em] text-muted-foreground">Versions</div>
+        <button type="button" onClick={() => setViewVer(null)} className={cn('flex h-8 items-center gap-2 rounded-md px-2 text-left text-[13px]', !viewVer ? 'bg-muted' : 'hover:bg-muted/50')}>
+          <span className="flex-1 truncate">v{versionCount(sel)} · current</span><span className="font-mono text-[11px] text-muted-foreground">{fmtDay(sel.addedAt)}</span>
+        </button>
+        {(sel.versions || []).map((v, i) => ({ v, i })).reverse().map(({ v, i }) => (
+          <button key={v.file} type="button" onClick={() => setViewVer(v)} className={cn('flex h-8 items-center gap-2 rounded-md px-2 text-left text-[13px]', viewVer === v ? 'bg-muted' : 'hover:bg-muted/50')}>
+            <span className="flex-1 truncate text-muted-foreground">v{i + 1}</span><span className="font-mono text-[11px] text-muted-foreground">{fmtDay(v.addedAt)}</span>
+          </button>
+        ))}
+        <button type="button" onClick={() => onUploadVersion(sel)} className="flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground hover:text-foreground ui-quiet"><I.upload className="size-3.5" />Upload new version</button>
+      </section>
+      <section>
+        <button type="button" onClick={() => onDelete(sel, !!sel.inbox)} className={cn('flex h-8 items-center gap-2 rounded-md px-2 text-[13px] text-muted-foreground hover:bg-destructive/10', danger)}><I.trash className="size-3.5" />{sel.inbox ? 'Dismiss' : 'Delete document'}</button>
+      </section>
+    </aside>
+  );
+  const viewer = (
+    <div ref={viewerRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border text-card-foreground focus-visible:outline-none ui-card">
+      {sel ? (
+        <>
+          <div className="flex h-11 shrink-0 items-center gap-2 pl-3 pr-1.5">
+            <span className="tnum min-w-0 truncate font-mono text-xs text-muted-foreground">{fmtSize(cur.size)} · {relTime(cur.addedAt)}</span>
+            {(sel.versions || []).length > 0 && (
+              <DropdownMenu align="start"
+                trigger={p => <button {...p} type="button" className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 font-mono text-[11px] text-muted-foreground hover:text-foreground ui-fill">{viewVer ? `v${sel.versions.indexOf(viewVer) + 1}` : `v${versionCount(sel)}`} of {versionCount(sel)}<I.down className="size-3" /></button>}
+                items={[
+                  { label: `v${versionCount(sel)} (current), ${fmtDay(sel.addedAt)}`, icon: <I.check />, onSelect: () => setViewVer(null) },
+                  ...sel.versions.map((v, i) => ({ label: `v${i + 1}, ${fmtDay(v.addedAt)}`, icon: <I.file />, onSelect: () => setViewVer(v) })).reverse(),
+                  'sep',
+                  { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
+                  { label: 'Merge existing documents…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
+                ]} />
+            )}
+            {!details && sel.links.length > 0 && <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-muted-foreground xl:inline-flex" title={sel.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{sel.links.length}</span>}
+            <div className="ml-auto flex shrink-0 items-center gap-0.5">
+              {ib(<I.search className="size-4" />, 'Find in document (Ctrl+F)', openFind)}
+              {ib(<I.external className="size-4" />, 'Open in its Windows app', () => openExternal(shownFile))}
+              {ib(<I.download className="size-4" />, 'Save a copy', () => onDownload(shownFile))}
+              {ib(<I.paperclip className="size-4" />, 'Link to a task', () => onAttach(sel))}
+              <DropdownMenu trigger={p => <button {...p} type="button" aria-label={`More for ${sel.name}`} className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.more className="size-4" /></button>}
+                items={[
+                  { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
+                  { label: 'Merge into versions…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
+                  'sep',
+                  { label: sel.inbox ? 'Dismiss' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel, !!sel.inbox) },
+                ]} />
+              <span className="mx-1 h-4 w-px bg-border" />
+              {ib(<I.panelRight className="size-4" />, details ? 'Hide details' : 'Show details', () => setDetails(!details), details)}
+            </div>
+          </div>
+          {viewVer && (
+            <div className="flex items-center gap-3 bg-muted/50 px-3 py-1.5 text-xs">
+              <span className="text-muted-foreground">You’re looking at an older version.</span>
+              <button type="button" className="font-medium underline underline-offset-2" onClick={() => { onMakeCurrent(sel, viewVer); setViewVer(null); }}>Make it current</button>
+              <button type="button" className="text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => setViewVer(null)}>Back to the latest</button>
+            </div>
+          )}
+          {findOpen && (
+            <div className="flex flex-wrap items-center gap-2 bg-muted/40 px-3 py-1.5 text-xs">
+              <div className="relative w-56">
+                <I.search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input ref={findIn} value={findQ} onChange={e => { setFindQ(e.target.value); setFindIdx(0); }} placeholder="Find in document" aria-label="Find in document"
+                  onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); } if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setFindOpen(false); setFindQ(''); } }}
+                  className="h-7 w-full rounded-md border pl-7 pr-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field" />
+              </div>
+              <span className="tnum min-w-[4.5rem] text-muted-foreground">{findQ.trim().length < 2 ? '' : findN ? `${Math.min(findIdx + 1, findN)} of ${findN}${findPages ? `, page ${findPages[findIdx]}` : ''}` : 'No matches'}</span>
+              <Button variant="outline" size="icon-sm" className="h-7 w-7 shadow-none" aria-label="Previous match" title="Previous (Shift+Enter)" disabled={!findN} onClick={() => stepFind(-1)}><I.up /></Button>
+              <Button variant="outline" size="icon-sm" className="h-7 w-7 shadow-none" aria-label="Next match" title="Next (Enter)" disabled={!findN} onClick={() => stepFind(1)}><I.down /></Button>
+              {findPages && findN > 0 && <span className="text-muted-foreground">Jumps to the page in PDFs</span>}
+              <button type="button" aria-label="Close find" onClick={() => { setFindOpen(false); setFindQ(''); }} className="ml-auto flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3.5" /></button>
+            </div>
+          )}
+          <DocPreview file={shownFile} className="min-h-0 flex-1 rounded-none border-0" find={findOpen ? findQ : ''} findIdx={findIdx} onFindCount={(n, pages) => { setFindN(n); setFindPages(pages); }} />
+        </>
+      ) : <DocPreview file={null} className="flex-1 rounded-none border-0" />}
+    </div>
+  );
+  const viewSwitch = (
+    <div role="tablist" aria-label="View" className="inline-flex h-9 shrink-0 items-center rounded-lg bg-muted p-1 text-muted-foreground">
+      {[['table', 'Library', I.rows], ['reader', 'Reader', I.panelLeft]].map(([id, label, Ic]) => (
+        <button key={id} role="tab" type="button" aria-selected={mode === id} aria-label={label} title={label + (id === 'table' ? ' (Esc from the reader)' : '')} disabled={id === 'reader' && !sel}
+          onClick={() => { if (id === 'reader' && sel) pick(sel); setMode(id); }}
+          className={cn('inline-flex h-7 items-center justify-center rounded-md px-2 transition-colors disabled:opacity-40', mode === id ? 'bg-background text-foreground shadow' : 'hover:text-foreground')}><Ic className="size-4" /></button>
+      ))}
+    </div>
+  );
+  const statusFilter = (
+    <Select variant="chip" label="Filter by status" value={stF} onChange={setStF} searchable={false}
+      renderValue={o => <span>{o.value === 'all' ? 'Status' : `Status: ${o.label}`}</span>} options={[{ value: 'all', label: 'All' }, ...DOC_STATUSES.map(s => ({ value: s.id, label: s.label, icon: <span className={cn('size-2 rounded-full', s.dot)} /> }))]} />
+  );
+  const sortPick = (
+    <Select variant="chip" label="Sort documents" value={sort} onChange={setSort} searchable={false} icon={<I.updown className="size-3.5 shrink-0" />}
+      renderValue={o => <span>{o.label}</span>} options={[{ value: 'new', label: 'Newest' }, { value: 'name', label: 'Name' }, { value: 'size', label: 'Size' }]} />
+  );
+  const refreshBtn = (
+    <Button variant="outline" size="icon-sm" className="shadow-none" onClick={async () => { setSpin(true); try { await onRefresh(); } finally { setSpin(false); } }}
+      aria-label="Check watch folders now" title={hasWatch ? 'Check watch folders now' : 'Check watch folders now (add one in Settings)'}>
+      <I.refresh className={cn(spin && 'animate-spin')} />
+    </Button>
+  );
   return (
     <div ref={wrap} className="flex flex-col" style={{ height }}>
-      <PageHead title="Documents" sub={`${docs.length} ${docs.length === 1 ? 'file' : 'files'}${total ? `, ${fmtSize(total)}` : ''}`} />
-      <PageBar>
-        <FilterTabs label="File type" value={kind} onChange={setKind}
-          items={[['all', 'All'], ['pdf', 'PDF'], ['word', 'Word'], ['html', 'HTML'], ['other', 'Other']].map(([id, label]) => ({ id, label, count: counts[id] }))} />
-        <div className="ml-auto flex items-center gap-1.5">
-          <PageSearch value={q} onChange={setQ} placeholder="Search names and text inside" />
-          <Button variant="outline" size="icon-sm" className="bg-card shadow-none" onClick={async () => { setSpin(true); try { await onRefresh(); } finally { setSpin(false); } }}
-            aria-label="Check watch folders now" title={hasWatch ? 'Check watch folders now' : 'Check watch folders now (add one in Settings)'}>
-            <I.refresh className={cn(spin && 'animate-spin')} />
-          </Button>
-          <Select variant="chip" label="Filter by status" value={stF} onChange={setStF} searchable={false}
-            renderValue={o => <span>Status: {o.label}</span>} options={[{ value: 'all', label: 'All' }, ...DOC_STATUSES.map(s => ({ value: s.id, label: s.label, icon: <span className={cn('size-2 rounded-full', s.dot)} /> }))]} />
-          <Select variant="chip" label="Sort documents" value={sort} onChange={setSort} searchable={false} icon={<I.updown className="size-3.5 shrink-0" />}
-            renderValue={o => <span>Sort: {o.label}</span>} options={[{ value: 'new', label: 'Newest' }, { value: 'name', label: 'Name' }, { value: 'size', label: 'Size' }]} />
-        </div>
-      </PageBar>
-      {docs.length === 0 ? (
-        <Card className={cn('mt-3 flex flex-1 items-center justify-center', dragOver && 'ring-2 ring-ring')}>
-          <Empty icon={<I.file />} title="No documents yet"
-            description="Drag files from WhatsApp or File Explorer onto this window, or add a watch folder in Settings so new files arrive here by themselves.">
-            <Button variant="outline" size="sm" onClick={() => onAdd([])}><I.upload />Add documents</Button>
-          </Empty>
-        </Card>
-      ) : (
-        <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
-          <Card className={cn('flex max-h-[40%] w-full shrink-0 flex-col overflow-hidden lg:max-h-none lg:w-[clamp(380px,36%,600px)]', dragOver && 'ring-2 ring-ring')}>
-            <div ref={listRef} role="listbox" tabIndex={0} aria-label="Documents" className="min-h-0 flex-1 overflow-y-auto p-1 focus-visible:outline-none"
-              onKeyDown={e => { if (e.key === 'ArrowDown') { e.preventDefault(); move(1); } if (e.key === 'ArrowUp') { e.preventDefault(); move(-1); } if (e.key === 'Enter' && sel) pick(sel, true); const ds = DOC_STATUSES.find(s => s.key === e.key); if (ds && sel && !e.ctrlKey && !e.altKey && !e.metaKey) { e.preventDefault(); onSetStatus(sel, ds.id); } if (e.key === 'U' && e.shiftKey && sel) { e.preventDefault(); onMerge(sel); } }}>
-              {tq ? (
-                <>
-                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">Names<span className="rounded-full border px-1.5 text-[10px]">{byName.length}</span></div>
-                  {byName.map(d => row(d, false))}
-                  {byName.length === 0 && <div className="px-2.5 py-1.5 text-xs text-muted-foreground/70">No names match.</div>}
-                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">Inside documents<span className="rounded-full border px-1.5 text-[10px]">{textTotal} {textTotal === 1 ? 'match' : 'matches'} in {byText.length}</span></div>
-                  {byText.map(d => row(d, true))}
-                  {byText.length === 0 && <div className="px-2.5 py-1.5 text-xs text-muted-foreground/70">{indexing ? 'Still reading your documents…' : 'No document contains this text.'}</div>}
-                  {indexing && byText.length > 0 && <div className="px-3 py-2 text-xs text-muted-foreground">Still reading some documents, more results may appear.</div>}
-                </>
-              ) : <>
-              {inbox.length > 0 && (
-                <>
-                  <div className="flex items-center gap-1.5 px-2.5 pb-1 pt-2 text-[11px] font-medium text-muted-foreground">Inbox<span className="rounded-full bg-blue-500 px-1.5 text-[10px] font-medium text-white">{inbox.length} new</span></div>
-                  {inbox.map(d => row(d, false))}
-                  <div className="px-2.5 pb-1 pt-3 text-[11px] font-medium text-muted-foreground">All documents</div>
-                </>
-              )}
-              {rest.map(d => row(d, false))}
-              {flat.length === 0 && <div className="px-3 py-6 text-center text-sm text-muted-foreground">No documents match.</div>}
-              </>}
+      {mode !== 'reader' || docs.length === 0 ? (
+        <>
+          <PageHead title="Documents" sub={`${docs.length} ${docs.length === 1 ? 'file' : 'files'}${total ? `, ${fmtSize(total)}` : ''}`} />
+          <PageBar>
+            <PageSearch value={q} onChange={setQ} placeholder="Search documents" />
+            {statusFilter}
+            {mixed && <FilterTabs label="File type" value={kind} onChange={setKind}
+              items={[['all', 'All'], ['pdf', 'PDF'], ['word', 'Word'], ['html', 'HTML'], ['other', 'Other']].filter(([id]) => id === 'all' || counts[id] > 0).map(([id, label]) => ({ id, label, count: counts[id] }))} />}
+            <div className="ml-auto flex items-center gap-1.5">
+              {refreshBtn}
+              {sortPick}
+              {docs.length > 0 && viewSwitch}
             </div>
-          </Card>
-          <div ref={viewerRef} tabIndex={-1} className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card text-card-foreground focus-visible:outline-none">
-            {sel ? (
-              <>
-                <div className="flex items-center gap-2.5 border-b px-3 py-2">
-                  <FileBadge kind={sel.kind} className="h-6 w-6 rounded text-[7px]" />
-                  <span className="min-w-0 truncate text-sm font-semibold">{viewVer ? viewVer.name : sel.name}</span>
-                  {(sel.versions || []).length > 0 && (
-                    <DropdownMenu align="start"
-                      trigger={p => <button {...p} type="button" className="inline-flex h-5 shrink-0 items-center gap-1 rounded border px-1.5 text-[11px] text-muted-foreground hover:text-foreground">{viewVer ? `v${sel.versions.indexOf(viewVer) + 1}` : `v${versionCount(sel)}`} of {versionCount(sel)}<I.down className="size-3" /></button>}
-                      items={[
-                        { label: `v${versionCount(sel)} (current), ${fmtDay(sel.addedAt)}`, icon: <I.check />, onSelect: () => setViewVer(null) },
-                        ...sel.versions.map((v, i) => ({ label: `v${i + 1}, ${fmtDay(v.addedAt)}`, icon: <I.file />, onSelect: () => setViewVer(v) })).reverse(),
-                        'sep',
-                        { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
-                        { label: 'Merge existing documents…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
-                      ]} />
-                  )}
-                  <DocStatusPicker doc={sel} onSetStatus={onSetStatus} compact />
-                  <span className="shrink-0 text-xs text-muted-foreground">{fmtSize((viewVer || sel).size)}, {relTime((viewVer || sel).addedAt).toLowerCase()}</span>
-                  <div className="ml-auto flex shrink-0 gap-1.5">
-                    {iconBtn(<I.search />, 'Find in document (Ctrl+F)', openFind)}
-                    {iconBtn(<I.external />, 'Open in its Windows app', () => openExternal(shownFile))}
-                    {iconBtn(<I.download />, 'Save a copy', () => onDownload(shownFile))}
-                    {iconBtn(<I.paperclip />, 'Link to a task', () => onAttach(sel))}
-                    <DropdownMenu trigger={p => <Button {...p} variant="outline" size="icon-sm" className="bg-card shadow-none" aria-label={`More for ${sel.name}`}><I.more /></Button>}
-                      items={[
-                        { label: 'Upload new version…', icon: <I.upload />, onSelect: () => onUploadVersion(sel) },
-                        { label: 'Merge into versions…', icon: <I.layers />, shortcut: '⇧U', onSelect: () => onMerge(sel) },
-                        'sep',
-                        { label: sel.inbox ? 'Dismiss' : 'Delete document', icon: <I.trash />, destructive: true, onSelect: () => onDelete(sel, !!sel.inbox) },
-                      ]} />
-                  </div>
-                </div>
-                {viewVer && (
-                  <div className="flex items-center gap-3 border-b bg-muted/50 px-3 py-1.5 text-xs">
-                    <span className="text-muted-foreground">You’re looking at an older version.</span>
-                    <button type="button" className="font-medium underline underline-offset-2" onClick={() => { onMakeCurrent(sel, viewVer); setViewVer(null); }}>Make it current</button>
-                    <button type="button" className="text-muted-foreground underline underline-offset-2 hover:text-foreground" onClick={() => setViewVer(null)}>Back to the latest</button>
-                  </div>
-                )}
-                <div className="flex flex-wrap items-center gap-1.5 border-b px-3 py-1.5">
-                  <span className="mr-1 text-[11px] text-muted-foreground">Linked to</span>
-                  {sel.links.length === 0 && <span className="text-xs text-muted-foreground/70">No tasks yet</span>}
-                  {sel.links.map(l => (
-                    <span key={l.task.id} className="group inline-flex h-6 max-w-[16rem] items-center gap-1.5 rounded-md border pl-2 pr-1 text-xs">
-                      <span className={cn('size-1.5 shrink-0 rounded-full', (S[l.task.status] || S.todo).dot)} />
-                      <button type="button" onClick={() => onOpenTask(l.task.id, l.archived)} className="min-w-0 truncate hover:underline underline-offset-2">{l.task.title || 'Untitled'}{l.archived ? ' (archived)' : ''}</button>
-                      {!l.archived && <button type="button" onClick={() => onRemove(sel, l.task.id)} aria-label={`Unlink from ${l.task.title || 'Untitled'}`} title="Unlink" className="flex size-4 items-center justify-center rounded opacity-50 hover:bg-muted hover:opacity-100"><I.x className="size-3" /></button>}
-                    </span>
-                  ))}
-                  <button type="button" onClick={() => onAttach(sel)} className="inline-flex h-6 items-center gap-1 rounded-md border border-dashed px-2 text-xs text-muted-foreground hover:text-foreground"><I.plus className="size-3" />Link</button>
-                </div>
-                {findOpen && (
-                  <div className="flex flex-wrap items-center gap-2 border-b bg-muted/40 px-3 py-1.5 text-xs">
-                    <div className="relative w-56">
-                      <I.search className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                      <input ref={findIn} value={findQ} onChange={e => { setFindQ(e.target.value); setFindIdx(0); }} placeholder="Find in document" aria-label="Find in document"
-                        onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); } if (e.key === 'Escape') { e.stopPropagation(); setFindOpen(false); setFindQ(''); } }}
-                        className="h-7 w-full rounded-md border bg-background pl-7 pr-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-                    </div>
-                    <span className="tnum min-w-[4.5rem] text-muted-foreground">{findQ.trim().length < 2 ? '' : findN ? `${Math.min(findIdx + 1, findN)} of ${findN}${findPages ? `, page ${findPages[findIdx]}` : ''}` : 'No matches'}</span>
-                    <Button variant="outline" size="icon-sm" className="h-7 w-7 bg-card shadow-none" aria-label="Previous match" title="Previous (Shift+Enter)" disabled={!findN} onClick={() => stepFind(-1)}><I.up /></Button>
-                    <Button variant="outline" size="icon-sm" className="h-7 w-7 bg-card shadow-none" aria-label="Next match" title="Next (Enter)" disabled={!findN} onClick={() => stepFind(1)}><I.down /></Button>
-                    {findPages && findN > 0 && <span className="text-muted-foreground">Jumps to the page in PDFs</span>}
-                    <button type="button" aria-label="Close find" onClick={() => { setFindOpen(false); setFindQ(''); }} className="ml-auto flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"><I.x className="size-3.5" /></button>
-                  </div>
-                )}
-                <DocPreview file={shownFile} className="min-h-0 flex-1 rounded-none border-0" find={findOpen ? findQ : ''} findIdx={findIdx} onFindCount={(n, pages) => { setFindN(n); setFindPages(pages); }} />
-              </>
-            ) : <DocPreview file={null} className="flex-1 rounded-none border-0" />}
+          </PageBar>
+          {docs.length === 0 ? (
+            <Card className={cn('mt-3 flex flex-1 items-center justify-center', dragOver && 'ring-2 ring-ring')}>
+              <Empty icon={<I.file />} title="No documents yet"
+                description="Drag files from WhatsApp or File Explorer onto this window, or add a watch folder in Settings so new files arrive here by themselves.">
+                <Button variant="outline" size="sm" onClick={() => onAdd([])}><I.upload />Add documents</Button>
+              </Empty>
+            </Card>
+          ) : table}
+        </>
+      ) : (
+        <>
+          <div className="flex min-h-9 shrink-0 items-center gap-2.5">
+            <Button variant="outline" size="sm" className="shrink-0 shadow-none" onClick={() => setMode('table')} title="Back to the library (Esc)"><I.left />Library</Button>
+            <span className="shrink-0 text-muted-foreground/60">/</span>
+            <h1 className="m-0 min-w-0 truncate text-xl font-semibold tracking-tight" title={sel ? sel.name : undefined}>{sel ? titleOf(sel) : 'Documents'}</h1>
+            {sel && <DocStatusPicker doc={sel} onSetStatus={onSetStatus} />}
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">{viewSwitch}</div>
           </div>
-        </div>
+          <div className="mt-3 flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+            {readerList}
+            {viewer}
+            {details && detailsPanel}
+          </div>
+        </>
       )}
     </div>
   );
@@ -2887,7 +3115,7 @@ function LinkDocsDialog({ taskId, library, linkedIds, onClose, onLink }) {
         <I.search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
         <Input autoFocus value={q} onChange={e => setQ(e.target.value)} placeholder="Search documents" aria-label="Search documents" className="pl-9" />
       </div>
-      <div className="max-h-80 overflow-y-auto rounded-md border">
+      <div className="max-h-80 overflow-y-auto rounded-md border ui-inset">
         {list.length === 0 && <div className="p-4 text-sm text-muted-foreground">{library.length ? 'No other documents match.' : 'There are no documents yet.'}</div>}
         {list.map(d => (
           <label key={d.id} className="flex cursor-default items-center gap-3 border-b px-3 py-2 last:border-0 hover:bg-muted/50">
@@ -2939,8 +3167,8 @@ const PriorityBars = ({ priority, className }) => {
 // Only High is filled; Medium and Low stay outlined like the other tags.
 const PRI_CHIP = {
   high: 'border border-transparent bg-red-500/15 text-red-700 dark:bg-red-500/20 dark:text-red-300 font-medium',
-  normal: 'border text-foreground/80',
-  low: 'border text-muted-foreground',
+  normal: 'border ui-fill text-foreground/80',
+  low: 'border ui-fill text-muted-foreground',
 };
 const PriorityPill = ({ priority, className }) => (
   <span className={cn('inline-flex h-5 items-center gap-1 whitespace-nowrap rounded-md px-1.5 text-xs', PRI_CHIP[priority || 'normal'], className)}>
@@ -2988,7 +3216,7 @@ const StatusPill = ({ status, label, color, className }) => {
   const st = S[status] || S.todo;
   const hex = STATUS_HEX[color || BUILTIN_COLOR[st.id]] || STATUS_HEX.gray;
   return (
-    <span className={cn('inline-flex h-5 max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs font-medium', className)}
+    <span className={cn('inline-flex h-5 max-w-full items-center gap-1.5 whitespace-nowrap rounded-md border px-1.5 text-xs font-medium ui-fill', className)}
       style={{ color: `color-mix(in srgb, ${hex} 78%, hsl(var(--foreground)))` }}>
       <span className="size-1.5 shrink-0 rounded-full" style={{ background: hex }} /><span className="truncate">{label || st.label}</span>
     </span>
@@ -3119,7 +3347,7 @@ function CellEditor({ edit, task, ctx, onClose }) {
     <>
     {tip && tipPos && createPortal(
       <div role="tooltip" style={{ position: 'fixed', top: tipPos.top, left: tipPos.left, width: 272 }}
-        className="pointer-events-none z-[81] rounded-md border bg-popover p-4 text-popover-foreground shadow-md anim-pop">
+        className="pointer-events-none z-[81] rounded-md border bg-popover p-4 text-popover-foreground anim-pop ui-float">
         <div className="flex items-start gap-2"><I.layers className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 break-words text-sm font-semibold">{tip.name}</span></div>
         <p className={cn('mt-1.5 line-clamp-5 whitespace-pre-wrap text-sm', !tip.description && 'text-muted-foreground')}>{tip.description || 'No description yet.'}</p>
         <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground"><BucketStatusPill status={tip.status} /><span className="tnum">{tip.open} open {tip.open === 1 ? 'task' : 'tasks'}</span></div>
@@ -3300,7 +3528,7 @@ function StatusesDialog({ open, stages, tasks, onClose, onSave }) {
 }
 
 /* ---------- Compact task sheet ---------- */
-const ghostField = 'h-8 w-full rounded-md border border-transparent bg-transparent px-2 text-sm !shadow-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-0 focus-visible:border-input focus-visible:bg-background placeholder:text-muted-foreground';
+const ghostField = 'h-8 w-full rounded-md border border-transparent px-2 text-sm !shadow-none transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-0 focus-visible:border-input focus-visible:bg-background placeholder:text-muted-foreground ui-quiet';
 const hoverAct = 'inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:bg-muted hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring group-hover:opacity-100 [@media(hover:none)]:opacity-100';
 const PropRow = ({ label, htmlFor, children }) => (
   <div className="grid min-h-8 grid-cols-[88px_minmax(0,1fr)] items-center gap-2">
@@ -3475,7 +3703,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
           <textarea ref={titleRef} rows={1} value={form.title} onChange={set('title')} placeholder="Task title" aria-label="Task title"
             onKeyDown={e => { if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) e.preventDefault(); }}
             style={{ fieldSizing: 'content' }}
-            className="block w-full resize-none rounded-md border border-transparent bg-transparent px-2 py-1 text-lg font-semibold leading-snug placeholder:text-muted-foreground/60 hover:bg-muted/60 focus-visible:outline-none focus-visible:border-input focus-visible:bg-background" />
+            className="block w-full resize-none rounded-md border border-transparent px-2 py-1 text-lg font-semibold leading-snug placeholder:text-muted-foreground/60 hover:bg-muted/60 focus-visible:outline-none focus-visible:border-input focus-visible:bg-background ui-quiet" />
 
           {/* Properties */}
           <div className="mt-3 grid gap-0.5 px-2">
@@ -3591,7 +3819,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
             <SectionHead>Description</SectionHead>
             <textarea id="t-desc" value={form.description} onChange={set('description')} placeholder="Add details, links or acceptance criteria…" aria-label="Description"
               style={{ fieldSizing: 'content', minHeight: '4.5rem', maxHeight: '45vh' }}
-              className="block w-full resize-none rounded-md border border-transparent bg-transparent px-2 py-1.5 text-sm leading-relaxed placeholder:text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:border-input focus-visible:bg-background" />
+              className="block w-full resize-none rounded-md border border-transparent px-2 py-1.5 text-sm leading-relaxed placeholder:text-muted-foreground hover:bg-muted/60 focus-visible:outline-none focus-visible:border-input focus-visible:bg-background ui-quiet" />
           </div>
 
           {/* Checklist */}
@@ -3663,7 +3891,7 @@ function Checklist({ items, onChange }) {
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(null); }
               }}
               onBlur={saveEdit}
-              className="-mx-1 h-7 min-w-0 flex-1 rounded border bg-background px-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+              className="-mx-1 h-7 min-w-0 flex-1 rounded border px-1 text-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field" />
           ) : (
             <span role="button" tabIndex={0} title="Click to edit"
               onClick={() => setEditing({ id: it.id, value: it.text })}
@@ -3698,7 +3926,7 @@ function TimeSummary({ tasks, onHide }) {
     if (wm) { const k = t.project || 'No project'; byProject[k] = (byProject[k] || 0) + wm; }
   });
   const rows = Object.entries(byProject).sort((a, b) => b[1] - a[1]);
-  const tile = 'flex min-w-0 flex-col gap-3 rounded-xl border bg-card px-4 py-3.5';
+  const tile = 'flex min-w-0 flex-col gap-3 rounded-xl border px-4 py-3.5 ui-card';
   const big = 'tnum text-[22px] font-semibold leading-tight tracking-tight';
   const btn = 'flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring';
   return (
@@ -3768,7 +3996,7 @@ const ruleGroupKey = r => r.scope === 'bucket' ? `b|${r.status}` : `t|${norm(r.p
 const WordInput = ({ value, onChange, placeholder, label, className }) => (
   <input value={value || ''} onChange={e => onChange(e.target.value)} placeholder={placeholder} aria-label={label}
     style={{ width: `calc(${Math.min(Math.max(String(value || '').length, (placeholder || '').length, 4), 30)}ch + 1.25rem)` }}
-    className={cn('h-7 max-w-full rounded-md border border-border bg-transparent px-2 text-[13px] text-foreground placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', className)} />
+    className={cn('h-7 max-w-full rounded-md border border-border px-2 text-[13px] text-foreground placeholder:text-muted-foreground transition-colors hover:border-foreground/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-fill', className)} />
 );
 const MULTI_WORD = 'h-auto min-h-7 max-w-full py-[3px]';
 function AutomationsDialog({ open, onClose, rules, projects, people, me, stages = [], buckets = [], onSave, onOpenNotifications, bucketNoun = 'Bucket' }) {
@@ -3901,7 +4129,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, stages 
           const only = f.only || [], gErr = groupProblem(f);
           const setOnly = list => updGroup(g, { only: list.length ? list : undefined });
           return (
-            <div key={g.key} className="overflow-hidden rounded-lg border">
+            <div key={g.key} className="overflow-hidden rounded-lg border ui-inset">
               <div className="flex items-center gap-3 bg-muted/50 py-2 pl-3.5 pr-2">
                 <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-accent text-muted-foreground"><Icon className="size-3.5" /></span>
                 <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
@@ -3988,7 +4216,7 @@ function AutomationsDialog({ open, onClose, rules, projects, people, me, stages 
             <div className="flex flex-wrap gap-2">
               {ideas.map(i => (
                 <button key={i.title} type="button" title={i.text} onClick={() => add(i.rule)}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-fill">
                   <I.plus className="size-3.5 text-muted-foreground" />{i.title}
                 </button>
               ))}
@@ -4058,7 +4286,7 @@ function PlatformIconPicker({ p, noun, onPick }) {
         <PIcon icon={cur} className="size-4" />
       </button>}>
       {close => <div data-picking="1">
-      <div className="mb-1.5 flex h-8 items-center gap-1.5 rounded-md border border-input pl-2 pr-0.5 focus-within:border-ring/60">
+      <div className="mb-1.5 flex h-8 items-center gap-1.5 rounded-md border border-input pl-2 pr-0.5 focus-within:border-ring/60 ui-field">
         <I.search className="size-3.5 shrink-0 text-muted-foreground" />
         <input value={q} onChange={e => setQ(e.target.value)} autoFocus placeholder="Search icons" aria-label="Search icons"
           className="h-full min-w-0 flex-1 bg-transparent text-sm placeholder:text-muted-foreground focus-visible:outline-none" />
@@ -4220,7 +4448,7 @@ function HomeView({ tasks, archived, buckets, docs, onOpenTask, onToggle, onCapt
     : it.kind === 'bucket' ? <I.layers /> : it.kind === 'doc' ? <I.file /> : <I.plus />;
   const toneCls = { run: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400', late: 'bg-amber-500/15 text-amber-600 dark:text-amber-400', blue: 'bg-blue-500/15 text-blue-600 dark:text-blue-400' };
   const tile = (onClick, label, labelCls, title, sub) => (
-    <button type="button" onClick={onClick} className="flex min-w-0 flex-col gap-1 rounded-xl border bg-card px-4 py-3.5 text-left transition-colors hover:border-foreground/25">
+    <button type="button" onClick={onClick} className="flex min-w-0 flex-col gap-1 rounded-xl border px-4 py-3.5 text-left transition-colors ui-card ui-hover">
       <span className={cn('text-xs font-medium', labelCls)}>{label}</span>
       <span className="truncate text-[15px] font-medium">{title}</span>
       <span className="truncate text-xs text-muted-foreground">{sub}</span>
@@ -4239,7 +4467,7 @@ function HomeView({ tasks, archived, buckets, docs, onOpenTask, onToggle, onCapt
         <h1 className="text-3xl font-semibold tracking-tight">What next?</h1>
       </div>
 
-      <div className="overflow-hidden rounded-2xl border border-input bg-card transition-shadow focus-within:border-blue-500/70 focus-within:ring-4 focus-within:ring-blue-500/15">
+      <div className="overflow-hidden rounded-2xl border transition-shadow focus-within:ring-2 focus-within:ring-blue-500/40 ui-card">
         <label className="flex items-center gap-3 px-4">
           <I.search className="size-[18px] shrink-0 text-muted-foreground" />
           <input ref={inRef} id="home-cmd-in" value={q} onChange={e => { setQ(e.target.value); setHi(0); }} onKeyDown={onKey} autoComplete="off" spellCheck={false}
@@ -4673,9 +4901,9 @@ function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit, onMoveEnd }
       </div>
       {sc.warn && <div className="mb-2"><Note tone="amber"><I.alert className="mt-0.5 size-3 shrink-0" /><span>{sc.warn}</span></Note></div>}
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-lg border px-2.5 py-2"><div className="tnum text-base font-semibold">{sc.planned}</div><div className="text-[11px] text-muted-foreground">Planned at start</div></div>
-        <div className={cn('rounded-lg border px-2.5 py-2', sc.added.length && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.added.length ? `+${sc.added.length}` : 0}</div><div className="text-[11px] text-muted-foreground">Added later</div></div>
-        <div className={cn('rounded-lg border px-2.5 py-2', sc.slip > 0 && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.slip > 0 ? `+${sc.slip}d` : sc.slip < 0 ? `${sc.slip}d` : b.baseEnd ? 'On plan' : '–'}</div><div className="text-[11px] text-muted-foreground">{b.baseEnd ? `Was ${shortDate(b.baseEnd)}` : 'End not moved'}</div></div>
+        <div className="rounded-lg border px-2.5 py-2 ui-inset"><div className="tnum text-base font-semibold">{sc.planned}</div><div className="text-[11px] text-muted-foreground">Planned at start</div></div>
+        <div className={cn('rounded-lg border px-2.5 py-2 ui-inset', sc.added.length && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.added.length ? `+${sc.added.length}` : 0}</div><div className="text-[11px] text-muted-foreground">Added later</div></div>
+        <div className={cn('rounded-lg border px-2.5 py-2 ui-inset', sc.slip > 0 && 'border-amber-500/40 bg-amber-500/5')}><div className="tnum text-base font-semibold">{sc.slip > 0 ? `+${sc.slip}d` : sc.slip < 0 ? `${sc.slip}d` : b.baseEnd ? 'On plan' : '–'}</div><div className="text-[11px] text-muted-foreground">{b.baseEnd ? `Was ${shortDate(b.baseEnd)}` : 'End not moved'}</div></div>
       </div>
       {sc.added.length > 0 && (
         <div className="mt-2.5">
@@ -4687,7 +4915,7 @@ function ScopePanel({ b, sc, lower, onOpenTask, onSetReason, onEdit, onMoveEnd }
       )}
       {sc.time >= 60000 && <div className="mt-2 text-xs text-muted-foreground">{fmtShort(sc.time)} spent on added tasks{sc.total >= 60000 ? `, ${Math.round(sc.time / sc.total * 100)}% of this ${lower}’s time` : ''}</div>}
       {sc.need > 0 && (
-        <div className={cn('mt-2 rounded-lg border px-2.5 py-2 text-xs', sc.extra ? 'border-amber-500/40 bg-amber-500/5' : '')} aria-label="Impact">
+        <div className={cn('mt-2 rounded-lg border px-2.5 py-2 text-xs ui-inset', sc.extra ? 'border-amber-500/40 bg-amber-500/5' : '')} aria-label="Impact">
           <div className="text-foreground">Added tasks took {fmtShort(sc.time)}, {fmtWorkDays(sc.time)}.</div>
           <div className="mt-0.5 text-muted-foreground">
             {sc.extra
@@ -4929,7 +5157,7 @@ const TaskTimer = ({ t, onToggle, className }) => {
   );
 };
 const MiniTag = ({ icon, children }) => (
-  <span className="inline-flex h-5 max-w-[10rem] shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] text-foreground/75">{icon}<span className="truncate">{children}</span></span>
+  <span className="inline-flex h-5 max-w-[10rem] shrink-0 items-center gap-1 rounded-md border px-1.5 text-[11px] text-foreground/75 ui-fill">{icon}<span className="truncate">{children}</span></span>
 );
 
 function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
@@ -4964,8 +5192,8 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 text-[11.5px]">
                     {groupBy !== 'status' && <DefPill def={def} className="h-[22px] text-[11.5px]" />}
-                    {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><PIcon name={t.project} className="size-3 text-muted-foreground" />{t.project}</span>}
-                    {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
+                    {groupBy !== 'project' && t.project && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85 ui-fill"><PIcon name={t.project} className="size-3 text-muted-foreground" />{t.project}</span>}
+                    {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85 ui-fill"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
                     {groupBy !== 'priority' && <PriorityPill priority={t.priority} className="h-[22px] text-[11.5px]" />}
                     <span className="ml-auto flex items-center gap-2.5 text-muted-foreground">
                       <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(t))}</span>
@@ -5012,7 +5240,7 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
       <div key={t.id} data-task-id={t.id} role="button" tabIndex={0} onPointerDown={e => startDrag(e, t)}
         onClick={e => { if (!justDragged.current) onOpen(t.id, e); }}
         onKeyDown={e => { if (e.key === 'Enter') onOpen(t.id, e); }}
-        className={cn('flex cursor-grab select-none flex-col gap-2.5 rounded-lg border bg-card p-3 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing', drag && drag.id === t.id && 'opacity-40', on && 'ring-1 ring-foreground/20')}>
+        className={cn('flex cursor-grab select-none flex-col gap-2.5 rounded-lg border p-3 text-left transition-shadow hover:shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing ui-card', drag && drag.id === t.id && 'opacity-40', on && 'ring-1 ring-foreground/20')}>
         <div className={cn('text-[13px] font-medium leading-snug', t.status === 'done' && 'text-muted-foreground line-through', !t.title && 'font-normal text-muted-foreground')}>{t.title || 'Untitled'}</div>
         <div className="flex flex-wrap gap-1.5">
           {t.project && <MiniTag icon={<PIcon name={t.project} className="size-3 text-muted-foreground" />}>{t.project}</MiniTag>}
@@ -5055,7 +5283,7 @@ function BoardView({ tasks, stages, labels, onOpen, onToggle, onMove, onAdd }) {
         </button>
       )}
       {drag && (
-        <div className="pointer-events-none fixed z-[90] w-64 rounded-lg border bg-card p-3 text-[13px] font-medium shadow-lg" style={{ left: drag.x + 8, top: drag.y + 8 }}>{drag.title}</div>
+        <div className="pointer-events-none fixed z-[90] w-64 rounded-lg border bg-card p-3 text-[13px] font-medium ui-float" style={{ left: drag.x + 8, top: drag.y + 8 }}>{drag.title}</div>
       )}
     </div>
   );
@@ -5258,7 +5486,7 @@ function CommandPalette({ open, onClose, items }) {
     <>
       <div className="fixed inset-0 z-[85] bg-black/40 anim-fade" onClick={onClose} />
       <div role="dialog" aria-modal="true" aria-label="Command palette"
-        className="fixed left-1/2 top-[14vh] z-[86] w-[min(640px,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border bg-popover text-popover-foreground shadow-2xl anim-pop">
+        className="fixed left-1/2 top-[14vh] z-[86] w-[min(640px,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border bg-popover text-popover-foreground anim-pop ui-float">
         <div className="flex items-center gap-2 border-b px-4">
           <I.search className="text-muted-foreground" />
           <input autoFocus value={q} onChange={e => { setQ(e.target.value); setHi(0); }} onKeyDown={onKey} placeholder="Type a command, or search tasks, buckets and documents…" aria-label="Command"
@@ -5830,7 +6058,7 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
               ))}
             </ul>
             {R.scope.pattern && (
-              <div className="mt-2 rounded-lg border bg-muted/30 px-3 py-2.5">
+              <div className="mt-2 rounded-lg border bg-muted/30 px-3 py-2.5 ui-inset">
                 <div className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><I.trendUp className="size-3.5" />Pattern</div>
                 <ReasonBar reasons={R.scope.by} total={R.scope.total} />
                 <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -5852,6 +6080,16 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    After an update, a short tour of what changed since the version you used last opens once.
    It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
 const WHATS_NEW = [
+  { v: '0.20.2', title: 'Documents, as a library', img: 'docs-library.webp',
+    points: ['Documents opens as a table grouped by status: Approved, In review, Draft and Outdated. Click a group to fold it.', 'Each row has a clean title, its status, the tasks it’s linked to, size and date. Point at a title to see the real file name, and at a row for Open, Save and Delete.'] },
+  { v: '0.20.2', title: 'Read with more room', img: 'docs-reader.webp',
+    points: ['Click a document to read it. The list stays on the left, grouped the same way, and one slim bar holds find, open, save and link.', 'Library or Esc takes you back. The panel button next to search folds the list into a narrow rail.'] },
+  { v: '0.20.2', title: 'Details when you want them', img: 'docs-details.webp',
+    points: ['The panel button at the right of the viewer bar opens linked tasks, the file name, size, versions and Delete.', 'It stays hidden until you open it, and the app remembers your choice on this PC.'] },
+  { v: '0.20.2', title: 'A cleaner, borderless look', img: 'borderless.webp',
+    points: ['Outlines are gone across the app. Cards, buttons, fields and chips are told apart by soft fills, and menus and dialogs float on a shadow.', 'The task table keeps only faint row lines and one solid line between columns. Text is now set in Inter, with numbers in Geist Mono.'] },
+  { v: '0.20.2', title: 'A softer dark mode', img: 'softer-dark.webp',
+    points: ['Dark mode is a soft charcoal (#1A1A1A) instead of near-black, so cards, chips and menus stand out more clearly.', 'White documents glare less, and everything else in dark mode moved up by the same step.'] },
   { v: '0.20.1', title: 'Taskit is a team app now', img: 'members.webp',
     points: ['Everyone shares one team workspace: the same tasks, buckets, documents and automations, synced live. Your watch folders, theme, sidebar and notification choices stay yours.', 'Settings › Members shows who’s on the team, their role, teams and access (Owner, Admin or Member).'] },
   { v: '0.20.1', title: 'Invite people', img: 'invite-people.webp',
@@ -5975,7 +6213,7 @@ function WhatsNewDialog({ open, items, onClose }) {
     <>
       <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" onClick={onClose} />
       <div role="dialog" aria-modal="true" aria-labelledby="wn-title"
-        className="fixed left-1/2 top-1/2 z-[70] h-[min(600px,calc(100%-2rem))] w-[min(1040px,calc(100%-2rem))] overflow-hidden rounded-[14px] border bg-background text-foreground shadow-2xl anim-zoom"
+        className="fixed left-1/2 top-1/2 z-[70] h-[min(600px,calc(100%-2rem))] w-[min(1040px,calc(100%-2rem))] overflow-hidden rounded-[14px] border bg-background text-foreground anim-zoom ui-float"
         style={{ transform: 'translate(-50%,-50%)' }}>
         <div className="absolute inset-x-0 top-0 flex h-[3px] gap-1" aria-hidden="true">
           {items.map((_, j) => <span key={j} className={cn('flex-1 transition-colors', j <= i ? 'bg-foreground' : 'bg-border')} />)}
@@ -6118,7 +6356,7 @@ function FilterMenu({ f, kinds = FILTER_KINDS, side = 'left' }) {
                 {s ? <>{s.first.label}{s.more > 0 && <span className="font-normal text-muted-foreground"> +{s.more}</span>}</> : 'Any'}</span>}
               {side === 'right' && <I.right className="size-3.5 shrink-0 text-muted-foreground" />}
             </button>
-            {open && <div className={cn('absolute -top-1 z-10 w-72 rounded-md border bg-popover p-1 text-popover-foreground shadow-md anim-pop', side === 'left' ? 'right-full mr-2' : 'left-full ml-2')}>
+            {open && <div className={cn('absolute -top-1 z-10 w-72 rounded-md border bg-popover p-1 text-popover-foreground anim-pop ui-float', side === 'left' ? 'right-full mr-2' : 'left-full ml-2')}>
               <FilterList key={k} kind={k} f={f} />
             </div>}
           </div>
@@ -6183,7 +6421,7 @@ function SortEditor({ sorts, setSorts, labels }) {
             <Select variant="word" value={r.key} onChange={k => set(i, { key: k, desc: false })} options={opts} searchable={false} label={`Sort ${i + 1} field`}
               className="w-[7.5rem] max-w-none justify-between bg-background" menuClassName="min-w-[10rem]" />
             <button type="button" onClick={() => set(i, { desc: !r.desc })} title="Flip the order" aria-label={`${sortName(r.key, labels)}: ${sortOrderWord(r)}. Flip the order`}
-              className="inline-flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border bg-background px-2 text-left text-[13px] transition-colors hover:border-foreground/20 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              className="inline-flex h-7 min-w-0 flex-1 items-center gap-1.5 rounded-md border px-2 text-left text-[13px] transition-colors hover:border-foreground/20 hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field">
               <D className="size-3.5 shrink-0 text-muted-foreground" /><span className="truncate">{sortOrderWord(r)}</span>
             </button>
             {sortIsDefault(sorts) ? <span className="size-7 shrink-0" />
@@ -6209,8 +6447,8 @@ function SortButton({ sorts, setSorts, labels }) {
   return (
     <Popover align="end" className="w-[22rem] p-1"
       trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Sorted by ${said}`} aria-label={`Sort. Sorted by ${said}`}
-        className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-          custom ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'bg-card text-muted-foreground hover:bg-muted hover:text-foreground')}>
+        className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ui-control',
+          custom ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'text-muted-foreground hover:text-foreground')}>
         <I.updown className="size-3.5" />Sort{custom ? <span className="tnum">· {sorts.length}</span> : null}</button>}>
       <SortEditor sorts={sorts} setSorts={setSorts} labels={labels} />
     </Popover>
@@ -6231,7 +6469,7 @@ function SortChips({ sorts, setSorts, labels }) {
     const A = r.desc ? I.arrowDown : I.arrowUp, name = sortName(r.key, labels);
     const free = SORT_KEYS.filter(k => k === r.key || !sorts.some(x => x.key === k));
     return (
-      <div key={r.key} className="group inline-flex h-7 items-center rounded-md border bg-card text-sm font-medium">
+      <div key={r.key} className="group inline-flex h-7 items-center rounded-md border text-sm font-medium ui-control">
         <Popover align="start" className="w-52 p-1"
           trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Sort ${i + 1}: ${name}, ${sortOrderWord(r).toLowerCase()}`} aria-label={`Sort ${i + 1}: ${name}, ${sortOrderWord(r).toLowerCase()}. Change`}
             className={cn('inline-flex h-full max-w-[200px] items-center gap-1.5 rounded-md pl-2 pr-2.5 group-hover:pr-1 group-focus-within:pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-accent')}>
@@ -6263,7 +6501,7 @@ function FilterChips({ f, sort }) {
         const s = filterSummary(k, f), noun = filterNoun(k, f.labels);
         const names = filterSel(k, f).map(v => (filterOptions(k, f).find(o => o.v === v) || { label: v }).label).join(', ');
         return (
-          <div key={k} className="group inline-flex h-7 items-center rounded-md border bg-card text-sm font-medium">
+          <div key={k} className="group inline-flex h-7 items-center rounded-md border text-sm font-medium ui-control">
             <Popover align="start" className="w-72 p-1"
               trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`${noun}: ${names}`} aria-label={`${noun}: ${names}. Change`}
                 className={cn('inline-flex h-full max-w-[220px] items-center gap-1.5 rounded-md pl-2.5 pr-2.5 group-hover:pr-1 group-focus-within:pr-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-accent')}>
@@ -7668,7 +7906,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       <nav aria-label="Pages" onMouseEnter={railEnter} onMouseLeave={railLeave}
         onFocus={e => { if (e.target.matches && e.target.matches(':focus-visible')) setRailHover(true); }}
         onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setRailHover(false); }}
-        className={cn('no-scrollbar absolute inset-y-0 left-0 z-40 flex flex-col gap-1 overflow-y-auto overflow-x-hidden border-r bg-card px-[10px] py-2.5 transition-[width,box-shadow] duration-200 ease-out',
+        className={cn('no-scrollbar absolute inset-y-0 left-0 z-40 flex flex-col gap-1 overflow-y-auto overflow-x-hidden bg-card px-[10px] py-2.5 transition-[width,box-shadow] duration-200 ease-out',
           railOpen ? 'w-[236px]' : 'w-[60px]', railOpen && !railPinned && 'shadow-[0_16px_40px_rgba(0,0,0,.16)] dark:shadow-[0_16px_40px_rgba(0,0,0,.6)]')}>
         <div className="mb-2 flex h-[34px] shrink-0 items-center gap-2.5 pl-[3px]">
           <DropdownMenu align="start"
@@ -7714,7 +7952,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       </nav>
       </div>
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="shrink-0 border-b">
+      <header className="shrink-0">
         {/* Slim top row (0.19.14): where you are, cloud sync and the window buttons. Drag it to move the window,
             double-click to maximize. Page actions stay in the page header below, away from Close. */}
         <div data-tauri-drag-region className="flex h-10 items-center pl-4 md:pl-6">
@@ -7777,7 +8015,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             </div>
           ) : (
             <button type="button" onClick={() => setSearchOpen(true)} aria-label="Search all tasks (/)"
-              className="hidden h-9 w-56 min-w-[8.5rem] items-center gap-2 whitespace-nowrap rounded-lg border bg-card px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex">
+              className="hidden h-9 w-56 min-w-[8.5rem] items-center gap-2 whitespace-nowrap rounded-lg border px-3 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex ui-control">
               <I.search className="size-4 shrink-0" /><span className="min-w-0 flex-1 truncate text-left">Search tasks</span><kbd className="font-mono text-[11px]">/</kbd>
             </button>
           )}
@@ -7862,8 +8100,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             return (<>
               <Popover align="end" className="w-64 p-1"
                 trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={`Filter by ${labels.bucket.toLowerCase()}, ${labels.platform.toLowerCase()} or ${labels.deadline.toLowerCase()}`}
-                  className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    nOn ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'bg-card text-muted-foreground hover:bg-muted hover:text-foreground')}>
+                  className={cn('inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ui-control',
+                    nOn ? 'border-blue-500/40 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200' : 'text-muted-foreground hover:text-foreground')}>
                   <I.sliders className="size-3.5" />Filter{nOn ? <span className="tnum">· {nOn}</span> : null}</button>}>
                 <FilterMenu f={filterCtx} />
               </Popover>
@@ -7885,7 +8123,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             return (
               <Popover align="end" className="w-56 p-1"
                 trigger={({ open: isOpen, ...p }) => <button {...p} type="button" title={tip} aria-label={isTable ? `Columns, ${shownCols} shown` : tip}
-                  className={cn('inline-flex size-9 items-center justify-center rounded-lg border bg-card text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring', isOpen && 'bg-muted text-foreground')}>
+                  className={cn('inline-flex size-9 items-center justify-center rounded-lg border text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ui-control', isOpen && 'bg-muted text-foreground')}>
                   {isTable ? <I.columns className="size-4" /> : <I.layers className="size-4" />}</button>}>
                 {isTable ? (
                   <div role="group" aria-label="Columns">
@@ -7934,7 +8172,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       ) : viewMode === 'board' && all.length > 0 ? (
         <BoardView tasks={!query && filter === 'open' ? sorted : shown} stages={stages} labels={labels} onOpen={openFromView} onToggle={toggleTimer} onMove={moveToColumn} onAdd={preset => createTask({ preset })} />
       ) : (
-      <Card className="mt-3 overflow-hidden">
+      <div className="mt-3">
         {all.length === 0 ? (
           <Empty icon={<I.clipboard />} title="No tasks yet" description="Add one in the last row of the table, or use Create task to add an assignee, deadline and description.">
             <Button variant="outline" size="sm" onClick={createTask}><I.plus />Create task</Button>
@@ -7950,18 +8188,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         ) : (
           <div ref={tableWrap} className="relative overflow-x-auto">
             {colDrag && <div aria-hidden="true" className="pointer-events-none absolute inset-y-0 z-20 w-0.5 -translate-x-1/2 rounded-full bg-foreground/60 transition-[left] duration-150 ease-in-out" style={{ left: colDrag.line }} />}
-            {colDrag && <div aria-hidden="true" className="pointer-events-none fixed z-[90] inline-flex h-7 items-center rounded-md border bg-popover px-2.5 text-xs font-medium text-popover-foreground shadow-md" style={{ left: colDrag.x + 12, top: colDrag.y + 10 }}>{colDrag.label}</div>}
-            <table className="w-full table-fixed border-collapse text-[13px]" style={{ minWidth: visibleCols.reduce((n, c) => n + (c.key === 'task' ? 320 : colW(c)), 36) }}>
+            {colDrag && <div aria-hidden="true" className="pointer-events-none fixed z-[90] inline-flex h-7 items-center rounded-md border bg-popover px-2.5 text-xs font-medium text-popover-foreground ui-float" style={{ left: colDrag.x + 12, top: colDrag.y + 10 }}>{colDrag.label}</div>}
+            <table className="task-grid w-full table-fixed border-collapse text-[13px]" style={{ minWidth: visibleCols.reduce((n, c) => n + (c.key === 'task' ? 320 : colW(c)), 36) }}>
               <colgroup>
                 {visibleCols.map(c => <col key={c.key} style={c.key === 'task' ? undefined : { width: colW(c) }} />)}
                 <col style={{ width: 36 }} />
               </colgroup>
               <thead>
-                <tr className="border-b text-left text-xs text-muted-foreground">
+                <tr className="text-left text-xs text-muted-foreground">
                   {visibleCols.map(c => {
-                    const icon = { task: <span className="text-[11px] font-semibold">Aa</span>, status: <I.loader />, bucket: <I.layers />, assignee: <I.user />, deadline: <I.calendar />, priority: <I.flag />, time: <I.timer /> }[c.key];
+                                        const icon = { task: <span className="text-[11px] font-semibold">Aa</span>, status: <I.loader />, bucket: <I.layers />, assignee: <I.user />, deadline: <I.calendar />, priority: <I.flag />, time: <I.timer /> }[c.key];
                     return (
-                      <th key={c.key} data-col={c.key} className={cn('relative h-8 border-r p-0 font-normal transition-[background-color,opacity] duration-200 ease-in-out', colDrag && colDrag.key === c.key && 'bg-muted opacity-50', movedCol === c.key && 'bg-muted text-foreground')}>
+                      <th key={c.key} data-col={c.key} className={cn('relative h-8 p-0 font-normal transition-[background-color,opacity] duration-200 ease-in-out', colDrag && colDrag.key === c.key && 'bg-muted opacity-50', movedCol === c.key && 'bg-muted text-foreground')}>
                         <DropdownMenu align="start"
                           trigger={p => (
                             <button {...p} type="button" title={c.key === 'task' ? `${labels[c.key]}: rename` : `${labels[c.key]}: drag to move, click to rename, hide or resize`}
@@ -7999,20 +8237,20 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 {shown.map(t => {
                   const d = due(t), on = !!t.timerStartedAt, done = t.status === 'done';
                   const blocker = t.status === 'blocked' && tasks[t.blockedBy];
-                  const cell = 'h-[34px] border-r px-2.5 align-middle';
+                  const cell = 'h-10 px-2.5 align-middle';
                   return (
-                    <tr key={t.id} data-task-id={t.id} className={cn('group border-b transition-colors hover:bg-muted/40', on && 'bg-accent/60')}>
+                    <tr key={t.id} data-task-id={t.id} className={cn('group transition-colors hover:bg-muted/40', on && 'bg-accent/60')}>
                       <td className={cn(cell, 'group/title')}>
                         {renaming === t.id ? (
                           <input autoFocus defaultValue={t.title} aria-label="Task title"
-                            className="h-7 w-full rounded-md border bg-background px-1.5 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                            className="h-7 w-full rounded-md border px-1.5 text-[13px] font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field"
                             onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setRenaming(null); } }}
                             onBlur={e => { const v = e.target.value.trim(); if (v && v !== t.title) updateTask(t.id, { title: v }); setRenaming(null); }} />
                         ) : (
                           <div className="flex min-w-0 items-center gap-2">
                             {done ? <span className="size-6 shrink-0" aria-hidden="true" /> : (
-                              <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Stop' : 'Start'} timer for ${t.title || 'Untitled'}`} title={on ? 'Stop timer' : 'Start timer'}
-                                className={cn('flex size-6 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3',
+                              <button type="button" onClick={() => toggleTimer(t.id)} aria-label={`${on ? 'Stop' : 'Start'} timer for ${t.title || 'Untitled'}`} title={on ? 'Stop timer' : 'Start timer'} data-on={on ? '' : undefined}
+                                className={cn('row-play flex size-6 shrink-0 items-center justify-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&_svg]:size-3',
                                   on ? 'border-emerald-500 bg-emerald-500 text-white hover:bg-emerald-600' : 'text-muted-foreground hover:border-foreground/30 hover:text-foreground')}>
                                 {on ? <I.pause /> : <I.play className="translate-x-px" />}
                               </button>
@@ -8028,7 +8266,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                                 // 0.19.14: icon only. The name floats open over the row on hover or focus (see .pchip in index.css).
                                 <span className="pchip-slot">
                                   <button type="button" onClick={e => openCell(t.id, 'project', e.currentTarget)} title={`Change ${labels.platform.toLowerCase()}`} aria-label={`${labels.platform}: ${t.project}`} data-open={editing ? '' : undefined}
-                                    className={cn('pchip inline-flex h-5 items-center rounded-md border bg-background px-1 text-[11px] text-foreground/75 hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', editing && 'border-foreground/30 text-foreground')}>
+                                    className={cn('pchip inline-flex h-5 items-center rounded-md border px-1 text-[11px] text-foreground/75 hover:border-foreground/25 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field', editing && 'border-foreground/30 text-foreground')}>
                                     <PIcon name={t.project} className="size-3 shrink-0 text-muted-foreground" /><span className="pchip-name"><span><span>{t.project}</span></span></span>
                                   </button>
                                 </span>
@@ -8047,10 +8285,10 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                             </span>
                             {t.inbox && (
                               <button type="button" onClick={() => acceptTask(t.id)} title="Move to Open"
-                                className="inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">Accept</button>
+                                className="inline-flex h-5 shrink-0 items-center rounded-full border px-2 text-[11px] font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-fill">Accept</button>
                             )}
                             <button type="button" onClick={() => setRenaming(t.id)} aria-label={`Rename ${t.title}`} title="Rename"
-                              className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-muted-foreground opacity-0 shadow-sm transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100">
+                              className="ml-auto inline-flex size-6 shrink-0 items-center justify-center rounded-md border text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover/title:opacity-100 [@media(hover:none)]:opacity-100 ui-fill">
                               <I.pencil className="size-3" />
                             </button>
                           </div>
@@ -8084,7 +8322,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                           </td>
                         );
                       })}
-                      <td className="h-[34px] px-0.5 text-center">
+                      <td className="h-10 px-0.5 text-center">
                         <div className="opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
                           <DropdownMenu
                             trigger={p => <Button {...p} variant="ghost" size="icon-sm" className="h-7 w-7" aria-label={`Actions for ${t.title}`}><I.more /></Button>}
@@ -8111,7 +8349,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
             className="h-8 min-w-0 flex-1 bg-transparent placeholder:text-muted-foreground focus-visible:outline-none" />
           {quick && <Kbd>Enter ↵</Kbd>}
         </form>
-      </Card>
+      </div>
       )}
       {extraResults.map(r => (
         <div key={r.key} className="mt-4">
@@ -8255,7 +8493,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 function UpdateCard({ up }) {
   if (!up.update) return null;
   return (
-    <div role="status" className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg">
+    <div role="status" className="flex w-[var(--width)] max-w-[calc(100vw-2rem)] items-start gap-3 rounded-lg border bg-popover p-3 text-sm text-popover-foreground ui-float">
       <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-muted"><I.download className="size-3.5" /></span>
       <div className="min-w-0 flex-1">
         <div className="font-medium">Version {up.update.version} is ready</div>
@@ -8468,7 +8706,7 @@ function TeamTour({ tour, onClose }) {
   useEffect(() => { const k = e => { if (e.key === 'Escape') onClose(); }; document.addEventListener('keydown', k); return () => document.removeEventListener('keydown', k); }, []);
   const [title, text] = tour.steps[i], last = i === tour.steps.length - 1;
   return createPortal(
-    <section role="dialog" aria-label={`Tour, step ${i + 1} of ${tour.steps.length}`} className="fixed bottom-6 right-6 z-[60] w-[360px] max-w-[calc(100vw-2rem)] rounded-xl border bg-background p-5 shadow-2xl anim-zoom">
+    <section role="dialog" aria-label={`Tour, step ${i + 1} of ${tour.steps.length}`} className="fixed bottom-6 right-6 z-[60] w-[360px] max-w-[calc(100vw-2rem)] rounded-xl border bg-background p-5 anim-zoom ui-float">
       <div className="mb-3 flex items-center justify-between text-xs text-muted-foreground">
         <span>{tour.name} tour · {i + 1} of {tour.steps.length}</span>
         <span className="flex gap-1" aria-hidden="true">{tour.steps.map((_, j) => <span key={j} className={cn('h-1.5 w-4 rounded-full', j <= i ? 'bg-foreground' : 'bg-muted')} />)}</span>
@@ -8652,7 +8890,7 @@ function CloudDialog({ open, onClose, prof }) {
   } else if (phase === 'choose') {
     const opt = (mode, title, text, rec) => (
       <button type="button" disabled={busy} onClick={() => run(() => cloudFirstSync(mode))}
-        className="grid gap-1 rounded-lg border p-4 text-left transition-colors hover:border-foreground/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
+        className="grid gap-1 rounded-lg border p-4 text-left transition-colors hover:border-foreground/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ui-inset">
         <span className="flex items-center gap-2 text-sm font-medium">{title}{rec && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">Recommended for a second PC</span>}</span>
         <span className="text-sm text-muted-foreground">{text}</span>
       </button>
@@ -8670,7 +8908,7 @@ function CloudDialog({ open, onClose, prof }) {
     const row = (k, v) => <div className="flex items-start justify-between gap-4 py-2.5 text-sm"><span className="text-muted-foreground">{k}</span><span className="min-w-0 text-right">{v}</span></div>;
     body = (
       <div className="grid gap-4">
-        <div className="divide-y rounded-lg border px-4">
+        <div className="divide-y rounded-lg border px-4 ui-inset">
           {row('Account', <span className="truncate">{c.email || '—'}</span>)}
           {row('Status', <span className="inline-flex items-center gap-2"><span className={cn('size-2 rounded-full', tone.dot)} />{tone.text}{c.phase === 'synced' && c.lastSync ? <span className="text-muted-foreground">· {ago(c.lastSync)}</span> : null}</span>)}
           {c.pending > 0 && row('Waiting to send', `${c.pending} ${c.pending === 1 ? 'change' : 'changes'}`)}
@@ -8745,7 +8983,7 @@ function ProfileInput({ value, onSave, label, placeholder, type = 'text', requir
   const commit = () => { const t = v.trim(); if (required && !t) { setV(value || ''); return; } if (t !== (value || '')) onSave(t); };
   return <input id={id} type={type} value={v} onChange={e => setV(e.target.value)} onBlur={commit} aria-label={label} placeholder={placeholder} spellCheck={false}
     onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { e.stopPropagation(); setV(value || ''); setTimeout(() => e.target.blur()); } }}
-    className="h-8 w-[230px] shrink-0 rounded-md border border-input bg-transparent px-2.5 text-sm transition-colors placeholder:text-muted-foreground hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />;
+    className="h-8 w-[230px] shrink-0 rounded-md border border-input px-2.5 text-sm transition-colors placeholder:text-muted-foreground hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field" />;
 }
 
 // The status list, the note and "clear after". Used in the picker and in the avatar menu.
@@ -8770,7 +9008,7 @@ function StatusPanel({ u, onChange, onDone }) {
       <label className="px-2 pt-0.5 text-[11px] text-muted-foreground" htmlFor="status-note">Note</label>
       <input id="status-note" value={note} onChange={e => setNote(e.target.value)} onBlur={saveNote} placeholder="What are you up to?" maxLength={80}
         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNote(); onDone && onDone(); } }}
-        className="mx-1 h-[30px] rounded-md border border-input bg-transparent px-2 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+        className="mx-1 h-[30px] rounded-md border border-input px-2 text-[13px] placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field" />
       <div className="flex items-center gap-1 px-2 pb-0.5 pt-1.5 text-xs text-muted-foreground">
         <I.timer className="size-3.5 shrink-0" /><span className="mr-auto whitespace-nowrap">Clear after</span>
         {CLEAR_AFTER.map(c => {
@@ -8792,7 +9030,7 @@ function StatusPicker({ u, onChange }) {
   return (
     <>
       <button ref={a} type="button" onClick={() => setOpen(o => !o)} aria-haspopup="menu" aria-expanded={open} aria-label={`Status: ${s.label}${s.note ? `, ${s.note}` : ''}`}
-        className={cn('flex h-8 w-[230px] shrink-0 items-center gap-2 rounded-md border border-input bg-transparent px-2.5 text-sm transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring', open && 'border-foreground/40')}>
+        className={cn('flex h-8 w-[230px] shrink-0 items-center gap-2 rounded-md border border-input px-2.5 text-sm transition-colors hover:border-foreground/30 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field', open && 'border-foreground/40')}>
         <span className={cn('size-2 shrink-0 rounded-full', s.dot)} /><span className="shrink-0">{s.label}</span>
         {s.note && <span className="min-w-0 truncate text-[13px] text-muted-foreground">· {s.note}</span>}
         <I.down className="ml-auto size-3.5 shrink-0 text-muted-foreground" />
@@ -9043,7 +9281,7 @@ function InviteDialog({ state, onClose, teamsList, rolesList, inviter }) {
       </>}>
       {kind === 'invite' && (
         <Field label="Emails" htmlFor="inv-emails">
-          <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring">
+          <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-input px-2 py-1.5 focus-within:ring-1 focus-within:ring-ring ui-field">
             {emails.map(e => (
               <span key={e} className="inline-flex h-6 max-w-full items-center gap-1 rounded-full bg-muted pl-2.5 pr-1 text-xs">
                 <span className="truncate">{e}</span>
@@ -9200,7 +9438,7 @@ function AccountMenu({ me, wsName, workspaces, ws, railOpen, onStatus, onProfile
             <div className="min-w-0"><div className="truncate text-sm font-semibold">{me.name}</div><div className="truncate text-xs text-muted-foreground">{[me.role, wsName].filter(Boolean).join(' · ')}</div></div>
           </div>
           <button type="button" aria-expanded={statusOpen} onClick={() => setStatusOpen(o => !o)}
-            className="mx-1 mb-1 flex h-8 w-[calc(100%-8px)] items-center gap-2 rounded-md border border-input px-2 text-left text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+            className="mx-1 mb-1 flex h-8 w-[calc(100%-8px)] items-center gap-2 rounded-md border border-input px-2 text-left text-[13px] transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-field">
             <span className={cn('size-2 shrink-0 rounded-full', s.dot)} />{s.label}
             {s.note && <span className="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{s.note}</span>}
             <I.down className={cn('size-3 shrink-0 text-muted-foreground transition-transform', !s.note && 'ml-auto', statusOpen && 'rotate-180')} />

@@ -6,7 +6,7 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Geist Sans', 'Geist','system-ui','-apple-system','Segoe UI','sans-serif'],
+        sans: ['Inter','system-ui','-apple-system','Segoe UI','sans-serif'],
         mono: ['Geist Mono','ui-monospace','SFMono-Regular','Menlo','monospace']
       },
       colors: {

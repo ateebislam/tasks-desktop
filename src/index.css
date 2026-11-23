@@ -12,44 +12,53 @@
   --muted:0 0% 95.5%; --muted-foreground:0 0% 45%;
   --accent:0 0% 94.5%; --accent-foreground:0 0% 9%;
   --destructive:0 72% 51%; --destructive-foreground:0 0% 98%;
-  --border:0 0% 89.5%; --input:0 0% 87%; --ring:0 0% 25%;
+  --border:0 0% 91.5%; --input:0 0% 87%; --ring:0 0% 25%;
+  --surface:0 0% 100%; --fill:0 0% 93%; --fill-hover:0 0% 90%;
+  --lift:0 1px 2px rgb(0 0 0 / .04),0 2px 8px rgb(0 0 0 / .03);
+  --float-shadow:0 12px 32px rgb(0 0 0 / .12),0 2px 6px rgb(0 0 0 / .06);
   --radius:0.625rem;
   color-scheme:light;
   box-sizing:border-box;
   padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
 }
-/* Dark theme: used when the app is set to Dark, or to Match Windows while Windows is dark. */
+/* Dark theme (0.20.2: softer, the page is #1A1A1A instead of near-black #0A0A0A): used when the app is set to Dark, or to Match Windows while Windows is dark. */
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --page:0 0% 4%; --strip:0 0% 10%;
-    --background:0 0% 7.5%; --foreground:0 0% 96%;
-    --card:0 0% 7.5%; --card-foreground:0 0% 96%;
-    --popover:0 0% 9.5%; --popover-foreground:0 0% 96%;
+    --page:0 0% 10%; --strip:0 0% 15.5%;
+    --background:0 0% 13.5%; --foreground:0 0% 96%;
+    --card:0 0% 13.5%; --card-foreground:0 0% 96%;
+    --popover:0 0% 15.5%; --popover-foreground:0 0% 96%;
     --primary:0 0% 96%; --primary-foreground:0 0% 9%;
-    --secondary:0 0% 14%; --secondary-foreground:0 0% 96%;
-    --muted:0 0% 13.5%; --muted-foreground:0 0% 62%;
-    --accent:0 0% 15.5%; --accent-foreground:0 0% 96%;
+    --secondary:0 0% 19.5%; --secondary-foreground:0 0% 96%;
+    --muted:0 0% 19%; --muted-foreground:0 0% 66%;
+    --accent:0 0% 21%; --accent-foreground:0 0% 96%;
     --destructive:0 62% 50%; --destructive-foreground:0 0% 98%;
-    --border:0 0% 16%; --input:0 0% 20%; --ring:0 0% 80%;
+    --border:0 0% 20%; --input:0 0% 26%; --ring:0 0% 80%;
+    --surface:0 0% 13.5%; --fill:0 0% 17%; --fill-hover:0 0% 21%;
+    --lift:none;
+    --float-shadow:0 0 0 1px rgb(255 255 255 / .07),0 16px 40px rgb(0 0 0 / .5);
     color-scheme:dark;
   }
 }
 :root[data-theme="dark"]{
-    --page:0 0% 4%; --strip:0 0% 10%;
-    --background:0 0% 7.5%; --foreground:0 0% 96%;
-    --card:0 0% 7.5%; --card-foreground:0 0% 96%;
-    --popover:0 0% 9.5%; --popover-foreground:0 0% 96%;
+    --page:0 0% 10%; --strip:0 0% 15.5%;
+    --background:0 0% 13.5%; --foreground:0 0% 96%;
+    --card:0 0% 13.5%; --card-foreground:0 0% 96%;
+    --popover:0 0% 15.5%; --popover-foreground:0 0% 96%;
     --primary:0 0% 96%; --primary-foreground:0 0% 9%;
-    --secondary:0 0% 14%; --secondary-foreground:0 0% 96%;
-    --muted:0 0% 13.5%; --muted-foreground:0 0% 62%;
-    --accent:0 0% 15.5%; --accent-foreground:0 0% 96%;
+    --secondary:0 0% 19.5%; --secondary-foreground:0 0% 96%;
+    --muted:0 0% 19%; --muted-foreground:0 0% 66%;
+    --accent:0 0% 21%; --accent-foreground:0 0% 96%;
     --destructive:0 62% 50%; --destructive-foreground:0 0% 98%;
-    --border:0 0% 16%; --input:0 0% 20%; --ring:0 0% 80%;
+    --border:0 0% 20%; --input:0 0% 26%; --ring:0 0% 80%;
+    --surface:0 0% 13.5%; --fill:0 0% 17%; --fill-hover:0 0% 21%;
+    --lift:none;
+    --float-shadow:0 0 0 1px rgb(255 255 255 / .07),0 16px 40px rgb(0 0 0 / .5);
     color-scheme:dark;
 }
 *,*::before,*::after{box-sizing:inherit;border-color:hsl(var(--border))}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
-body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-family:'Geist Sans',Geist,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"rlig" 1,"calt" 1}
+body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased;font-feature-settings:"rlig" 1,"calt" 1}
 .tnum{font-variant-numeric:tabular-nums}
 @keyframes sheet-in{from{transform:translateX(100%)}to{transform:translateX(0)}}
 @keyframes fade-in{from{opacity:0}to{opacity:1}}
@@ -87,7 +96,7 @@ html,body,#root{height:100%}
 .theme-switching *,.theme-switching *::before,.theme-switching *::after{transition:none!important}
 
 /* Quick capture (0.19.11): a plain solid panel. */
-.capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:inset 0 0 0 1px hsl(var(--border))}
+.capture-panel{overflow:hidden;border-radius:14px;background:hsl(var(--popover));color:hsl(var(--popover-foreground));box-shadow:var(--float-shadow)}
 
 /* Quiet menus (0.19.12): grey icons that brighten on the row you point at. */
 .menu-quiet>button>svg{color:hsl(var(--muted-foreground));transition:color .15s cubic-bezier(.4,0,.2,1)}
@@ -151,3 +160,54 @@ td:has(.pchip:hover,.pchip:focus-visible,.pchip[data-open]) button[aria-label^="
 /* Toasts (Sonner): same look, but they slide and stack over 200ms instead of 400ms. */
 [data-sonner-toaster] [data-sonner-toast]:not([data-swiping=true]){transition-duration:.2s!important;transition-timing-function:cubic-bezier(.4,0,.2,1)!important}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important}.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-out{animation:none!important}}
+
+/* Borderless surfaces (0.20.2): one shared set of styles that every component uses instead of outlines.
+   Rules: surfaces have no borders and are told apart by fill; controls are filled grey; floating panels
+   sit on a soft shadow (plus a near-invisible edge in dark mode, where shadows don't show); the only lines
+   left are hairlines (--border) for table rows and columns and a few dividers. Each class keeps the 1px
+   border width but makes it transparent, so nothing shifts. The fills are low-weight, so an
+   element's own bg-* class, such as a selected or warning state, still wins: these sit in Tailwind's
+   components layer, before the utilities. */
+.ui-card,.ui-control,.ui-fill,.ui-field,.ui-quiet,.ui-inset,.ui-float{border-color:transparent!important}
+@layer components{
+  .ui-card{background-color:hsl(var(--surface));box-shadow:var(--lift)}
+  .ui-control{background-color:hsl(var(--surface));box-shadow:var(--lift)}
+  .ui-control:where(:hover){background-color:hsl(var(--fill))}
+  .ui-fill{background-color:hsl(var(--fill))}
+  .ui-fill:where(:hover){background-color:hsl(var(--fill-hover))}
+  .ui-field{background-color:hsl(var(--fill))}
+  .ui-field:where(:hover){background-color:hsl(var(--fill-hover))}
+  .ui-field:where(:focus,:focus-within){background-color:hsl(var(--background))}
+  .ui-quiet{background-color:transparent}
+  .ui-quiet:where(:hover){background-color:hsl(var(--fill) / .7)}
+  .ui-quiet:where(:focus,:focus-within){background-color:hsl(var(--fill))}
+  .ui-inset{background-color:hsl(var(--fill) / .5)}
+  .ui-hover:where(:hover){background-color:hsl(var(--fill))}
+}
+.ui-float{box-shadow:var(--float-shadow)!important}
+
+/* Task table (0.20.2): no box. Hairline rows that start after the play button, one unbroken hairline
+   between columns from the header to the last row, and nothing on the outer edges. */
+.task-grid thead tr{border-bottom:1px solid hsl(var(--border))}
+.task-grid th,.task-grid td{border-right:1px solid hsl(var(--border))}
+.task-grid th:nth-last-child(-n+2),.task-grid td:nth-last-child(-n+2){border-right-color:transparent}
+.task-grid tbody td{border-bottom:1px solid hsl(var(--border))}
+.task-grid tbody td:first-child{position:relative;border-bottom-color:transparent}
+.task-grid tbody td:first-child::after{content:"";position:absolute;left:42px;right:0;bottom:-1px;height:1px;background:hsl(var(--border))}
+.task-grid .row-play{opacity:0}
+.task-grid tr:hover .row-play,.task-grid .row-play:focus-visible,.task-grid .row-play[data-on]{opacity:1}
+@media (hover:none){.task-grid .row-play{opacity:1}}
+
+/* Documents library (0.20.2): same lines as the task table. Hairline rows that start after the file badge,
+   one unbroken hairline between columns from the header to the last row, nothing on the outer edges. */
+.doc-grid .dg-row{display:grid;grid-template-columns:minmax(240px,1fr) 132px minmax(160px,260px) 84px 124px 108px;align-items:stretch}
+.doc-grid .dg-row>*{min-width:0;display:flex;align-items:center;gap:8px;padding:0 12px;border-right:1px solid hsl(var(--border))}
+.doc-grid .dg-row>*:nth-last-child(-n+2){border-right-color:transparent}
+.doc-grid .dg-headrow{height:34px;font-size:11px;font-weight:500;letter-spacing:.05em;text-transform:uppercase;color:hsl(var(--muted-foreground));box-shadow:inset 0 -1px hsl(var(--border))}
+.doc-grid .dg-group{height:36px}
+.doc-grid .dg-group>:first-child{padding-top:6px}
+.doc-grid .dg-body{height:40px;position:relative;border-radius:8px}
+.doc-grid .dg-body::after{content:"";position:absolute;left:38px;right:0;bottom:0;height:1px;background:hsl(var(--border));pointer-events:none}
+.doc-grid .dg-acts{justify-content:flex-end;gap:2px;padding-right:6px;opacity:0;transition:opacity .15s}
+.doc-grid .dg-body:hover .dg-acts,.doc-grid .dg-body:focus-within .dg-acts,.doc-grid .dg-body[aria-selected=true] .dg-acts{opacity:1}
+@media (hover:none){.doc-grid .dg-acts{opacity:1}}
