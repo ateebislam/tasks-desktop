@@ -58,6 +58,25 @@ Taskit 0.20 turns your cloud into one shared team workspace. Do this once, then 
    secret `GOOGLE_CLIENT_SECRET`, so the Google sign-in is built into the app.
 Then invite people in Settings → Members. They sign in with Google using the invited email.
 
+## Delete rules and sign-up safety (0.20.3)
+Do this once, any time after the Teams steps. Every PC on 0.20.3 or later handles it; older PCs keep working.
+1. **SQL Editor** → **New query**: paste `supabase/delete-rules-0.20.3.sql` and **Run**. From then on Supabase
+   itself makes sure members delete only tasks they made, nobody but the Owner and Admins changes who made a
+   task, and only the Owner and Admins delete or overwrite team documents.
+2. **Authentication** → **Sign In / Providers** → **Email**: turn on **Confirm email** and save. Without it,
+   someone who knows an invited address could make a password account with it before the real person signs in.
+
+## Clearing out old leftovers (0.20.3)
+Do this once, after the step above. It keeps the database and each PC's sync file from growing forever.
+1. **SQL Editor** → **New query**: paste `supabase/cleanup-0.20.3.sql` and **Run**. It adds a job that runs
+   every night and removes two kinds of leftovers older than 90 days: the "this was deleted" markers of
+   deleted tasks, and the notes about which PC ran which automation. Tasks that still exist are never touched.
+2. To check: run `select * from cron.job where jobname = 'tasks-cleanup';` and you should see one row.
+   To run it once by hand: `select * from public.cleanup_sync();` shows how many rows it removed.
+
+A PC that was switched off for more than about 80 days compares everything again when it comes back, so it
+still learns about tasks deleted while it was away. PCs older than 0.20.3 don't do this, so update them first.
+
 ## Good to know
 - Your data stays on each PC too, so Tasks works offline and sends your changes when you're back online.
 - Each task syncs on its own, so working on two PCs at once is fine. If two people change the same task,

@@ -42,6 +42,10 @@ const ls = {
   get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} },
 };
+// Failures that used to vanish are written to the log file (0.20.3). The app registers the writer.
+let logger = null;
+export const cloudSetLogger = f => { logger = f; };
+const warn = (what, e) => { try { console.warn('[sync]', what, e || ''); if (logger) logger('sync: ' + what, e); } catch (x) { /* logging must never break sync */ } };
 const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
 // Which PC a change or a running timer came from.
 export const DEVICE_ID = (() => { let id = ls.get('tasks-device-id'); if (!id) { id = rid(); ls.set('tasks-device-id', id); } return id; })();
@@ -65,6 +69,10 @@ const isData = n => n === 'data' || n.startsWith('data-');
 const isArch = n => n === 'archive' || n.startsWith('archive-');
 const storeFor = (base, ws) => (ws === 'product' ? base : `${base}-${ws}`);
 const J = v => (v === undefined || v === null ? null : JSON.stringify(v));
+// The same, remembered per object (0.20.3): tasks that didn't change keep the same object, so finding
+// what changed doesn't turn every task into JSON on every save.
+const jMemo = new WeakMap();
+const Jm = v => { if (!v || typeof v !== 'object') return J(v); let j = jMemo.get(v); if (j === undefined) { j = J(v); jMemo.set(v, j); } return j; };
 
 /* ---------- Stores <-> rows ---------- */
 // Watch folders are paths on this PC, so they stay local.
@@ -168,6 +176,20 @@ const isItem = key => /^[taxl]\//.test(key);
 const isRowItem = key => /^[tax]\//.test(key); // a task, archived task or trashed task
 const unwrap = (key, v) => (key && key.startsWith('l/') && v && typeof v === 'object' ? v.v : v);
 const itemTime = v => (v && typeof v === 'object' ? v.updatedAt || v.archivedAt || v.deletedAt || 0 : 0);
+/* Which edit is newer must not depend on each PC's clock (0.20.3). Every answer from Supabase carries
+   the server's time (updated_at), so this PC learns how far its own clock is off and corrects the
+   times it sends and compares. Differences under 30 seconds are left alone: that's just the network. */
+const CLOCK_SLACK = 30000;
+const clockOff = () => (st && Number(st.clockOff)) || 0;
+const srvNow = () => Date.now() + clockOff();
+const srv = t => (t ? t + clockOff() : 0); // a time from this PC's clock, as the server would have seen it
+function learnClock(iso, t0, t1) {
+  const at = Date.parse(iso);
+  if (!st || !Number.isFinite(at)) return;
+  const off = Math.round(at - (t0 + t1) / 2), next = Math.abs(off) < CLOCK_SLACK ? 0 : off;
+  if (Math.abs(next - clockOff()) < 5000) return;
+  st.clockOff = next; saveSoon();
+}
 // Two people changed the same task: start from the last agreed copy and take each side's changed fields.
 // A field both changed goes to the newer edit; lists of things with ids (comments, files, links) are combined.
 const byId = a => Array.isArray(a) && a.every(x => x && typeof x === 'object' && (typeof x.id === 'string' || typeof x.id === 'number'));
@@ -224,6 +246,14 @@ const subs = new Set(), noticeSubs = new Set();
 const live = {};   // store name -> function applying a patch to the open window's state
 const cache = {};  // store name -> latest content known here
 const dirty = new Set();
+// Stores whose file couldn't be read (0.20.3). Sync never treats them as empty: nothing is sent from them
+// and nothing is written into them, until the app has recovered the file.
+const unreadable = new Set();
+// Paused while a backup is restored (0.20.3), so nothing is read, written or sent in between.
+let frozen = false;
+// Large deletions held back until confirmed with Sync now (0.20.3); see heldDeletes().
+let deleteOk = false;
+const heldNoted = new Set();
 let caughtUp = false, started = false, loopBusy = false, loopAgain = false, timer = null, retryMs = 0, docsBusy = false, docsAgain = false;
 
 const setStatus = patch => { status = { ...status, ...patch }; subs.forEach(f => f(status)); };
@@ -235,20 +265,31 @@ const notice = n => noticeSubs.forEach(f => f(n));
 
 let saveBusy = false, saveNext = false;
 async function saveState() {
+  if (frozen) return;
   if (saveBusy) { saveNext = true; return; }
   saveBusy = true;
   try { do { saveNext = false; await invoke('write_store', { name: 'cloud', content: JSON.stringify(st) }); } while (saveNext); }
-  catch (e) {} finally { saveBusy = false; }
+  catch (e) { warn('Sync state not saved', e); } finally { saveBusy = false; }
 }
 let saveT = null;
 const saveSoon = () => { clearTimeout(saveT); saveT = setTimeout(saveState, 400); };
 const sstore = name => { const s = st.stores[name] || (st.stores[name] = { shadow: {}, dirtyAt: {} }); if (!s.itemAt) s.itemAt = {}; if (!s.legacySeen) s.legacySeen = {}; if (!s.seenAt) s.seenAt = {}; return s; };
 const pendingCount = () => Object.values(st.stores).reduce((n, s) => n + Object.keys(s.dirtyAt || {}).length, 0);
 
+// A store's content: null when it doesn't exist yet, undefined when its file can't be read (0.20.3).
+// An unreadable file is never taken as empty, or every task in it would be deleted from the cloud.
 async function content(name) {
   if (cache[name] !== undefined) return cache[name];
   let c = null;
-  try { const raw = await invoke('read_store', { name }); c = raw ? JSON.parse(raw) : null; } catch (e) {}
+  try { const raw = await invoke('read_store', { name }); c = raw ? JSON.parse(raw) : null; }
+  catch (e) {
+    if (!unreadable.has(name)) {
+      unreadable.add(name);
+      notice({ kind: 'error', title: 'Some of your data couldn’t be read', detail: 'Cloud sync left it alone, so nothing was lost in the cloud. Open Tasks again to recover it.' });
+    }
+    return undefined;
+  }
+  unreadable.delete(name);
   if (cache[name] === undefined) cache[name] = c;
   return cache[name];
 }
@@ -267,7 +308,8 @@ async function localStores() {
 /* ---------- Hooks used by the app ---------- */
 // Called whenever this PC writes a store (main window, or a task window through tasks-data events).
 export function cloudNote(name, data) {
-  if (!started || !STORE_RE.test(name)) return;
+  if (!started || frozen || !STORE_RE.test(name)) return;
+  unreadable.delete(name);
   cache[name] = data;
   dirty.add(name);
   kick(600);
@@ -289,11 +331,12 @@ function kick(ms = 0) { clearTimeout(timer); timer = setTimeout(loop, ms); }
 
 /* ---------- Pushing local changes ---------- */
 function diff(name) {
-  const s = sstore(name), rows = split(name, cache[name]), now = Date.now(), out = [];
+  if (unreadable.has(name) || cache[name] === undefined) return [];
+  const s = sstore(name), rows = split(name, cache[name]), now = srvNow(), out = [];
   Object.keys(s.shadow).forEach(k => { if (isLocalKey(k)) { delete s.shadow[k]; delete s.dirtyAt[k]; } });
   Object.entries(rows).forEach(([k, v]) => {
-    const j = J(v);
-    if ((s.shadow[k] ?? null) !== j) { s.dirtyAt[k] = s.dirtyAt[k] || itemTime(v) || now; out.push({ key: k, value: v, j }); }
+    const j = Jm(v);
+    if ((s.shadow[k] ?? null) !== j) { s.dirtyAt[k] = s.dirtyAt[k] || srv(itemTime(v)) || now; out.push({ key: k, value: v, j }); }
     else delete s.dirtyAt[k];
   });
   Object.keys(s.shadow).forEach(k => {
@@ -305,13 +348,28 @@ function diff(name) {
 async function pushAll() {
   if (!access) await loadTeam(); // who we are in the team decides which rows we may send; throws (and retries) if unknown
   if (!access) throw new Error('Couldn’t find you in the team. Try signing in again.');
-  const names = [...dirty]; dirty.clear();
+  // Task lists before archives (0.20.3): a restored task is back in the list before it leaves the Trash,
+  // which is what the team's delete rules check.
+  const names = [...dirty].sort((a, b) => (isArch(a) ? 1 : 0) - (isArch(b) ? 1 : 0)); dirty.clear();
   let sent = 0;
   for (const name of names) {
     if (cache[name] === undefined) await content(name);
+    if (unreadable.has(name)) continue; // never sent from a file that couldn't be read
     // Items go before the whole-list rows, so a PC that reads both always sees the items first.
     let changes = diff(name).sort((a, b) => (a.key.startsWith('m/') ? 1 : 0) - (b.key.startsWith('m/') ? 1 : 0));
     const s = sstore(name);
+    // Many tasks vanishing at once (not moved to the Archive or Trash) looks like lost data, not a
+    // choice: those deletions wait until someone presses Sync now (0.20.3).
+    const held = await heldDeletes(name, changes);
+    if (held.length) {
+      const h = new Set(held);
+      changes = changes.filter(c => !h.has(c.key));
+      if (!heldNoted.has(name)) {
+        heldNoted.add(name);
+        notice({ kind: 'error', title: `${held.length} tasks disappeared from this PC`, detail: 'They weren’t deleted for your team. If you meant to delete them, open Cloud sync and press Sync now.' });
+      }
+      setStatus({ held: held.length });
+    } else if (heldNoted.delete(name)) setStatus({ held: 0 });
     if (!isAdmin()) {
       // Members can't change the team's lists or settings (the app doesn't let them, and Supabase refuses).
       // Anything that differs here, like a default the team never saved, simply stays on this PC; the
@@ -319,8 +377,8 @@ async function pushAll() {
       changes.filter(c => adminOnly(cloudStoreOf(name, c.key), c.key)).forEach(c => { delete s.dirtyAt[c.key]; });
       changes = changes.filter(c => !adminOnly(cloudStoreOf(name, c.key), c.key));
     }
-    const row = c => ({ workspace_id: wsId, store: cloudStoreOf(name, c.key), key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || Date.now(), device: DEVICE_ID });
-    const done = (c, at) => { clashes.delete(c.key); if (isSplitKey(c.key)) s.itemAt[c.key] = s.dirtyAt[c.key] || Date.now(); s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; if (at) s.seenAt[c.key] = at; sent++; };
+    const row = c => ({ workspace_id: wsId, store: cloudStoreOf(name, c.key), key: c.key, value: c.value, deleted: c.value === null, edited_at: s.dirtyAt[c.key] || srvNow(), device: DEVICE_ID });
+    const done = (c, at) => { clashes.delete(c.key); if (isSplitKey(c.key)) s.itemAt[c.key] = s.dirtyAt[c.key] || srvNow(); s.shadow[c.key] = c.j; delete s.dirtyAt[c.key]; if (at) s.seenAt[c.key] = at; sent++; };
     // Lists and settings go item by item, so a plain write is safe.
     const plain = changes.filter(c => !isRowItem(c.key));
     for (let i = 0; i < plain.length; i += 200) {
@@ -335,16 +393,30 @@ async function pushAll() {
     const fresh = tasks.filter(c => !s.seenAt[c.key]), known = tasks.filter(c => s.seenAt[c.key]);
     for (let i = 0; i < fresh.length; i += 200) {
       const part = fresh.slice(i, i + 200);
+      const t0 = Date.now();
       const { data, error } = await client.from(TABLE).upsert(part.map(row), { onConflict: 'workspace_id,store,key', ignoreDuplicates: true }).select('key,updated_at');
       if (error) { dirty.add(name); throw error; }
+      if (data && data.length) learnClock(data[0].updated_at, t0, Date.now());
       const got = new Map((data || []).map(r => [r.key, r.updated_at]));
       part.forEach(c => (got.has(c.key) ? done(c, got.get(c.key)) : conflicts.push(c.key)));
     }
+    const refused = [];
     for (const c of known) {
       const { workspace_id, store, key, ...set } = row(c);
+      const t0 = Date.now();
       const { data, error } = await client.from(TABLE).update(set).eq('workspace_id', wsId).eq('store', store).eq('key', key).eq('updated_at', s.seenAt[c.key]).select('key,updated_at');
+      // Refused by the team's rules (delete-rules-0.20.3.sql), like deleting someone else's task:
+      // the team's copy is put back here instead of trying again forever (0.20.3).
+      if (error && (error.code === '42501' || /row-level security|permission/i.test(error.message || ''))) { refused.push(c.key); checkMember().catch(() => {}); continue; }
       if (error) { dirty.add(name); throw error; }
-      if (data && data.length) done(c, data[0].updated_at); else conflicts.push(c.key);
+      if (data && data.length) { learnClock(data[0].updated_at, t0, Date.now()); done(c, data[0].updated_at); } else conflicts.push(c.key);
+    }
+    if (refused.length) {
+      const { data, error } = await client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').eq('workspace_id', wsId).eq('store', name).in('key', refused);
+      if (error) { dirty.add(name); throw error; }
+      refused.forEach(k => { delete s.dirtyAt[k]; });
+      await receive(data || [], 'replace');
+      notice({ kind: 'error', title: refused.length === 1 ? 'That change was put back' : `${refused.length} changes were put back`, detail: 'Only the person who made a task, or the Owner or an Admin, can delete it.' });
     }
     if (conflicts.length) {
       const { data, error } = await client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').eq('workspace_id', wsId).eq('store', name).in('key', conflicts);
@@ -366,11 +438,30 @@ async function pushAll() {
   return sent;
 }
 
+// The deletions to hold back from one push (0.20.3): tasks that vanished from this PC without being moved
+// to the Archive or Trash (more than 10 at once), or an archive store that's suddenly empty.
+const HOLD_OVER = 10;
+async function heldDeletes(name, changes) {
+  if (deleteOk) return [];
+  const del = changes.filter(c => c.value === null && isRowItem(c.key));
+  if (del.length <= HOLD_OVER) return [];
+  if (isData(name)) {
+    const arch = (await content(name.replace(/^data/, 'archive'))) || {};
+    const gone = del.filter(c => c.key.startsWith('t/') && !((arch.archived || {})[c.key.slice(2)] || (arch.trash || {})[c.key.slice(2)]));
+    return gone.length > HOLD_OVER ? gone.map(c => c.key) : [];
+  }
+  if (isArch(name)) return Object.keys(split(name, cache[name])).length === 0 ? del.map(c => c.key) : [];
+  return [];
+}
+// For the unit tests (src/cloud.test.js) only.
+export const _test = { get sessionStore() { return sessionStore; }, forgetOld, dropVanished, learnClock, clockOff, srv, split, applyRows, mergeFields, heldDeletes, diff, sstore, cache, unreadable, receive, setSt: v => { st = v; }, getSt: () => st, setClient: (c, ws) => { client = c; wsId = ws; } };
+
 /* ---------- Taking in cloud changes ---------- */
 // Rows are taken in one at a time, in the order they arrive, so two batches never work from the same old copy.
 let recvQ = Promise.resolve();
 function receive(rows, policy) { const p = recvQ.then(() => receiveNow(rows, policy)); recvQ = p.catch(() => {}); return p; }
 async function receiveNow(rows, policy = 'normal') {
+  if (frozen) return;
   const byStore = {};
   rows.forEach(r => {
     if (!r || typeof r.key !== 'string' || !CLOUD_STORE_RE.test(r.store || '')) return;
@@ -384,7 +475,12 @@ async function receiveNow(rows, policy = 'normal') {
   // Workspaces first, so new workspaces exist before their tasks arrive.
   const names = Object.keys(byStore).sort((a, b) => (a === 'workspaces' ? -1 : b === 'workspaces' ? 1 : 0));
   for (const name of names) {
-    const c = await content(name), s = sstore(name), patch = {};
+    const c = await content(name);
+    if (unreadable.has(name)) continue; // left alone: never written over (0.20.3)
+    const s = sstore(name), patch = {};
+    // If this PC can't save what it takes in, it must not note the rows as taken (0.20.3).
+    const before = { shadow: { ...s.shadow }, seenAt: { ...s.seenAt }, itemAt: { ...s.itemAt }, dirtyAt: { ...s.dirtyAt }, legacySeen: { ...s.legacySeen } };
+    try {
     for (const r of byStore[name]) {
       // A row can arrive twice and out of order: realtime may bring a newer copy before the catch-up pull
       // (which looks back a minute) brings an older one. Only the newest copy of each row counts, or the
@@ -434,11 +530,11 @@ async function receiveNow(rows, policy = 'normal') {
         if (J(merged) !== j) dirty.add(name);
         continue;
       }
-      else if (policy === 'combine') take = lj === null || (r.edited_at || 0) >= itemTime(lv);
+      else if (policy === 'combine') take = lj === null || (r.edited_at || 0) >= srv(itemTime(lv));
       else if (lj === sj) take = true; // not changed here since the last sync
       else if (/^[tax]\//.test(r.key) && lv && r.value && !r.deleted) {
         // Changed here and by someone else: keep both sides' changes, field by field.
-        const mineWins = (s.dirtyAt[r.key] || itemTime(lv) || 0) > (r.edited_at || 0);
+        const mineWins = (s.dirtyAt[r.key] || srv(itemTime(lv)) || 0) > (r.edited_at || 0);
         const merged = mergeFields(sj === null ? null : JSON.parse(sj), lv, r.value, mineWins);
         s.shadow[r.key] = j; s.seenAt[r.key] = r.updated_at || s.seenAt[r.key];
         patch[r.key] = merged;
@@ -447,7 +543,7 @@ async function receiveNow(rows, policy = 'normal') {
       }
       else {
         // Changed on both PCs: the newer edit wins.
-        take = (r.edited_at || 0) >= (s.dirtyAt[r.key] || itemTime(lv) || 0);
+        take = (r.edited_at || 0) >= (s.dirtyAt[r.key] || srv(itemTime(lv)) || 0);
         if (isItem(r.key)) notice({ kind: 'conflict', title: (take ? rowTitle(unwrap(r.key, r.value)) : rowTitle(unwrap(r.key, lv))) || 'A task', kept: take ? 'other' : 'here' });
       }
       s.shadow[r.key] = j;
@@ -466,6 +562,10 @@ async function receiveNow(rows, policy = 'normal') {
       });
     });
     if (Object.keys(patch).length) await applyPatch(name, c, patch);
+    } catch (e) {
+      Object.assign(s, before);
+      throw e;
+    }
   }
   saveSoon();
 }
@@ -474,13 +574,78 @@ async function applyPatch(name, c, patch) {
   cache[name] = next;
   if (live[name]) { live[name](livePatch(name, next, patch)); return; }
   // Not open in this window: write the file, and tell any task windows showing it.
-  try { await invoke('write_store', { name, content: JSON.stringify(next) }); } catch (e) {}
+  // A failed write puts everything back and is retried (0.20.3), instead of being noted as done.
+  try { await invoke('write_store', { name, content: JSON.stringify(next) }); }
+  catch (e) { cache[name] = c; throw e; }
+  announce(name, next);
+}
+// Tells any task windows showing this store about its new content.
+function announce(name, next) {
   const ws = name.includes('-') ? name.slice(name.indexOf('-') + 1) : 'product';
   if (isData(name)) emit('tasks-data', { from: 'cloud', ws, data: next }).catch(() => {});
   else if (isArch(name)) emit('tasks-arch', { from: 'cloud', ws, data: { archived: next.archived || {}, trash: next.trash || {} } }).catch(() => {});
 }
+/* Old leftovers (0.20.3, cleanup-0.20.3.sql). Supabase removes "this was deleted" markers after 90
+   days. So this PC forgets its own notes about rows deleted longer ago than that (a little later, to
+   be sure the cloud went first), and a PC that was away for most of that time compares everything
+   again when it's back, because the markers it would have learned from may be gone. */
+const DAY = 864e5, FORGET_DAYS = 100, AWAY_DAYS = 80;
+async function forgetOld() {
+  if (srvNow() - (st.prunedAt || 0) < DAY) return 0;
+  const before = srvNow() - FORGET_DAYS * DAY;
+  let n = 0;
+  for (const name of Object.keys(st.stores)) {
+    const c = await content(name);
+    if (c === undefined) continue; // unreadable: left alone
+    const s = sstore(name), rows = c === null ? {} : split(name, c);
+    for (const k of Object.keys(s.shadow)) {
+      // Deleted, agreed with the cloud, not back on this PC, and long enough ago.
+      if (s.shadow[k] !== null || k in rows || s.dirtyAt[k]) continue;
+      const at = s.seenAt[k] ? Date.parse(s.seenAt[k]) : 0;
+      if (at && at > before) continue;
+      delete s.shadow[k]; delete s.seenAt[k]; delete s.itemAt[k]; delete s.legacySeen[k]; n++;
+    }
+  }
+  st.prunedAt = srvNow(); saveSoon();
+  return n;
+}
+// After a long time away: rows this PC knows from the cloud that the cloud no longer has at all were
+// deleted and their markers cleaned up. They go from here too, unless they were changed here meanwhile
+// (edited_at 0 loses to any edit made on this PC, which is then sent up again as a new row).
+async function dropVanished(inCloud) {
+  // An empty answer is far more likely "not allowed to read" (removed from the team) than "all deleted".
+  if (!inCloud.size) return 0;
+  let gone = [];
+  for (const name of Object.keys(st.stores)) {
+    const s = sstore(name);
+    for (const k of Object.keys(s.seenAt)) {
+      if ((s.shadow[k] ?? null) === null || isLocalKey(k)) continue;
+      const store = cloudStoreOf(name, k);
+      if (!inCloud.has(store + '|' + k)) gone.push({ store, key: k, value: null, deleted: true, updated_at: null, edited_at: 0, device: null });
+    }
+  }
+  // Asked for by name before anything is dropped: a row that changed while the pages were being read
+  // can be missed by the page-by-page read, and must not be taken for deleted. A failed check stops here
+  // (the catch-up is tried again), so nothing is ever dropped on a guess.
+  if (gone.length) {
+    const still = new Set(), byStore = {};
+    gone.forEach(r => (byStore[r.store] || (byStore[r.store] = [])).push(r.key));
+    for (const [store, keys] of Object.entries(byStore)) {
+      for (let i = 0; i < keys.length; i += 200) {
+        const { data, error } = await client.from(TABLE).select('key').eq('workspace_id', wsId).eq('store', store).in('key', keys.slice(i, i + 200));
+        if (error) throw error;
+        (data || []).forEach(r => still.add(store + '|' + r.key));
+      }
+    }
+    gone = gone.filter(r => !still.has(r.store + '|' + r.key));
+  }
+  if (gone.length) { warn(`Back after a long time away: ${gone.length} rows are gone from the cloud`); await receive(gone, 'normal'); }
+  return gone.length;
+}
 async function pull(policy = 'normal') {
-  const since = policy === 'normal' && st.cursor ? new Date(Date.parse(st.cursor) - 60000).toISOString() : null;
+  const away = policy === 'normal' && st.cursor && srvNow() - Date.parse(st.cursor) > AWAY_DAYS * DAY;
+  const since = policy === 'normal' && st.cursor && !away ? new Date(Date.parse(st.cursor) - 60000).toISOString() : null;
+  const inCloud = away ? new Set() : null;
   let maxTs = st.cursor || null;
   for (let from = 0; ; from += 1000) {
     let q = client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device').eq('workspace_id', wsId).order('updated_at', { ascending: true }).order('key', { ascending: true }).range(from, from + 999);
@@ -488,19 +653,36 @@ async function pull(policy = 'normal') {
     const { data, error } = await q;
     if (error) throw error;
     await receive(data || [], policy);
-    (data || []).forEach(r => { if (!maxTs || r.updated_at > maxTs) maxTs = r.updated_at; });
+    (data || []).forEach(r => { if (!maxTs || r.updated_at > maxTs) maxTs = r.updated_at; if (inCloud) inCloud.add(r.store + '|' + r.key); });
     if (!data || data.length < 1000) break;
   }
+  if (inCloud) await dropVanished(inCloud);
+  // Everything was just compared, so this PC is caught up to now, even if the team has been quiet for months.
+  if (away) { const t = new Date(srvNow() - 300000).toISOString(); if (!maxTs || Date.parse(t) > Date.parse(maxTs)) maxTs = t; }
   st.cursor = maxTs;
+  // A row "from the future" means this PC's clock is behind by at least that much.
+  if (maxTs && Date.parse(maxTs) - srvNow() > CLOCK_SLACK) st.clockOff = Date.parse(maxTs) - Date.now();
   saveSoon();
 }
 
 /* ---------- Documents ---------- */
+// Which documents each store mentions is remembered until the store changes (0.20.3), so a sync that
+// changed nothing no longer walks every task again.
+const refsOf = new Map();
 async function allRefs() {
   const refs = new Set();
-  for (const n of await localStores()) if (n !== 'workspaces') docRefs(await content(n), refs);
+  for (const n of await localStores()) {
+    if (n === 'workspaces') continue;
+    const c = await content(n);
+    let e = refsOf.get(n);
+    if (!e || e.c !== c) { e = { c, refs: new Set() }; docRefs(c, e.refs); refsOf.set(n, e); }
+    e.refs.forEach(f => refs.add(f));
+  }
   return refs;
 }
+// The last document pass: which files it covered, when, and whether anything was left to retry.
+let docsKey = null, docsAt = 0;
+const DOCS_EVERY = 600e3;
 const docPath = f => `${wsId}/${f}`;
 // The Owner's PCs keep every document. Teammates fetch one when they open it (cloudEnsureDoc).
 const keepsAllDocs = () => access === 'owner';
@@ -532,19 +714,26 @@ async function syncDocs() {
   try {
     do {
       docsAgain = false;
-      const refs = [...await allRefs()], up = new Set(st.docsUp || []);
-      let missing = [];
-      try { missing = await invoke('missing_documents', { files: refs }); } catch (e) {}
+      const refs = [...await allRefs()].sort(), up = new Set(st.docsUp || []);
+      // Same documents as the last complete pass, and it was under 10 minutes ago: nothing to do (0.20.3).
+      const key = (wsId || '') + '|' + refs.join('|');
+      if (key === docsKey && Date.now() - docsAt < DOCS_EVERY) continue;
+      let missing = [], left = false;
+      try { missing = await invoke('missing_documents', { files: refs }); } catch (e) { left = true; warn('Could not check documents', e); }
       const miss = new Set(missing);
       if (!keepsAllDocs()) missing = [];
       for (const f of refs) {
         if (up.has(f) || miss.has(f)) continue;
-        let buf; try { buf = await invoke('read_document', { file: f }); } catch (e) { continue; }
-        const { error } = await client.storage.from(BUCKET).upload(docPath(f), new Blob([buf], { type: 'application/octet-stream' }), { upsert: true, contentType: 'application/octet-stream' });
-        if (error) { if (/exceed|too large|413/i.test(error.message || '')) { up.add(f); notice({ kind: 'error', title: 'A document is too big to sync', detail: 'Supabase’s free plan takes files up to 50 MB.' }); } continue; }
+        let buf; try { buf = await invoke('read_document', { file: f }); } catch (e) { left = true; continue; }
+        // Only the Owner and Admins may overwrite a team document (0.20.3), so teammates add new files only;
+        // a file that's already there is already synced.
+        const { error } = await client.storage.from(BUCKET).upload(docPath(f), new Blob([buf], { type: 'application/octet-stream' }), { upsert: isAdmin(), contentType: 'application/octet-stream' });
+        if (error && /exist|duplicate|409/i.test(error.message || '') && !isAdmin()) { up.add(f); continue; }
+        if (error) { if (/exceed|too large|413/i.test(error.message || '')) { up.add(f); notice({ kind: 'error', title: 'A document is too big to sync', detail: 'Supabase’s free plan takes files up to 50 MB.' }); } else { left = true; warn('Document not uploaded: ' + f, error); } continue; }
         up.add(f);
       }
-      for (const f of missing) { try { if (await download(f)) up.add(f); } catch (e) {} }
+      for (const f of missing) { try { if (await download(f)) up.add(f); else left = true; } catch (e) { left = true; warn('Document not downloaded: ' + f, e); } }
+      docsKey = left ? null : key; docsAt = Date.now();
       st.docsUp = [...up];
       setStatus({ docs: up.size });
       saveSoon();
@@ -558,7 +747,9 @@ export async function cloudEnsureDoc(file) {
 }
 export async function cloudDeleteDoc(file) {
   if (!client || !uid || !wsId || !DOC_RE.test(file)) return;
-  try { await client.storage.from(BUCKET).remove([docPath(file)]); st.docsUp = (st.docsUp || []).filter(f => f !== file); saveSoon(); } catch (e) {}
+  // Only the Owner and Admins delete the team's copy (0.20.3). A teammate's delete only affects this PC.
+  if (!isAdmin()) return;
+  try { await client.storage.from(BUCKET).remove([docPath(file)]); st.docsUp = (st.docsUp || []).filter(f => f !== file); saveSoon(); } catch (e) { warn('Team document not deleted: ' + file, e); }
 }
 
 /* ---------- Profile (0.19.13) ----------
@@ -626,7 +817,7 @@ function dropProfileChannel() { if (profileChannel) { try { client.removeChannel
 
 /* ---------- The sync loop ---------- */
 async function loop() {
-  if (!client || !uid || !wsId || !st.ready || !caughtUp) return;
+  if (frozen || !client || !uid || !wsId || !st.ready || !caughtUp) return;
   if (loopBusy) { loopAgain = true; return; }
   loopBusy = true;
   try {
@@ -634,6 +825,7 @@ async function loop() {
       loopAgain = false;
       if (dirty.size) { setStatus({ phase: 'syncing', pending: pendingCount() }); await pushAll(); }
     } while (loopAgain || dirty.size);
+    deleteOk = false;
     retryMs = 0;
     st.lastSync = Date.now(); saveSoon();
     setStatus({ phase: 'synced', pending: 0, lastSync: st.lastSync, error: null });
@@ -641,21 +833,33 @@ async function loop() {
     if (st.profileDirty) syncProfile().catch(() => {});
   } catch (e) {
     const offline = !navigator.onLine || /fetch|network|failed to|timeout/i.test(String(e && (e.message || e)));
+    if (e && (e.code === '42501' || /row-level security/i.test(String(e.message || '')))) checkMember().catch(() => {});
     retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000);
+    if (!offline) warn('Sync failed', e);
     setStatus({ phase: offline ? 'offline' : 'error', error: String(e && (e.message || e)), pending: pendingCount() });
     kick(retryMs);
   } finally { loopBusy = false; }
 }
 async function catchUp() {
-  try { await pull('normal'); caughtUp = true; kick(0); syncProfile().catch(() => {}); }
-  catch (e) { setStatus({ phase: navigator.onLine ? 'error' : 'offline', error: String(e && (e.message || e)) }); retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000); setTimeout(catchUp, retryMs); }
+  try { await pull('normal'); caughtUp = true; kick(0); syncProfile().catch(() => {}); checkMember().catch(() => {}); forgetOld().catch(e => warn('Old sync notes not cleared', e)); }
+  catch (e) { warn('Catch-up failed', e); setStatus({ phase: navigator.onLine ? 'error' : 'offline', error: String(e && (e.message || e)) }); retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000); setTimeout(catchUp, retryMs); }
 }
 function connect() {
   if (channel) { try { client.removeChannel(channel); } catch (e) {} channel = null; }
   channel = client.channel('records-' + DEVICE_ID)
     .on('postgres_changes', { event: '*', schema: 'public', table: TABLE, filter: `workspace_id=eq.${wsId}` }, p => {
-      if (p.new && p.new.store) receive([p.new]).catch(() => {});
-      if (p.new && p.new.updated_at && (!st.cursor || p.new.updated_at > st.cursor)) st.cursor = p.new.updated_at;
+      // A row deleted outright in Supabase (the app itself only marks rows deleted) is taken as a
+      // deletion here too, so this PC doesn't keep the old copy (0.20.3). Only the row's key arrives.
+      if (p.eventType === 'DELETE') {
+        const o = p.old || {};
+        if (o.store && o.key && (!o.workspace_id || o.workspace_id === wsId)) receive([{ store: o.store, key: o.key, value: null, deleted: true, updated_at: null, edited_at: srvNow(), device: null }]).catch(e => warn('Cloud delete not applied', e));
+        return;
+      }
+      if (!p.new || !p.new.store) return;
+      // The cursor only moves once the change is saved here, so a failed one is fetched again (0.20.3).
+      receive([p.new])
+        .then(() => { if (p.new.updated_at && (!st.cursor || p.new.updated_at > st.cursor)) st.cursor = p.new.updated_at; })
+        .catch(e => { warn('Cloud change not applied', e); setTimeout(() => { if (uid && st.ready && !frozen) catchUp(); }, 5000); });
     })
     .subscribe(s => { if (s === 'SUBSCRIBED') catchUp(); });
   // Each store is checked once for changes made while Tasks was closed or offline, after the
@@ -672,6 +876,27 @@ export const cloudAccess = () => access;
 export const cloudMe = () => uid;
 export const cloudTeam = () => team;
 export function onCloudTeam(f) { teamSubs.add(f); f(team); return () => teamSubs.delete(f); }
+// Removed from the team (0.20.3). The realtime message about it often never arrives (Supabase can't
+// filter deletes), so this is also checked after every reconnect, whenever the team list no longer
+// has this person, and when the cloud refuses a change. join_workspace decides: it lets an invited
+// person back in and refuses everyone else, who is then signed out here with the "removed" message.
+let leaving = false;
+
+async function leftTeam() {
+  if (leaving || !client || !uid) return;
+  leaving = true;
+  try {
+    const { error } = await client.rpc('join_workspace');
+    if (!error) return; // still (or again) on the team
+    if (error.code === '42501' || /isn.?t invited/i.test(String(error.message || ''))) { await cloudSignOut(); setStatus({ phase: 'removed' }); }
+  } catch (e) { warn('Membership check failed', e); } finally { leaving = false; }
+}
+async function checkMember() {
+  if (!client || !uid || !wsId) return;
+  const { data, error } = await client.from('members').select('user_id').eq('workspace_id', wsId).eq('user_id', uid);
+  if (!error && data && !data.length) await leftTeam();
+}
+const profileBits = p => ({ email: p.email || '', name: p.name || p.email || '', photo: p.photo || '', timeZone: p.time_zone || '', status: p.status || '', statusNote: p.status_note || '' });
 async function loadTeam() {
   if (!client || !wsId) return;
   const { data: ms, error } = await client.from('members').select('user_id,access,job_role,teams,joined_at').eq('workspace_id', wsId);
@@ -681,10 +906,11 @@ async function loadTeam() {
   const pr = new Map((ps || []).map(p => [p.user_id, p]));
   let invites = [];
   const mine = (ms || []).find(m => m.user_id === uid);
-  access = mine ? mine.access : null;
+  if (!mine && uid && !leaving) { await leftTeam(); if (!uid || !wsId) return; }
+  access = mine ? mine.access : access;
   if (isAdmin()) { const { data: iv } = await client.from('invites').select('email,access,job_role,teams,invited_at,accepted_at').eq('workspace_id', wsId).is('accepted_at', null).order('invited_at'); invites = iv || []; }
   team = {
-    members: (ms || []).map(m => { const p = pr.get(m.user_id) || {}; return { id: m.user_id, access: m.access, role: m.job_role || '', teams: m.teams || [], joinedAt: m.joined_at, email: p.email || '', name: p.name || p.email || '', photo: p.photo || '', timeZone: p.time_zone || '', status: p.status || '', statusNote: p.status_note || '' }; })
+    members: (ms || []).map(m => { const p = pr.get(m.user_id) || {}; return { id: m.user_id, access: m.access, role: m.job_role || '', teams: m.teams || [], joinedAt: m.joined_at, ...profileBits(p) }; })
       .sort((a, b) => (a.access === 'owner' ? -1 : b.access === 'owner' ? 1 : (a.name || '').localeCompare(b.name || ''))),
     invites: invites.map(i => ({ email: i.email, access: i.access, role: i.job_role || '', teams: i.teams || [], invitedAt: i.invited_at })),
   };
@@ -700,7 +926,16 @@ async function loadTeam() {
       // A teammate's name and photo arrive a moment after they join (and whenever they edit them).
       .on('postgres_changes', { event: '*', schema: 'public', table: PROFILE_TABLE }, p => {
         const id = (p.new && p.new.user_id) || (p.old && p.old.user_id);
-        if (id && id !== uid && team.members.some(m => m.id === id)) loadTeam().catch(() => {});
+        if (!id || id === uid || !team.members.some(m => m.id === id)) return;
+        // The changed row arrives with the message, so only that person is updated (0.20.3), instead of
+        // downloading every teammate and their photo again.
+        // The message may leave out a photo that didn't change, so then just that one row is read.
+        const put = row => { team = { ...team, members: team.members.map(m => (m.id === id ? { ...m, ...profileBits(row) } : m)) }; teamSubs.forEach(f => f(team)); };
+        if (p.eventType === 'DELETE') { loadTeam().catch(() => {}); return; }
+        if (p.new && typeof p.new.photo === 'string' && p.new.photo) { put(p.new); return; }
+        client.from(PROFILE_TABLE).select('user_id,email,name,photo,time_zone,status,status_note').eq('user_id', id).maybeSingle()
+          .then(({ data, error }) => { if (error || !data) throw error || new Error('no row'); put(data); })
+          .catch(e => { warn('Teammate not refreshed', e); loadTeam().catch(() => {}); });
       })
       .subscribe();
   }
@@ -748,7 +983,9 @@ export async function cloudRemoveMember(id) {
   await loadTeam();
 }
 // Time-based automations: the first PC to claim a run does it. true: run it here; false: another PC did; null: couldn't ask.
-export async function cloudClaim(taskId, ruleKey) {
+// strict (housekeeping, 0.20.3): while sync is set up but not connected yet, answer null instead of going ahead.
+export async function cloudClaim(taskId, ruleKey, strict) {
+  if (strict && (!st || (st.ready && (!client || !uid || !wsId || !caughtUp)))) return null;
   if (!client || !uid || !wsId || !st || !st.ready) return true; // not syncing: this PC is the only one
   try {
     const { error } = await client.from('automation_runs').insert([{ workspace_id: wsId, task_id: String(taskId), rule_key: String(ruleKey), device: DEVICE_ID }]);
@@ -762,9 +999,36 @@ export async function cloudClaim(taskId, ruleKey) {
 
 /* ---------- Setup, sign-in, first sync ---------- */
 const DEFAULT_STATE = () => ({ version: 1, stores: {}, docsUp: [], v2: [] });
+/* Where the sign-in is kept (0.20.3). It used to sit in the WebView's storage as plain text, where
+   anything that can read the profile folder could copy it. Now Windows encrypts it for this Windows
+   account (secret_get / secret_set in lib.rs). A sign-in saved by an earlier version is moved over the
+   first time it's read. If the protected store can't be used, the old place still works, so nobody is
+   locked out; that's written to the log. */
+const plain = {
+  get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable */ } },
+  del: k => { try { localStorage.removeItem(k); } catch (e) { /* storage unavailable */ } },
+};
+const sessionStore = {
+  getItem: async k => {
+    try { const v = await invoke('secret_get', { key: k }); if (typeof v === 'string') return v; }
+    catch (e) { warn('Protected sign-in store not readable', e); return plain.get(k); }
+    const old = plain.get(k);
+    if (old !== null) { try { await invoke('secret_set', { key: k, value: old }); plain.del(k); } catch (e) { warn('Sign-in not moved to the protected store', e); } }
+    return old;
+  },
+  setItem: async (k, v) => {
+    try { await invoke('secret_set', { key: k, value: v }); plain.del(k); }
+    catch (e) { warn('Sign-in kept in the old place', e); plain.set(k, v); }
+  },
+  removeItem: async k => {
+    try { await invoke('secret_remove', { key: k }); } catch (e) { warn('Protected sign-in not removed', e); }
+    plain.del(k);
+  },
+};
 async function makeClient() {
   const { createClient } = await import('@supabase/supabase-js');
-  client = createClient(st.url, st.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth' }, realtime: { params: { eventsPerSecond: 20 } } });
+  client = createClient(st.url, st.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth', storage: sessionStore }, realtime: { params: { eventsPerSecond: 20 } } });
   client.auth.onAuthStateChange(ev => {
     if (ev === 'SIGNED_OUT' && uid) { uid = null; wsId = null; caughtUp = false; setStatus({ phase: 'signin' }); }
   });
@@ -865,10 +1129,9 @@ export async function cloudFirstSync(mode) {
     if (mode !== 'upload' && (await countLocal())) {
       // A copy of this PC's data, just in case, next to the data files.
       try {
-        const { appDataDir, join } = await import('@tauri-apps/api/path');
         const d = new Date(), p = n => String(n).padStart(2, '0');
-        await invoke('backup', { dest: await join(await appDataDir(), `before-cloud-sync-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.zip`) });
-      } catch (e) {}
+        await invoke('safety_backup', { stamp: `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}` });
+      } catch (e) { warn('Safety backup before the first sync failed', e); }
     }
     st.stores = {}; st.cursor = null;
     if (mode !== 'upload') {
@@ -876,7 +1139,9 @@ export async function cloudFirstSync(mode) {
       if (mode === 'replace') {
         // Tasks that only exist on this PC are dropped (they're in the backup).
         for (const name of await localStores()) {
-          const s = sstore(name), c = await content(name), patch = {};
+          const c = await content(name);
+          if (unreadable.has(name)) continue;
+          const s = sstore(name), patch = {};
           // List items that only an older PC's whole-list row has (no item rows in the cloud yet) are kept.
           const legacy = {};
           Object.keys(s.shadow).forEach(k => { if (k.startsWith('m/') && s.shadow[k] !== null) Object.assign(legacy, fieldRows(name, k.slice(2), JSON.parse(s.shadow[k]))); });
@@ -907,10 +1172,83 @@ export async function cloudForget() {
   client = null; st = DEFAULT_STATE(); await saveState();
   setStatus({ phase: 'off', email: null, url: '' });
 }
-export function cloudSyncNow() { if (uid && st && st.ready) { localStores().then(ns => { ns.forEach(n => dirty.add(n)); catchUp(); }); } }
+// Sync now also confirms deletions that were held back (0.20.3).
+export function cloudSyncNow() { if (uid && st && st.ready) { deleteOk = true; heldNoted.clear(); localStores().then(ns => { ns.forEach(n => dirty.add(n)); catchUp(); }); } }
+
+/* ---------- Restoring a backup (0.20.3) ----------
+   Sync stops while the files are swapped. Afterwards this PC is treated like a new one: it compares its
+   restored data with the team's and asks whether to use the cloud's data or combine both. The restored
+   backup is never sent up as if every old task were a new edit, which would wipe newer team changes. */
+const idle = async () => { const t0 = Date.now(); while ((loopBusy || saveBusy || docsBusy) && Date.now() - t0 < 5000) await new Promise(r => setTimeout(r, 50)); };
+export async function cloudPause() {
+  frozen = true; clearTimeout(timer); clearTimeout(saveT);
+  await idle();
+  await recvQ.catch(() => {});
+}
+export function cloudResume() { frozen = false; if (uid && st && st.ready) kick(0); }
+export async function cloudForgetSyncState() {
+  if (!st || !st.ready) return;
+  st = { ...st, ready: false, stores: {}, cursor: null };
+  await invoke('write_store', { name: 'cloud', content: JSON.stringify(st) });
+}
 // Before Tasks quits: send what's left, but never hold up quitting for long.
 export async function cloudFlush(ms = 2500) {
   if (!uid || !st || !st.ready) return;
   clearTimeout(timer);
   await Promise.race([loop(), new Promise(r => setTimeout(r, ms))]);
+}
+
+/* ---------- Recovering a damaged store from the cloud (0.20.3) ----------
+   The damaged file is kept aside in the data folder, and this PC takes the team's copy of that store,
+   exactly as the cloud has it. Nothing is sent up. */
+export const cloudCanRecover = () => !!(client && uid && wsId && st && st.ready);
+export async function cloudRecoverStore(name) {
+  if (!cloudCanRecover()) throw new Error('Cloud sync isn’t connected on this PC.');
+  if (!STORE_RE.test(name)) throw new Error('Unknown store');
+  const rows = [];
+  for (const store of [name, name + ITEMS]) {
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await client.from(TABLE).select('store,key,value,deleted,updated_at,edited_at,device')
+        .eq('workspace_id', wsId).eq('store', store).order('key', { ascending: true }).range(from, from + 999);
+      if (error) throw error;
+      rows.push(...(data || []));
+      if (!data || data.length < 1000) break;
+    }
+  }
+  await invoke('set_aside_store', { name });
+  unreadable.delete(name);
+  delete st.stores[name];
+  cache[name] = null;
+  delete live[name];
+  await receive(rows, 'replace');
+  if (cache[name] === null) await invoke('write_store', { name, content: JSON.stringify(isArch(name) ? { version: 1, archived: {}, trash: {} } : { version: 4, tasks: {} }) });
+  await saveState();
+}
+
+/* ---------- Workspaces that aren't open (0.20.3) ----------
+   Their time-based automations, archiving and Trash cleanup run in the background. Reads and edits take
+   turns with incoming cloud changes, so neither works from an old copy, and the change is synced as usual. */
+export function cloudReadStore(name) {
+  const p = recvQ.then(() => content(name));
+  recvQ = p.catch(() => {});
+  return p;
+}
+// fn(content) returns the new content, or null for no change. Never touches a store that's open in a window
+// here (that window saves it) or one whose file couldn't be read.
+export function cloudEditStore(name, fn) {
+  const p = recvQ.then(async () => {
+    if (frozen || live[name] || !STORE_RE.test(name)) return false;
+    const c = await content(name);
+    if (c === undefined || unreadable.has(name)) return false;
+    const next = fn(c);
+    if (!next || next === c) return false;
+    cache[name] = next;
+    try { await invoke('write_store', { name, content: JSON.stringify(next) }); }
+    catch (e) { cache[name] = c; throw e; }
+    announce(name, next);
+    if (started) { dirty.add(name); kick(600); }
+    return true;
+  });
+  recvQ = p.catch(() => {});
+  return p;
 }

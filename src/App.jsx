@@ -3,7 +3,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect, useCallback, useMe
 import { createPortal, flushSync } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { getCurrentWebview } from '@tauri-apps/api/webview';
-import { open as openDialog, save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { check as checkForUpdate } from '@tauri-apps/plugin-updater';
 import { relaunch } from '@tauri-apps/plugin-process';
 import { getVersion } from '@tauri-apps/api/app';
@@ -16,7 +16,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from '@tauri
 import { readTheme, setTheme, toggleTheme } from './theme.js';
 import { Toaster, toast as sonner } from './components/ui/sonner.jsx';
 import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc, cloudProfileLive, cloudProfileNote,
-  cloudSignInGoogle, cloudMe, onCloudTeam, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudTeam as cloudTeamNow, cloudStatus } from './cloud.js';
+  cloudSignInGoogle, cloudMe, onCloudTeam, cloudPause, cloudResume, cloudForgetSyncState, cloudCanRecover, cloudRecoverStore, cloudReadStore, cloudEditStore, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudSetLogger, cloudTeam as cloudTeamNow, cloudStatus } from './cloud.js';
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from './cloud-config.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
@@ -176,7 +176,7 @@ const photoOf = u => (!u || u.photo === '' ? null : u.photo || u.picture || null
 let meNow = null; // the signed-in person, for code outside React (Do not disturb mutes desktop notifications)
 const Avatar = ({ name, className, picture }) => {
   const me = useContext(MeContext);
-  const pic = picture || (me && photoOf(me) && name && norm(name) === norm(me.name) ? photoOf(me) : null);
+  const pic = picture || (me && photoOf(me) && name && norm(name) === norm(me.name) && !nameClash.has(norm(name)) ? photoOf(me) : null);
   const initials = (name || '').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
   return (
     <span className={cn('relative flex h-6 w-6 shrink-0 overflow-hidden rounded-full', className)}>
@@ -986,23 +986,57 @@ function bucketScope(b, tasks) {
 /* Local storage: everything is written as JSON files in the app's data folder on this computer.
    With cloud sync on, the main window also sends each change to Supabase (see cloud.js). */
 const writers = {};
+// While a backup is restored nothing may be saved over the restored files (0.20.3).
+let savesFrozen = false;
+// Writes are gathered for a moment (0.20.3), so a burst of changes is turned into JSON and written
+// once, not once per change. flushAll() writes anything still waiting straight away.
+const WRITE_DELAY = 250;
+// "Save as" is opened by the Rust side (0.20.3), which then only writes to the place chosen there.
+const saveDialog = ({ defaultPath, filters }) => invoke('pick_save', { name: defaultPath || '', filters: filters || [] });
+/* The log file (0.20.3). Failures that used to disappear are written to logs/tasks.log in the data
+   folder (Settings, "Log folder"), a few lines at a time. Logging never throws and never shows a message. */
+const logBuf = []; let logTimer = null;
+function logWarn(what, e) {
+  try {
+    const detail = e ? String((e && (e.stack || e.message)) || e).split('\n').slice(0, 3).join(' | ') : '';
+    logBuf.push(`${new Date().toISOString()} [${WINDOW_LABEL}] ${what}${detail ? ': ' + detail : ''}`);
+    if (logBuf.length > 400) logBuf.splice(0, logBuf.length - 400);
+    if (!logTimer) logTimer = setTimeout(() => { logTimer = null; invoke('log_lines', { lines: logBuf.splice(0) }).catch(() => {}); }, 2000);
+  } catch (x) { /* nothing more can be done */ }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('error', ev => logWarn('Error', ev.error || ev.message));
+  window.addEventListener('unhandledrejection', ev => logWarn('Unhandled', ev.reason));
+}
+cloudSetLogger(logWarn);
 function persist(name, obj) {
+  if (savesFrozen) return;
   cloudNote(name, obj);
-  const w = writers[name] || (writers[name] = { busy: false, next: null });
-  w.next = JSON.stringify(obj);
-  if (w.busy) return;
+  const w = writers[name] || (writers[name] = { busy: false, next: undefined, timer: null });
+  w.next = obj;
+  if (w.busy || w.timer) return;
+  w.timer = setTimeout(() => writeNow(name), WRITE_DELAY);
+}
+function writeNow(name) {
+  const w = writers[name];
+  if (!w) return;
+  clearTimeout(w.timer); w.timer = null;
+  if (w.busy || w.next === undefined) return;
   w.busy = true;
   (async () => {
-    while (w.next !== null) {
-      const content = w.next; w.next = null;
+    while (w.next !== undefined) {
+      const content = JSON.stringify(w.next); w.next = undefined;
       try { await invoke('write_store', { name, content }); }
-      catch (e) { toast.error('Couldn’t save your changes', String(e)); }
+      catch (e) { logWarn('Could not save ' + name, e); toast.error('Couldn’t save your changes', String(e)); }
     }
     w.busy = false;
   })();
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function flushAll() { while (Object.values(writers).some(w => w.busy)) await sleep(30); }
+async function flushAll() {
+  Object.keys(writers).forEach(n => { if (writers[n].timer) writeNow(n); });
+  while (Object.values(writers).some(w => w.busy || w.timer)) await sleep(30);
+}
 
 /* Timers never keep running while Tasks is closed. The main window writes a heartbeat to the
    `session` file every 30 seconds, so after a crash or a hard shutdown the timers that were
@@ -1021,6 +1055,8 @@ let beforeQuit = async () => {};
 /* Several windows can be open (the main one and tasks popped out on their own).
    Whenever one saves, it tells the others, which take over the new data. */
 const WINDOW_LABEL = (() => { try { return getCurrentWindow().label; } catch (e) { return 'main'; } })();
+// A backup is being restored in the main window (0.20.3): task windows stop saving and close.
+if (WINDOW_LABEL.startsWith('task-')) listen('tasks-restoring', () => { savesFrozen = true; getCurrentWindow().close().catch(() => {}); }).catch(() => {});
 // Column names can be changed per workspace. Marketing starts with names that suit its work.
 const LABEL_KEYS = ['task', 'status', 'bucket', 'platform', 'assignee', 'deadline', 'priority', 'time'];
 const LABEL_DEFAULTS = { task: 'Task', status: 'Status', bucket: 'Bucket', platform: 'Platform', assignee: 'Assignee', deadline: 'Deadline', priority: 'Priority', time: 'Time' };
@@ -1032,9 +1068,64 @@ const storeFor = (base, ws) => (ws === 'product' ? base : `${base}-${ws}`);
 const danger = 'hover:!text-destructive';
 const plural = w => (/s$/i.test(w) ? w : /[^aeiou]y$/i.test(w) ? w.slice(0, -1) + 'ies' : w + 's');
 
+// Other windows hear about a workspace's latest data once per burst of changes, not after every change (0.20.3).
+const windowNews = {};
+function tellWindows(event, ws, data) {
+  const k = event + '|' + ws, n = windowNews[k] || (windowNews[k] = { data: null, timer: null });
+  n.data = data;
+  if (n.timer) return;
+  n.timer = setTimeout(() => { n.timer = null; emit(event, { from: WINDOW_LABEL, ws, data: n.data }).catch(() => {}); }, WRITE_DELAY);
+}
+/* What every save stamps on a task (0.20.3: shared with the background workspaces): the time, when it was
+   completed, who made it, when it joined its bucket, when its status changed, and which PC runs its timer. */
+function stampTask(t, prev, now) {
+  let doneAt = null;
+  if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
+  const x = { ...t, updatedAt: now, doneAt };
+  // Who made a task (0.20): members can delete only their own.
+  if (!prev && !x.createdBy && personKey !== 'local') x.createdBy = personKey;
+  // Remember when the task joined its bucket, so tasks added after a bucket starts can be told apart.
+  // Clearing the bucket keeps the record, so picking the same bucket again doesn't count as new.
+  const bk = norm(x.bucket), j = x.bucketJoin;
+  if (bk && (!j || j.name !== bk) && !(!j && prev && norm(prev.bucket) === bk)) {
+    x.bucketJoin = { name: bk, at: now };
+    const was = j ? j.name : norm(prev && prev.bucket);
+    if (was && x.addedReason && x.addedReason === (prev && prev.addedReason)) delete x.addedReason; // the reason was for the old bucket
+  }
+  // Remember when the status last changed, for "has been in [status] for [days]" automations (0.19.14).
+  if (!prev || prev.status !== x.status || (prev.stage || '') !== (x.stage || '')) x.statusAt = now;
+  else if (prev.statusAt && !x.statusAt) x.statusAt = prev.statusAt;
+  // Remember which PC runs a timer, so closing one PC never stops a timer running on another.
+  if (x.timerStartedAt && (!prev || prev.timerStartedAt !== x.timerStartedAt)) x.timerDevice = DEVICE_ID;
+  else if (!x.timerStartedAt) delete x.timerDevice;
+  return x;
+}
+// Archiving finished tasks and emptying the Trash is housekeeping for the whole team, so one PC does it
+// per workspace per day (0.20.3): the first to claim the day in automation_runs. The others leave it,
+// which ends the races and the duplicate conflict notices. Not syncing: this PC is the only one.
+// A stored project or bucket. A bare name (very old data) or an entry without a name must not stop the app (0.20.3).
+const namedItem = x => (typeof x === 'string' && x.trim() ? { id: 'auto-' + x.trim().toLowerCase(), name: x.trim() } : x && typeof x === 'object' && typeof x.name === 'string' ? { ...x } : null);
+// Ends the undo step in progress: what the workspace was before your edits, and after them.
+function closeStep(h) {
+  clearTimeout(h.timer);
+  h.past.push({ before: h.pending, after: h.last });
+  if (h.past.length > 30) h.past.shift();
+  h.future = []; h.pending = null;
+}
+const houseDay = {};
+async function houseTurn(ws) {
+  const day = new Date().toISOString().slice(0, 10);
+  if (houseDay[ws] === day) return true;
+  const c = await cloudClaim('~house/' + ws, 'day@' + day, true);
+  if (c) houseDay[ws] = day;
+  return c; // true: this PC; false: another PC has today; null: couldn't ask yet
+}
 function useTasks(ws = 'product') {
   const isProduct = ws === 'product';
   const [loaded, setLoaded] = useState(false);
+  // A data or archive file that couldn't be read (0.20.3): { store, error }. The workspace is never
+  // loaded as empty then, so nothing is saved over the file or deleted from the cloud.
+  const [damaged, setDamaged] = useState(null);
   const [tasks, setTasks] = useState({});
   const [rules, setRules] = useState(isProduct ? DEFAULT_RULES : []);
   const [projects, setProjects] = useState(isProduct ? null : []);
@@ -1048,10 +1139,15 @@ function useTasks(ws = 'product') {
   const [archLoaded, setArchLoaded] = useState(false);
   const remote = useRef(null), remoteArch = useRef(null);
   // Undo history: snapshots of this workspace, grouped so a burst of changes is one step.
-  const hist = useRef({ past: [], future: [], last: null, pending: null, mute: 0, timer: null });
+  // A change that didn't start with you here (another window, the cloud, undo itself) bumps
+  // remoteTick in the same batch as the change (0.20.3), so the render that carries it is known for
+  // certain and never becomes an undo step. Counting renders, as before, could drift.
+  const hist = useRef({ past: [], future: [], last: null, pending: null, tick: 0, timer: null });
   const [, bumpHist] = useState(0);
+  const [remoteTick, setRemoteTick] = useState(0);
+  const notMine = () => setRemoteTick(x => x + 1);
   const apply = d => {
-    hist.current.mute += 1;
+    notMine();
     setTasks(tasksIn(d.tasks || {}));
     if (Array.isArray(d.rules)) setRules(d.rules.map(normalizeRule));
     if (Array.isArray(d.projects)) setProjects(d.projects);
@@ -1071,7 +1167,7 @@ function useTasks(ws = 'product') {
     listen('tasks-arch', e => {
       if (!e.payload || e.payload.from === WINDOW_LABEL || e.payload.ws !== ws) return;
       remoteArch.current = JSON.stringify(e.payload.data);
-      hist.current.mute += 1;
+      notMine();
       setArch({ archived: tasksIn(e.payload.data.archived), trash: tasksIn(e.payload.data.trash) });
     }).then(f => { if (dead) f(); else un2 = f; }).catch(() => {});
     return () => { dead = true; try { un && un(); un2 && un2(); } catch (e) {} };
@@ -1079,7 +1175,7 @@ function useTasks(ws = 'product') {
   // Changes from your other PCs (cloud sync). They don't become undo steps. Each handler is
   // registered once its file has been read, so nothing that arrived meanwhile is lost.
   const cloudData = patch => {
-    hist.current.mute += 1;
+    notMine();
     const tp = {}, m = {};
     Object.entries(patch).forEach(([k, v]) => { if (k.startsWith('t/')) tp[k.slice(2)] = v; else if (k.startsWith('m/')) m[k.slice(2)] = v; });
     if (Object.keys(tp).length) setTasks(p => { const n = { ...p }; Object.entries(tp).forEach(([id, v]) => { if (v === null) delete n[id]; else n[id] = taskIn(v); }); return n; });
@@ -1093,7 +1189,7 @@ function useTasks(ws = 'product') {
     if (Array.isArray(m.looseDocs)) setLooseDocs(m.looseDocs);
   };
   const cloudArch = patch => {
-    hist.current.mute += 1;
+    notMine();
     setArch(a => {
       const n = { archived: { ...a.archived }, trash: { ...a.trash } };
       Object.entries(patch).forEach(([k, v]) => { const f = k.startsWith('a/') ? n.archived : k.startsWith('x/') ? n.trash : null; if (!f) return; const id = k.slice(2); if (v === null) delete f[id]; else f[id] = taskIn(v); });
@@ -1107,14 +1203,16 @@ function useTasks(ws = 'product') {
       let d = null, a = null;
       try {
         const raw = await invoke('read_store', { name: storeFor('data', ws) });
-        if (raw) { d = JSON.parse(raw); apply(d); }
-      } catch (e) { toast.error('Couldn’t read your saved tasks', String(e)); }
-      setLoaded(true);
-      cloudUn.current.push(cloudLive(storeFor('data', ws), cloudData, d));
+        if (raw) d = JSON.parse(raw);
+      } catch (e) { setDamaged({ store: storeFor('data', ws), error: String(e).replace(/^DAMAGED: /, '') }); return; }
       try {
         const raw = await invoke('read_store', { name: storeFor('archive', ws) });
-        if (raw) { a = JSON.parse(raw); setArch({ archived: tasksIn(a.archived), trash: tasksIn(a.trash) }); }
-      } catch (e) {}
+        if (raw) a = JSON.parse(raw);
+      } catch (e) { setDamaged({ store: storeFor('archive', ws), error: String(e).replace(/^DAMAGED: /, '') }); return; }
+      if (d) apply(d);
+      setLoaded(true);
+      cloudUn.current.push(cloudLive(storeFor('data', ws), cloudData, d));
+      if (a) setArch({ archived: tasksIn(a.archived), trash: tasksIn(a.trash) });
       setArchLoaded(true);
       cloudUn.current.push(cloudLive(storeFor('archive', ws), cloudArch, a));
     })();
@@ -1122,32 +1220,38 @@ function useTasks(ws = 'product') {
   useEffect(() => {
     if (!loaded) return;
     const data = { version: 4, tasks: tasksOut(tasks), rules, projects: projects || [], stages, buckets, labels, settings, looseDocs };
-    if (JSON.stringify(data) === remote.current) return; // came from another window, already saved there
+    // Came from another window, already saved there. Only compared right after such a change (0.20.3),
+    // so an ordinary edit doesn't turn the whole workspace into JSON just to check.
+    if (remote.current !== null) { const same = JSON.stringify(data) === remote.current; remote.current = null; if (same) return; }
     persist(storeFor('data', ws), data);
-    emit('tasks-data', { from: WINDOW_LABEL, ws, data }).catch(() => {});
+    tellWindows('tasks-data', ws, data);
   }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, loaded]);
   useEffect(() => {
     if (!archLoaded) return;
     const out = { archived: tasksOut(arch.archived), trash: tasksOut(arch.trash) };
-    if (JSON.stringify(out) === remoteArch.current) return;
+    if (remoteArch.current !== null) { const same = JSON.stringify(out) === remoteArch.current; remoteArch.current = null; if (same) return; }
     persist(storeFor('archive', ws), { version: 1, ...out });
-    emit('tasks-arch', { from: WINDOW_LABEL, ws, data: out }).catch(() => {});
+    tellWindows('tasks-arch', ws, out);
   }, [arch, archLoaded]);
 
   useEffect(() => {
     if (!loaded || !archLoaded) return;
     const h = hist.current;
     const cur = { tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch };
-    if (!h.last || h.mute > 0) { h.mute = Math.max(0, h.mute - 1); h.last = cur; return; }
+    if (!h.last || h.tick !== remoteTick) {
+      // Someone else's change: close the step you were in the middle of, so it holds only your own edits.
+      if (h.last && h.pending) closeStep(h);
+      h.tick = remoteTick; h.last = cur; return;
+    }
     if (!h.pending) h.pending = h.last;
     h.last = cur;
     clearTimeout(h.timer);
-    h.timer = setTimeout(() => { if (h.pending) { h.past.push(h.pending); if (h.past.length > 30) h.past.shift(); h.future = []; h.pending = null; bumpHist(x => x + 1); } }, 700);
-  }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch, loaded, archLoaded]);
+    h.timer = setTimeout(() => { if (h.pending) { closeStep(h); bumpHist(x => x + 1); } }, 700);
+  }, [tasks, rules, projects, stages, buckets, labels, settings, looseDocs, arch, loaded, archLoaded, remoteTick]);
   // Undo and redo put back only what you changed (0.20), so a teammate's newer change to the same
   // task or to another field is never wiped out.
   const restoreSnap = (sn, from) => {
-    hist.current.mute += 1;
+    notMine();
     const back = (cur, a, b) => {
       const n = { ...cur };
       new Set([...Object.keys(a || {}), ...Object.keys(b || {})]).forEach(id => {
@@ -1172,16 +1276,17 @@ function useTasks(ws = 'product') {
     if (ch('looseDocs')) setLooseDocs(sn.looseDocs);
     setArch(c => ({ archived: back(c.archived, from.arch.archived, sn.arch.archived), trash: back(c.trash, from.arch.trash, sn.arch.trash) }));
   };
-  const flushHist = () => { const h = hist.current; clearTimeout(h.timer); if (h.pending) { h.past.push(h.pending); h.future = []; h.pending = null; } };
+  // Each step keeps the workspace before and after your own edits, so undoing it reverses exactly those.
+  const flushHist = () => { const h = hist.current; clearTimeout(h.timer); if (h.pending) closeStep(h); };
   const undo = useCallback(() => {
     flushHist();
     const h = hist.current; if (!h.past.length) return false;
-    const prev = h.past.pop(), from = h.last; h.future.push(from); h.last = prev; restoreSnap(prev, from); bumpHist(x => x + 1); return true;
+    const e = h.past.pop(); h.future.push(e); restoreSnap(e.before, e.after); bumpHist(x => x + 1); return true;
   }, []);
   const redo = useCallback(() => {
     flushHist();
     const h = hist.current; if (!h.future.length) return false;
-    const next = h.future.pop(), from = h.last; h.past.push(from); h.last = next; restoreSnap(next, from); bumpHist(x => x + 1); return true;
+    const e = h.future.pop(); h.past.push(e); restoreSnap(e.after, e.before); bumpHist(x => x + 1); return true;
   }, []);
 
   // Every save stamps the time, and records when a task was completed (cleared again if it's reopened).
@@ -1190,27 +1295,7 @@ function useTasks(ws = 'product') {
     setTasks(p => {
       const n = { ...p };
       list.forEach(t => {
-        const prev = p[t.id];
-        let doneAt = null;
-        if (t.status === 'done') doneAt = (prev && prev.status === 'done' && (prev.doneAt || t.doneAt)) || t.doneAt || now;
-        const x = { ...t, updatedAt: now, doneAt };
-        // Who made a task (0.20): members can delete only their own.
-        if (!prev && !x.createdBy && personKey !== 'local') x.createdBy = personKey;
-        // Remember when the task joined its bucket, so tasks added after a bucket starts can be told apart.
-        // Clearing the bucket keeps the record, so picking the same bucket again doesn't count as new.
-        const bk = norm(x.bucket), j = x.bucketJoin;
-        if (bk && (!j || j.name !== bk) && !(!j && prev && norm(prev.bucket) === bk)) {
-          x.bucketJoin = { name: bk, at: now };
-          const was = j ? j.name : norm(prev && prev.bucket);
-          if (was && x.addedReason && x.addedReason === (prev && prev.addedReason)) delete x.addedReason; // the reason was for the old bucket
-        }
-        // Remember when the status last changed, for "has been in [status] for [days]" automations (0.19.14).
-        if (!prev || prev.status !== x.status || (prev.stage || '') !== (x.stage || '')) x.statusAt = now;
-        else if (prev.statusAt && !x.statusAt) x.statusAt = prev.statusAt;
-        // Remember which PC runs a timer, so closing one PC never stops a timer running on another.
-        if (x.timerStartedAt && (!prev || prev.timerStartedAt !== x.timerStartedAt)) x.timerDevice = DEVICE_ID;
-        else if (!x.timerStartedAt) delete x.timerDevice;
-        n[t.id] = x;
+        n[t.id] = stampTask(t, p[t.id], now);
       });
       return n;
     });
@@ -1254,7 +1339,12 @@ function useTasks(ws = 'product') {
   // Archive finished tasks after the chosen number of days, and empty the Trash after 15 days.
   useEffect(() => {
     if (!loaded || !archLoaded || WINDOW_LABEL !== 'main') return;
-    const run = () => {
+    let off = false, again = null;
+    const run = async () => {
+      const turn = await houseTurn(ws); // another PC may be doing the housekeeping today (0.20.3)
+      if (off) return;
+      if (turn === null) { clearTimeout(again); again = setTimeout(run, 60000); return; }
+      if (!turn) return;
       const now = Date.now(), days = Number(settings.archiveDays) || 0;
       if (days > 0) {
         const cutoff = now - days * 864e5;
@@ -1269,7 +1359,7 @@ function useTasks(ws = 'product') {
     };
     run();
     const i = setInterval(run, 3600e3);
-    return () => clearInterval(i);
+    return () => { off = true; clearInterval(i); clearTimeout(again); };
   }, [loaded, archLoaded, settings.archiveDays]);
 
   // Deleting a document removes it from every task. The file itself is deleted at the next start,
@@ -1318,7 +1408,7 @@ function useTasks(ws = 'product') {
     tasks, saveMany, remove, rules, saveRules, projects: projects || [], saveProjects: setProjects, stages, saveStages: setStages,
     buckets, saveBuckets: setBuckets, labels: { ...LABEL_DEFAULTS, ...(WS_LABELS[ws] || {}), ...labels }, saveLabels: setLabels,
     settings, saveSettings: setSettings, looseDocs, saveLooseDocs: setLooseDocs,
-    archived: arch.archived, trash: arch.trash, trashTasks, restoreTask, purgeTrash, loaded: loaded && archLoaded,
+    archived: arch.archived, trash: arch.trash, trashTasks, restoreTask, purgeTrash, loaded: loaded && archLoaded, damaged,
   };
 }
 
@@ -1329,7 +1419,7 @@ async function notifyDesktop(title, body) {
     let ok = await isPermissionGranted();
     if (!ok) ok = (await requestPermission()) === 'granted';
     if (ok) { sendNotification({ title, body }); return; }
-  } catch (e) {}
+  } catch (e) { logWarn('Desktop notification failed', e); }
   toast(title, body);
 }
 
@@ -1399,8 +1489,10 @@ function useUpdater() {
   }, []);
   useEffect(() => {
     getVersion().then(setVersion).catch(() => {});
+    // Shortly after launch, then every 6 hours (0.20.3): the app often stays in the tray for days.
     const t = WINDOW_LABEL === 'main' ? setTimeout(() => look(false), 4000) : null;
-    return () => clearTimeout(t);
+    const i = WINDOW_LABEL === 'main' ? setInterval(() => look(false), 6 * 3600e3) : null;
+    return () => { clearTimeout(t); clearInterval(i); };
   }, [look]);
   const install = async () => {
     if (!update) return;
@@ -1992,6 +2084,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     <SRow label="Back up data" info="Saves tasks, documents, automations and your profile to one .zip file."><Button variant="outline" size="sm" onClick={onBackup}><I.download className="size-3.5" />Back up…</Button></SRow>
     <SRow label="Restore from backup" info="Replaces everything in the app with the backup. Back up first if you might need what’s here now."><Button variant="outline" size="sm" onClick={onRestore}><I.upload className="size-3.5" />Restore…</Button></SRow>
     <SRow label="Data folder">{link('Open', onOpenDataFolder, 'Open data folder')}</SRow>
+    <SRow label="Log folder">{link('Open', () => invoke('open_log_folder').catch(e => toast.error('Couldn’t open the folder', String(e))), 'Open log folder')}</SRow>
   </>;
   else if (page === 'about') body = <>
     <div className="mb-3 flex items-center gap-3">
@@ -2062,7 +2155,7 @@ function PausedTimersDialog({ note, tasks, oneAtATime, onResume, onClose }) {
               <span className={cn('flex size-7 shrink-0 items-center justify-center rounded-full', on ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-muted text-muted-foreground')}>{on ? <I.play className="size-3.5 translate-x-px" /> : <I.pause className="size-3.5" />}</span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium">{t.title || 'Untitled'}</span>
-                <span className="tnum block text-xs text-muted-foreground">{fmt(elapsed(t))} tracked{t.bucket ? ` · ${t.bucket}` : ''}</span>
+                <span className="tnum block text-xs text-muted-foreground">{<Elapsed task={t} />} tracked{t.bucket ? ` · ${t.bucket}` : ''}</span>
               </span>
               {on ? <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Running</span>
                 : <Button variant="outline" size="sm" onClick={() => resume([t.id])} aria-label={`Resume timer for ${t.title || 'Untitled'}`}>Resume</Button>}
@@ -2144,20 +2237,33 @@ function taskOut(v) {
   return out;
 }
 const tasksIn = m => { const n = {}; Object.entries(m || {}).forEach(([k, t]) => { n[k] = taskIn(t); }); return n; };
-const tasksOut = m => { const n = {}; Object.entries(m || {}).forEach(([k, t]) => { n[k] = taskOut(t); }); return n; };
+// The saved form of each task is kept until the task changes (0.20.3), so saving and syncing only
+// do work for tasks that actually changed.
+const outMemo = new WeakMap();
+const taskOutMemo = t => {
+  if (!t || typeof t !== 'object') return taskOut(t);
+  const m = outMemo.get(t);
+  if (m && m.pk === personKey) return m.out;
+  const out = taskOut(t); outMemo.set(t, { pk: personKey, out }); return out;
+};
+const tasksOut = m => { const n = {}; Object.entries(m || {}).forEach(([k, t]) => { n[k] = taskOutMemo(t); }); return n; };
 // A timer started on this PC (timers from before 0.19 have no PC and count as this one's).
 const timerHere = t => !t.timerDevice || t.timerDevice === DEVICE_ID;
 const elapsed = t => (t.timeSpent || 0) + (t.timerStartedAt ? Date.now() - t.timerStartedAt : 0);
+/* A running timer's clock ticks by itself (0.20.3). Only these small pieces re-render every second;
+   the rest of the app refreshes its totals once a minute. */
+const useTick = (on, ms = 1000) => { const [, set] = useState(0); useEffect(() => { if (!on) return; const i = setInterval(() => set(x => x + 1), ms); return () => clearInterval(i); }, [on, ms]); };
+const Elapsed = ({ task }) => { useTick(!!(task && task.timerStartedAt)); return task ? fmt(elapsed(task)) : null; };
 // Stops a running timer and records the session, so time can be summed per day and week.
 const stopT = t => t.timerStartedAt
-  ? { ...t, timeSpent: elapsed(t), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e: Date.now() }].slice(-300) }
+  ? { ...t, timeSpent: elapsed(t), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e: Date.now() }] }
   : t;
 const overlap = (s, e, a, b) => Math.max(0, Math.min(e, b) - Math.max(s, a));
 // Stops a timer at a given moment (when Tasks closed, or the last heartbeat after a hard shutdown).
 const stopAt = (t, end) => {
   if (!t.timerStartedAt) return t;
   const e = Math.max(t.timerStartedAt, Math.min(end, Date.now()));
-  return { ...t, timeSpent: (t.timeSpent || 0) + (e - t.timerStartedAt), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e }].slice(-300) };
+  return { ...t, timeSpent: (t.timeSpent || 0) + (e - t.timerStartedAt), timerStartedAt: null, sessions: [...(t.sessions || []), { s: t.timerStartedAt, e }] };
 };
 const trackedIn = (t, a, b) => (t.sessions || []).reduce((x, ss) => x + overlap(ss.s, ss.e, a, b), 0) + (t.timerStartedAt ? overlap(t.timerStartedAt, Date.now(), a, b) : 0);
 const fmtShort = ms => { const m = Math.floor(ms / 60000), h = Math.floor(m / 60); return h ? `${h}h ${m % 60}m` : `${m}m`; };
@@ -2224,7 +2330,15 @@ async function readDoc(file) {
   try { return await invoke('read_document', { file }); }
   catch (e) { if (await cloudEnsureDoc(file)) return await invoke('read_document', { file }); throw e; }
 }
-const haveDoc = async file => { try { await readDoc(file); return true; } catch (e) { return false; } };
+// Is the file on this PC (fetching it from the cloud if not)? Asks Rust whether it exists (0.20.3)
+// instead of reading the whole file just to find out.
+const haveDoc = async file => {
+  try {
+    const missing = await invoke('missing_documents', { files: [file] });
+    if (!missing.includes(file)) return true;
+    return await cloudEnsureDoc(file);
+  } catch (e) { logWarn('Could not check document ' + file, e); return false; }
+};
 async function fileBlob(f) {
   const buf = await readDoc(f.file);
   return new Blob([buf], { type: f.mime });
@@ -2243,7 +2357,7 @@ async function openExternal(f) {
   try { await haveDoc(f.file); await invoke('open_document', { file: f.file }); }
   catch (e) { toast.error(`Couldn’t open “${f.name}”`, 'There may be no app on this computer for this file type.'); }
 }
-async function deleteDoc(f) { try { await invoke('delete_document', { file: f.file }); } catch (e) {} cloudDeleteDoc(f.file); }
+async function deleteDoc(f) { try { await invoke('delete_document', { file: f.file }); } catch (e) { logWarn('Could not delete document ' + f.file, e); } cloudDeleteDoc(f.file); }
 const fileInfos = paths => invoke('file_info', { paths });
 async function pickFiles() {
   const sel = await openDialog({ multiple: true, filters: [{ name: 'Documents', extensions: ALLOWED }] });
@@ -2298,7 +2412,7 @@ const loadPdfjs = () => pdfjsP || (pdfjsP = Promise.all([import('pdfjs-dist'), i
 let idbP = null;
 const textDb = () => idbP || (idbP = new Promise((res, rej) => { const r = indexedDB.open('tasks-doc-text', 1); r.onupgradeneeded = () => r.result.createObjectStore('t'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }));
 const idbGet = async k => { try { const db = await textDb(); return await new Promise(r => { const q = db.transaction('t').objectStore('t').get(k); q.onsuccess = () => r(q.result); q.onerror = () => r(undefined); }); } catch (e) { return undefined; } };
-const idbPut = async (k, v) => { try { const db = await textDb(); db.transaction('t', 'readwrite').objectStore('t').put(v, k); } catch (e) {} };
+const idbPut = async (k, v) => { try { const db = await textDb(); db.transaction('t', 'readwrite').objectStore('t').put(v, k); } catch (e) { logWarn('Could not store document text', e); } };
 async function extractText(f) {
   const blob = await fileBlob(f);
   if (f.kind === 'pdf') {
@@ -3245,7 +3359,7 @@ function TimerButton({ task, onToggle }) {
   return (
     <Button size="sm" variant={on ? 'default' : 'outline'} onClick={e => { e.stopPropagation(); onToggle(task.id); }}
       aria-label={`${on ? 'Pause' : 'Start'} timer for ${task.title}`} className="tnum w-[6.5rem] justify-start">
-      {on ? <I.pause className="size-3.5" /> : <I.play className="size-3.5" />}{fmt(elapsed(task))}
+      {on ? <I.pause className="size-3.5" /> : <I.play className="size-3.5" />}{<Elapsed task={task} />}
     </Button>
   );
 }
@@ -3786,7 +3900,7 @@ function TaskSheet({ bucketMap = {}, bucketEnds = {}, oneAtATime, onPick, onAcce
             {task && (
               <PropRow label={labels.time}>
                 <div className="flex items-center gap-1 pl-2">
-                  <span className={cn('tnum min-w-[4.5rem] text-sm font-medium', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(task))}</span>
+                  <span className={cn('tnum min-w-[4.5rem] text-sm font-medium', on && 'text-emerald-600 dark:text-emerald-400')}>{<Elapsed task={task} />}</span>
                   <Button size="sm" variant={on ? 'default' : 'outline'} className="h-7 px-2.5" onClick={() => onToggle(task.id)}>
                     {on ? <><I.pause className="size-3" />Pause</> : <><I.play className="size-3" />Start</>}
                   </Button>
@@ -5152,7 +5266,7 @@ const TaskTimer = ({ t, onToggle, className }) => {
   return (
     <button type="button" onClick={e => { e.stopPropagation(); onToggle(t.id); }} aria-label={`${on ? 'Pause' : 'Start'} timer for ${t.title || 'Untitled'}`}
       className={cn('tnum inline-flex h-6 items-center gap-1 rounded px-1 text-xs transition-colors hover:bg-muted', on ? 'font-semibold text-foreground' : 'text-muted-foreground', className)}>
-      {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{fmt(elapsed(t))}
+      {on ? <I.pause className="size-3" /> : <I.play className="size-3" />}{<Elapsed task={t} />}
     </button>
   );
 };
@@ -5196,7 +5310,7 @@ function ListView({ tasks, stages, labels, groupBy, onOpen, onToggle, onAdd }) {
                     {groupBy !== 'bucket' && t.bucket && <span className="inline-flex h-[22px] items-center gap-1 rounded-md border px-1.5 text-foreground/85 ui-fill"><I.layers className="size-3 text-muted-foreground" />{t.bucket}</span>}
                     {groupBy !== 'priority' && <PriorityPill priority={t.priority} className="h-[22px] text-[11.5px]" />}
                     <span className="ml-auto flex items-center gap-2.5 text-muted-foreground">
-                      <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{fmt(elapsed(t))}</span>
+                      <span className={cn('tnum font-mono', on && 'text-emerald-600 dark:text-emerald-400')}>{<Elapsed task={t} />}</span>
                       {groupBy !== 'assignee' && t.assignee && <PersonHover name={t.assignee}><Avatar name={t.assignee} className="h-5 w-5 [&_span]:text-[9px]" /></PersonHover>}
                     </span>
                   </div>
@@ -6078,8 +6192,12 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
 
 /* ---------- What's new (0.19.5) ----------
    After an update, a short tour of what changed since the version you used last opens once.
-   It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new. */
+   It can be opened again from the ⋯ menu or the command palette. Pictures are in public/whats-new.
+   0.20.3: a release of fixes gets one short slide marked brief (no picture, just an icon and a line or two).
+   Slides move on by themselves after 6 seconds while the bar at the top fills; holding the mouse down pauses. */
 const WHATS_NEW = [
+  { v: '0.20.3', title: 'Tune-up day', brief: true, icon: 'sparkles',
+    points: ['No shiny new buttons this time. We popped the hood instead: your tasks are safer, long lists feel snappier, and sync is a lot less dramatic.', 'Nothing to set up. Carry on!'] },
   { v: '0.20.2', title: 'Documents, as a library', img: 'docs-library.webp',
     points: ['Documents opens as a table grouped by status: Approved, In review, Draft and Outdated. Click a group to fold it.', 'Each row has a clean title, its status, the tasks it’s linked to, size and date. Point at a title to see the real file name, and at a row for Open, Save and Delete.'] },
   { v: '0.20.2', title: 'Read with more room', img: 'docs-reader.webp',
@@ -6193,8 +6311,9 @@ const vNum = v => String(v || '0').split('.').map(Number).reduce((n, x) => n * 1
 const whatsNewSince = (seen, cur) => WHATS_NEW.filter(x => vNum(x.v) > vNum(seen) && vNum(x.v) <= vNum(cur));
 function WhatsNewDialog({ open, items, onClose }) {
   const [i, setI] = useState(0);
+  const [held, setHeld] = useState(false);
   useLockScroll(open);
-  useEffect(() => { if (open) setI(0); }, [open]);
+  useEffect(() => { if (open) { setI(0); setHeld(false); } }, [open]);
   useEffect(() => {
     if (!open) return;
     const k = e => {
@@ -6202,36 +6321,61 @@ function WhatsNewDialog({ open, items, onClose }) {
       if (e.key === 'ArrowRight') setI(x => Math.min(items.length - 1, x + 1));
       if (e.key === 'ArrowLeft') setI(x => Math.max(0, x - 1));
     };
-    document.addEventListener('keydown', k, true); return () => document.removeEventListener('keydown', k, true);
+    const up = () => setHeld(false);
+    document.addEventListener('keydown', k, true); window.addEventListener('pointerup', up); window.addEventListener('blur', up);
+    return () => { document.removeEventListener('keydown', k, true); window.removeEventListener('pointerup', up); window.removeEventListener('blur', up); };
   }, [open, items.length, onClose]);
   if (!open || !items.length) return null;
   const it = items[Math.min(i, items.length - 1)], last = i >= items.length - 1;
   const Ico = it.icon && I[it.icon];
   const title = /[.!?]$/.test(it.title) ? it.title : it.title + '.';
+  const small = items.every(x => x.brief); // only short notes: a smaller window
+  const buttons = (
+    <div className={cn('flex items-center gap-2 pt-6', it.brief ? 'mt-auto w-full' : 'mt-auto')}>
+      <span className="tnum mr-auto text-sm text-muted-foreground">{items.length > 1 ? `${i + 1} of ${items.length}` : ''}</span>
+      {i > 0 && <Button variant="outline" onClick={() => setI(i - 1)}>Back</Button>}
+      {last
+        ? <Button autoFocus onClick={onClose}>Got it</Button>
+        : <Button autoFocus onClick={() => setI(i + 1)}>Next</Button>}
+    </div>);
   // Layout C: the title and text on the left, the screenshot on the right, tilted and running off the edge.
+  // A brief slide has no picture: an icon, the title and a line or two, centred.
   return createPortal(
     <>
       <div className="fixed inset-0 z-[70] bg-black/80 anim-fade" onClick={onClose} />
-      <div role="dialog" aria-modal="true" aria-labelledby="wn-title"
-        className="fixed left-1/2 top-1/2 z-[70] h-[min(600px,calc(100%-2rem))] w-[min(1040px,calc(100%-2rem))] overflow-hidden rounded-[14px] border bg-background text-foreground anim-zoom ui-float"
+      <div role="dialog" aria-modal="true" aria-labelledby="wn-title" onPointerDown={e => { if (!e.target.closest('button')) setHeld(true); }}
+        className={cn('fixed left-1/2 top-1/2 z-[70] overflow-hidden rounded-[14px] border bg-background text-foreground anim-zoom ui-float',
+          small ? 'h-[min(430px,calc(100%-2rem))] w-[min(520px,calc(100%-2rem))]' : 'h-[min(600px,calc(100%-2rem))] w-[min(1040px,calc(100%-2rem))]')}
         style={{ transform: 'translate(-50%,-50%)' }}>
-        <div className="absolute inset-x-0 top-0 flex h-[3px] gap-1" aria-hidden="true">
-          {items.map((_, j) => <span key={j} className={cn('flex-1 transition-colors', j <= i ? 'bg-foreground' : 'bg-border')} />)}
+        <div className="absolute inset-x-0 top-0 z-[3] flex h-[3px] gap-1" aria-hidden="true">
+          {items.map((_, j) => (
+            <span key={j} className="relative flex-1 overflow-hidden bg-border">
+              {j < i && <span className="absolute inset-0 bg-foreground" />}
+              {j === i && <span key={i} className={cn('wn-seek absolute inset-0 bg-foreground', last && 'wn-seek-done')}
+                style={{ animationPlayState: held ? 'paused' : 'running' }}
+                onAnimationEnd={() => setI(x => Math.min(items.length - 1, x + 1))} />}
+            </span>))}
         </div>
+        <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-[2] rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x /></button>
+        {it.brief ? (
+          <div className="absolute inset-0 z-[1] flex flex-col items-center px-10 pb-8 pt-12 text-center">
+            <div className="text-[13px] text-muted-foreground">What’s new · <span className="text-foreground">{it.v}</span></div>
+            <div key={i} className="anim-fade flex flex-1 flex-col items-center justify-center">
+              {Ico && <span className="mb-5 flex size-14 items-center justify-center rounded-full bg-muted"><Ico className="size-6" /></span>}
+              <h2 id="wn-title" className="text-[32px] font-extrabold leading-[1.05] tracking-[-0.035em]">{title}</h2>
+              <p className="mt-4 max-w-[400px] text-base leading-relaxed text-muted-foreground">{it.points[0]}</p>
+              {it.points.slice(1).map((p, j) => <p key={j} className="mt-2 max-w-[400px] text-sm leading-relaxed text-muted-foreground">{p}</p>)}
+            </div>
+            {buttons}
+          </div>
+        ) : (<>
         <div className="absolute inset-y-0 left-0 z-[1] flex w-[min(470px,48%)] flex-col py-12 pb-9 pl-12 pr-2">
           <div className="text-[13px] text-muted-foreground">What’s new · <span className="text-foreground">{it.v}</span></div>
           <h2 id="wn-title" className="mt-9 text-[40px] font-extrabold leading-[1.05] tracking-[-0.035em]">{title}</h2>
           <p className="mr-10 mt-5 text-base leading-relaxed text-muted-foreground">{it.points[0]}</p>
           {it.points.slice(1).map((p, j) => <p key={j} className="mr-10 mt-2.5 text-sm leading-relaxed text-muted-foreground">{p}</p>)}
-          <div className="mt-auto flex items-center gap-2 pt-6">
-            <span className="tnum mr-auto text-sm text-muted-foreground">{i + 1} of {items.length}</span>
-            {i > 0 && <Button variant="outline" onClick={() => setI(i - 1)}>Back</Button>}
-            {last
-              ? <Button autoFocus onClick={onClose}>Got it</Button>
-              : <Button autoFocus onClick={() => setI(i + 1)}>Next</Button>}
-          </div>
+          {buttons}
         </div>
-        <button type="button" onClick={onClose} aria-label="Close" className="absolute right-4 top-4 z-[2] rounded-sm opacity-70 transition-opacity hover:opacity-100 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"><I.x /></button>
         <div key={i} className="anim-fade absolute left-[52%] top-16 w-[56%] -rotate-2">
           {it.img ? <img src={`/whats-new/${it.img}`} alt={it.title} className="block w-full rounded-[14px] border shadow-[0_30px_80px_rgba(0,0,0,.45)]" />
             : <div className="flex aspect-[4/3] flex-col items-center justify-center gap-4 rounded-[14px] border bg-[#0b0b0c] p-6 text-zinc-300 shadow-[0_30px_80px_rgba(0,0,0,.45)]">
@@ -6243,6 +6387,7 @@ function WhatsNewDialog({ open, items, onClose }) {
                 </div>
               </div>}
         </div>
+        </>)}
       </div>
     </>, document.body);
 }
@@ -6529,6 +6674,180 @@ function FilterChips({ f, sort }) {
   );
 }
 
+/* Time-based automations for one workspace (0.20.3: shared by the open workspace and the ones running in
+   the background). Returns the tasks to save; claims runs in a team so only one PC does each. */
+async function scanTimeRules(eng, rules, getTasks, prefs) {
+  const list = rules.filter(r => r.enabled && r.scope !== 'bucket' && TIME_TRIGGERS.includes(r.trigger));
+  if (!list.length) return { quiet: [], updates: [], made: [], notes: [] };
+  const now = Date.now();
+  const updates = [], made = [], notes = [], pending = [], quiet = [];
+  Object.values(getTasks()).forEach(t => {
+    if (t.inbox) return;
+    const days = t.deadline ? dayDiff(t.deadline) : null, open = t.status !== 'done';
+    const fire = [], keys = {};
+    list.forEach(r => {
+      if (!eng.ruleMatches(r, t) || !eng.condOk(r, t)) return;
+      const w = r.when || {};
+      let key = r.id, hit = false, legacy = null;
+      // Deadline automations are keyed by the deadline too (0.20.3), so moving the deadline lets them run
+      // again in a team as well (the claim for the old deadline used to block them for good). A key from
+      // before 0.20.3 still counts for the deadline it fired on: changing the deadline clears it.
+      if (['overdue', 'due_soon', 'due_in'].includes(r.trigger)) { key = `${r.id}@${t.deadline}`; legacy = r.id; }
+      if (r.trigger === 'overdue') hit = open && days != null && days < 0;
+      else if (r.trigger === 'due_soon') hit = open && days != null && days >= 0 && days <= 1;
+      else if (r.trigger === 'due_in') hit = open && days != null && days >= 0 && days <= Number(w.days || 1);
+      else if (r.trigger === 'stale') {
+        const since = t.statusAt || t.updatedAt || t.createdAt || now;
+        hit = !!w.status && eng.sKey(t) === w.status && now - since >= Number(w.days || 3) * 864e5;
+        key = `${r.id}@${since}`;
+      } else if (r.trigger === 'timer_long') {
+        hit = !!t.timerStartedAt && timerHere(t) && now - t.timerStartedAt >= Number(w.hours || 4) * 36e5;
+        key = `${r.id}@${t.timerStartedAt}`;
+      }
+      if (r.personal) { key += '~' + personKey; if (legacy) legacy += '~' + personKey; } // your own notifications: one per person
+      const fired = t.autoFired || {};
+      if (hit && !fired[key] && !(legacy && fired[legacy])) { fire.push({ r, key }); keys[key] = true; }
+    });
+    if (fire.length) pending.push({ t, fire, keys });
+  });
+  // In a team, the first PC to claim a run does it, so a "make a copy" never happens twice.
+  const ready = [];
+  {
+    for (const p of pending) {
+      const ok = [], keys = { ...p.keys };
+      for (const f of p.fire) {
+        const c = f.r.personal || f.r.action === 'notify' ? true : await cloudClaim(p.t.id, f.key);
+        if (c === true) ok.push(f.r);
+        else if (c === null) delete keys[f.key]; // couldn't reach the cloud: try again next minute
+      }
+      if (Object.keys(keys).length) ready.push({ ...p, fire: ok, keys });
+    }
+  }
+  ready.forEach(({ t: t0, fire, keys }) => {
+    const t = getTasks()[t0.id]; if (!t) return;
+    if (!fire.length) { quiet.push({ ...t, autoFired: { ...(t.autoFired || {}), ...keys } }); return; } // another PC ran it
+    const res = eng.runActions(t, fire, { noStart: !!prefs.oneAtATime });
+    // What the change sets off ("timer is paused", "status changes to"…) runs too.
+    const sub = eng.automate(res.task, t, { depth: 1 });
+    updates.push({ ...sub.task, autoFired: { ...(sub.task.autoFired || {}), ...keys } });
+    made.push(...res.created, ...sub.created); notes.push(...res.notes, ...sub.notes);
+  });
+  return { quiet, updates, made, notes };
+}
+
+/* The automation engine (0.20.3: moved out of App so every workspace's time-based automations can run,
+   not just the open one's). ctx gives the current rules, statuses, preferences, team and tasks. */
+function makeEngine(ctx) {
+  // Automations. Each rule: for tasks in [project], when the task [trigger], [action] [target].
+  const ruleMatches = (r, t) => r.enabled && r.scope !== 'bucket' && (!r.project || norm(r.project) === norm(t.project));
+  const sKey = t => taskStatusKey(t, ctx.stages());
+  // "Only if" lines: all must hold.
+  const condOk = (r, t) => (r.only || []).every(c => condHolds(c, t, ctx.stages()));
+  const triggered = (r, next, prev) => {
+    const trigger = r.trigger, w = r.when || {};
+    if (trigger === 'created') return !prev;
+    if (trigger === 'started') return next.status === 'doing' && (!prev || prev.status !== 'doing');
+    if (trigger === 'blocked') return next.status === 'blocked' && (!prev || prev.status !== 'blocked');
+    if (trigger === 'done') return next.status === 'done' && (!prev || prev.status !== 'done');
+    if (trigger === 'unblocked') return !!prev && prev.status === 'blocked' && next.status !== 'blocked';
+    if (trigger === 'reopened') return !!prev && prev.status === 'done' && next.status !== 'done';
+    if (trigger === 'assigned' || (trigger === 'assigned_to' && !w.person)) return !!(next.assignee || '').trim() && (!prev || norm(prev.assignee) !== norm(next.assignee));
+    if (trigger === 'assigned_to') return norm(next.assignee) === norm(w.person) && (!prev || norm(prev.assignee) !== norm(w.person));
+    if (trigger === 'high') return next.priority === 'high' && (!prev || prev.priority !== 'high');
+    if (trigger === 'priority_to') { const v = w.priority || 'high'; return (next.priority || 'normal') === v && (!prev || (prev.priority || 'normal') !== v); }
+    if (trigger === 'file_added') return (next.files || []).length > ((prev && prev.files) || []).length;
+    if (trigger === 'moved') return !!prev && !!next.project && norm(prev.project) !== norm(next.project);
+    if (trigger === 'timer_started') return !!next.timerStartedAt && !(prev && prev.timerStartedAt);
+    if (trigger === 'timer_paused') return !!prev && !!prev.timerStartedAt && !next.timerStartedAt;
+    if (trigger === 'status_to') { const k = sKey(next); return (w.statuses || []).includes(k) && (!prev || sKey(prev) !== k); }
+    if (trigger === 'status_from') return !!prev && (w.statuses || []).includes(sKey(prev)) && sKey(next) !== sKey(prev);
+    if (trigger === 'deadline_changed') return !!prev && !!next.deadline && next.deadline !== (prev.deadline || '');
+    if (trigger === 'bucket_added') return !!(next.bucket || '').trim() && (!prev || norm(prev.bucket) !== norm(next.bucket));
+    if (trigger === 'checklist') {
+      const c = next.checklist || [], pc = (prev && prev.checklist) || [];
+      return c.length > 0 && c.every(x => x.done) && !(pc.length > 0 && pc.every(x => x.done));
+    }
+    return false;
+  };
+  // opts.noStart: don't start timers (used for tasks paused by "One task at a time", so they can't restart).
+  const runActions = (task, list, opts = {}) => {
+    let t = { ...task }; const created = [], notes = [];
+    for (const r of list) {
+      if (r.action === 'copy') {
+        if (!r.target || norm(r.target) === norm(t.project) || (t.followUps || {})[r.id]) continue;
+        const c = {
+          id: newId(), title: t.title, description: t.description || '', assignee: t.assignee || '', deadline: t.deadline || '',
+          files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(x => ({ ...x, id: newId(), done: false })),
+          bucket: t.bucket || '', project: r.target, status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, blockedBy: null,
+          generatedFrom: t.id, generatedBy: r.id,
+          // A copy belongs to the same piece of scope as its original.
+          ...(t.bucket ? { bucketJoin: { name: norm(t.bucket), at: joinedAt(t) } } : {}), ...(t.addedReason ? { addedReason: t.addedReason } : {}),
+        };
+        created.push(c);
+        t = { ...t, followUps: { ...(t.followUps || {}), [r.id]: c.id } };
+      } else if (r.action === 'move' && r.target) t = { ...t, project: r.target };
+      else if (r.action === 'status' && r.target) {
+        // "doing" is the main In progress status; "doing|review" is one of your own in that group.
+        const [group, stage] = String(r.target).split('|');
+        if (!S[group]) continue;
+        t = { ...t, status: group, stage: stage || '' };
+        if (group === 'done' || group === 'blocked') t = stopT(t);
+        if (group !== 'blocked') t.blockedBy = null;
+      } else if (r.action === 'priority' && P[r.target]) t = { ...t, priority: r.target };
+      else if (r.action === 'assign' && r.target) t = { ...t, assignee: r.target };
+      else if (r.action === 'unassign') t = { ...t, assignee: '' };
+      else if (r.action === 'stop_timer') t = stopT(t);
+      else if (r.action === 'start_timer') {
+        if (opts.noStart || t.timerStartedAt || t.status === 'done') continue;
+        t = { ...t, status: t.status === 'todo' ? 'doing' : t.status, timerStartedAt: Date.now() };
+      } else if (r.action === 'bucket' && r.target) t = { ...t, bucket: r.target };
+      else if (r.action === 'unblock') t = { ...t, blockedBy: null };
+      else if (r.action === 'deadline' && r.target) {
+        // On "is created", only fill in a missing date; never overwrite one you chose.
+        if (r.trigger === 'created' && t.deadline) continue;
+        if (r.target === 'none') t = { ...t, deadline: '' };
+        else { const d = new Date(); d.setDate(d.getDate() + Number(r.target)); t = { ...t, deadline: toISO(d), autoFired: {} }; }
+      } else if (r.action === 'checklist' && r.target) {
+        const have = new Set((t.checklist || []).map(c => norm(c.text)));
+        const add = r.target.split(/[,\n]/).map(x => x.trim()).filter(x => x && !have.has(norm(x))).map(text => ({ id: newId(), text, done: false }));
+        if (add.length) t = { ...t, checklist: [...(t.checklist || []), ...add] };
+      } else if (r.action === 'notify') { if (!r.personal || isForMe(t, ctx.team())) notes.push({ kind: r.trigger, message: r.target || '', taskId: t.id, taskTitle: t.title }); }
+    }
+    return { task: t, created, notes };
+  };
+  // A change made by one automation can set off others (a finished checklist marks the task done,
+  // which then copies it), but each automation runs at most once per change, so nothing can loop.
+  // "Only if" lines are checked on the task as it was just before the change.
+  // With "One task at a time", a timer that starts here (by hand or by an automation) pauses the others;
+  // those tasks, and any that blockOthers() marked Blocked (opts.blocked), run their own automations
+  // once more, one level deep, and are returned in `others`. They can't start timers.
+  const automate = (next, prev, opts = {}) => {
+    const depth = opts.depth || 0;
+    let task = next, before = prev;
+    const created = [], fired = [], notes = [], others = [];
+    for (let pass = 0; pass < 3; pass++) {
+      const list = ctx.rules().filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r, task, before) && condOk(r, before || task));
+      if (!list.length) break;
+      const res = runActions(task, list, { noStart: depth > 0 });
+      before = task; task = res.task;
+      created.push(...res.created); fired.push(...list); notes.push(...res.notes);
+    }
+    if (depth === 0) {
+      const pre = Object.fromEntries((opts.blocked || []).map(o => [o.id, o]));
+      const ids = new Set(Object.keys(pre));
+      if (ctx.prefs().oneAtATime && task.timerStartedAt && !(prev && prev.timerStartedAt))
+        Object.values(ctx.tasks()).forEach(o => { if (o.id !== task.id && o.timerStartedAt) ids.add(o.id); });
+      ids.forEach(id => {
+        const was = ctx.tasks()[id]; if (!was) return;
+        const sub = automate(stopT(pre[id] || was), was, { depth: 1 });
+        others.push(sub.task, ...sub.created); fired.push(...sub.fired); notes.push(...sub.notes);
+      });
+    }
+    return { task, created, fired, notes, others };
+  };
+  return { ruleMatches, sKey, condOk, triggered, runActions, automate };
+}
+
 function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWorkspace = () => {}, onRenameWorkspace = () => {}, openOnLoad = null,
   teamsList = DEFAULT_TEAMS, rolesList = DEFAULT_ROLES, onSaveTeams = () => {}, onSaveRoles = () => {}, onReplayTour = () => {} }) {
   const me = prof.data.user;
@@ -6541,7 +6860,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const {
     tasks, saveMany, remove, rules: storedRules, saveRules: storeRules0, projects: storedProjects, saveProjects: saveProjects0, stages, saveStages: saveStages0, loaded,
     buckets: storedBuckets, saveBuckets: saveBuckets0, labels, saveLabels: saveLabels0, settings, saveSettings, looseDocs, saveLooseDocs,
-    archived, trash, trashTasks: trashTasks0, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo,
+    archived, trash, trashTasks: trashTasks0, restoreTask, purgeTrash, deleteDocEverywhere, updateDocEverywhere, replaceDocsEverywhere, undo, redo, damaged,
   } = useTasks(ws);
   const storeRules = guard(storeRules0), saveProjects = guard(saveProjects0), saveStages = guard(saveStages0), saveBuckets = guard(saveBuckets0), saveLabels = guard(saveLabels0);
   const saveTeamSettings = guard(saveSettings);
@@ -6666,17 +6985,19 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
 
   const all = useMemo(() => Object.values(tasks).map(t => ({ createdAt: Date.now(), ...t, status: S[t.status] ? t.status : 'todo' })), [tasks]);
   const runs = all.filter(t => t.timerStartedAt).sort((a, b) => a.timerStartedAt - b.timerStartedAt), running = runs[0];
-  useEffect(() => { if (!running) return; const i = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(i); }, [!!running]);
+  // Totals (today, this week, buckets) refresh once a minute while a timer runs; the clocks themselves tick in <Elapsed> (0.20.3).
+  useEffect(() => { if (!running) return; const i = setInterval(() => setNow(Date.now()), 60000); return () => clearInterval(i); }, [!!running]);
 
   // In a team, people are the members (typed names from before stay until they're linked to someone).
   teamMode = team.on;
+  nameClash = useMemo(() => { const seen = new Set(), twice = new Set(); team.members.forEach(m => { const n = norm(m.name); if (seen.has(n)) twice.add(n); seen.add(n); }); return twice; }, [team.members]);
   peopleMeta = useMemo(() => Object.fromEntries(team.members.map(m => [m.name, [roleName(m.role, rolesList), ...teamNames(m.teams, teamsList), m.email].filter(Boolean).join(' · ')])), [team.members, rolesList, teamsList]);
   const people = useMemo(() => team.on
     ? [...new Set([...team.members.map(m => m.name), ...all.map(t => (t.assignee || '').trim()).filter(n => n && !memberFor(n, team.members))].filter(Boolean))].sort((a, b) => a.localeCompare(b))
     : [...new Set([me.name, ...all.map(t => (t.assignee || '').trim())].filter(Boolean))].sort((a, b) => a.localeCompare(b)), [all, me.name, team.on, team.members]);
   // Managed projects, plus any project name still used by a task or automation.
   const projectList = useMemo(() => {
-    const list = storedProjects.map(p => ({ ...p }));
+    const list = storedProjects.map(namedItem).filter(Boolean);
     const have = new Set(list.map(p => norm(p.name)));
     const extra = [...(storedProjects.length || ws !== 'product' ? [] : DEFAULT_PROJECTS), ...all.map(t => t.project), ...rules.flatMap(r => [r.project, (r.action === 'copy' || r.action === 'move') ? r.target : ''])];
     extra.map(x => (x || '').trim()).filter(Boolean).forEach(name => {
@@ -6738,7 +7059,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const openProject = name => { setProjectFilter([name]); setFilter('all'); setView('tasks'); };
   // Buckets (what the work is for): one per task, managed on the Buckets page.
   const bucketList = useMemo(() => {
-    const list = storedBuckets.map(b => ({ ...b }));
+    const list = storedBuckets.map(namedItem).filter(Boolean);
     const have = new Set(list.map(b => norm(b.name)));
     all.forEach(t => { const n = (t.bucket || '').trim(); if (n && !have.has(norm(n))) { have.add(norm(n)); list.push({ id: 'auto-' + norm(n), name: n }); } });
     return list.sort((a, b) => a.name.localeCompare(b.name));
@@ -7073,6 +7394,20 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       return by(a, b);
     });
   }, [scoped, all, query, filter, sorts, stages, dueFilter]);
+  // The table draws its rows a batch at a time (0.20.3): the first 150, then more as you scroll near
+  // the end. A long list used to be drawn in full on every keystroke of a search, which made typing lag.
+  const ROW_BATCH = 150;
+  const [rowLimit, setRowLimit] = useState(ROW_BATCH);
+  useEffect(() => { setRowLimit(ROW_BATCH); }, [query, filter, sorts, dueFilter, projectFilter, bucketFilter, scope, view, ws]);
+  const moreRows = useRef(null);
+  const hasMoreRows = shown.length > rowLimit;
+  useEffect(() => {
+    const el = moreRows.current;
+    if (!el || !hasMoreRows || typeof IntersectionObserver === 'undefined') return;
+    const io = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) setRowLimit(l => l + ROW_BATCH); }, { rootMargin: '800px 0px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [hasMoreRows, rowLimit, view, viewMode]);
 
   // When a task moves into In progress, whatever was in progress before becomes Blocked by it.
   const blockOthers = (next, prev) => {
@@ -7087,113 +7422,9 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if (!list.length) return;
     toast(list.length === 1 ? `“${list[0].title}” is now blocked` : `${list.length} tasks are now blocked`, `Blocked by “${by.title}”`);
   };
-  // Automations. Each rule: for tasks in [project], when the task [trigger], [action] [target].
-  const ruleMatches = (r, t) => r.enabled && r.scope !== 'bucket' && (!r.project || norm(r.project) === norm(t.project));
-  const sKey = t => taskStatusKey(t, stages);
-  // "Only if" lines: all must hold.
-  const condOk = (r, t) => (r.only || []).every(c => condHolds(c, t, stages));
-  const triggered = (r, next, prev) => {
-    const trigger = r.trigger, w = r.when || {};
-    if (trigger === 'created') return !prev;
-    if (trigger === 'started') return next.status === 'doing' && (!prev || prev.status !== 'doing');
-    if (trigger === 'blocked') return next.status === 'blocked' && (!prev || prev.status !== 'blocked');
-    if (trigger === 'done') return next.status === 'done' && (!prev || prev.status !== 'done');
-    if (trigger === 'unblocked') return !!prev && prev.status === 'blocked' && next.status !== 'blocked';
-    if (trigger === 'reopened') return !!prev && prev.status === 'done' && next.status !== 'done';
-    if (trigger === 'assigned' || (trigger === 'assigned_to' && !w.person)) return !!(next.assignee || '').trim() && (!prev || norm(prev.assignee) !== norm(next.assignee));
-    if (trigger === 'assigned_to') return norm(next.assignee) === norm(w.person) && (!prev || norm(prev.assignee) !== norm(w.person));
-    if (trigger === 'high') return next.priority === 'high' && (!prev || prev.priority !== 'high');
-    if (trigger === 'priority_to') { const v = w.priority || 'high'; return (next.priority || 'normal') === v && (!prev || (prev.priority || 'normal') !== v); }
-    if (trigger === 'file_added') return (next.files || []).length > ((prev && prev.files) || []).length;
-    if (trigger === 'moved') return !!prev && !!next.project && norm(prev.project) !== norm(next.project);
-    if (trigger === 'timer_started') return !!next.timerStartedAt && !(prev && prev.timerStartedAt);
-    if (trigger === 'timer_paused') return !!prev && !!prev.timerStartedAt && !next.timerStartedAt;
-    if (trigger === 'status_to') { const k = sKey(next); return (w.statuses || []).includes(k) && (!prev || sKey(prev) !== k); }
-    if (trigger === 'status_from') return !!prev && (w.statuses || []).includes(sKey(prev)) && sKey(next) !== sKey(prev);
-    if (trigger === 'deadline_changed') return !!prev && !!next.deadline && next.deadline !== (prev.deadline || '');
-    if (trigger === 'bucket_added') return !!(next.bucket || '').trim() && (!prev || norm(prev.bucket) !== norm(next.bucket));
-    if (trigger === 'checklist') {
-      const c = next.checklist || [], pc = (prev && prev.checklist) || [];
-      return c.length > 0 && c.every(x => x.done) && !(pc.length > 0 && pc.every(x => x.done));
-    }
-    return false;
-  };
-  // opts.noStart: don't start timers (used for tasks paused by "One task at a time", so they can't restart).
-  const runActions = (task, list, opts = {}) => {
-    let t = { ...task }; const created = [], notes = [];
-    for (const r of list) {
-      if (r.action === 'copy') {
-        if (!r.target || norm(r.target) === norm(t.project) || (t.followUps || {})[r.id]) continue;
-        const c = {
-          id: newId(), title: t.title, description: t.description || '', assignee: t.assignee || '', deadline: t.deadline || '',
-          files: t.files || [], priority: t.priority || 'normal', checklist: (t.checklist || []).map(x => ({ ...x, id: newId(), done: false })),
-          bucket: t.bucket || '', project: r.target, status: 'todo', createdAt: Date.now(), timeSpent: 0, timerStartedAt: null, blockedBy: null,
-          generatedFrom: t.id, generatedBy: r.id,
-          // A copy belongs to the same piece of scope as its original.
-          ...(t.bucket ? { bucketJoin: { name: norm(t.bucket), at: joinedAt(t) } } : {}), ...(t.addedReason ? { addedReason: t.addedReason } : {}),
-        };
-        created.push(c);
-        t = { ...t, followUps: { ...(t.followUps || {}), [r.id]: c.id } };
-      } else if (r.action === 'move' && r.target) t = { ...t, project: r.target };
-      else if (r.action === 'status' && r.target) {
-        // "doing" is the main In progress status; "doing|review" is one of your own in that group.
-        const [group, stage] = String(r.target).split('|');
-        if (!S[group]) continue;
-        t = { ...t, status: group, stage: stage || '' };
-        if (group === 'done' || group === 'blocked') t = stopT(t);
-        if (group !== 'blocked') t.blockedBy = null;
-      } else if (r.action === 'priority' && P[r.target]) t = { ...t, priority: r.target };
-      else if (r.action === 'assign' && r.target) t = { ...t, assignee: r.target };
-      else if (r.action === 'unassign') t = { ...t, assignee: '' };
-      else if (r.action === 'stop_timer') t = stopT(t);
-      else if (r.action === 'start_timer') {
-        if (opts.noStart || t.timerStartedAt || t.status === 'done') continue;
-        t = { ...t, status: t.status === 'todo' ? 'doing' : t.status, timerStartedAt: Date.now() };
-      } else if (r.action === 'bucket' && r.target) t = { ...t, bucket: r.target };
-      else if (r.action === 'unblock') t = { ...t, blockedBy: null };
-      else if (r.action === 'deadline' && r.target) {
-        // On "is created", only fill in a missing date; never overwrite one you chose.
-        if (r.trigger === 'created' && t.deadline) continue;
-        if (r.target === 'none') t = { ...t, deadline: '' };
-        else { const d = new Date(); d.setDate(d.getDate() + Number(r.target)); t = { ...t, deadline: toISO(d), autoFired: {} }; }
-      } else if (r.action === 'checklist' && r.target) {
-        const have = new Set((t.checklist || []).map(c => norm(c.text)));
-        const add = r.target.split(/[,\n]/).map(x => x.trim()).filter(x => x && !have.has(norm(x))).map(text => ({ id: newId(), text, done: false }));
-        if (add.length) t = { ...t, checklist: [...(t.checklist || []), ...add] };
-      } else if (r.action === 'notify') { if (!r.personal || isForMe(t, teamRef.current)) notes.push({ kind: r.trigger, message: r.target || '', taskId: t.id, taskTitle: t.title }); }
-    }
-    return { task: t, created, notes };
-  };
-  // A change made by one automation can set off others (a finished checklist marks the task done,
-  // which then copies it), but each automation runs at most once per change, so nothing can loop.
-  // "Only if" lines are checked on the task as it was just before the change.
-  // With "One task at a time", a timer that starts here (by hand or by an automation) pauses the others;
-  // those tasks, and any that blockOthers() marked Blocked (opts.blocked), run their own automations
-  // once more, one level deep, and are returned in `others`. They can't start timers.
-  const automate = (next, prev, opts = {}) => {
-    const depth = opts.depth || 0;
-    let task = next, before = prev;
-    const created = [], fired = [], notes = [], others = [];
-    for (let pass = 0; pass < 3; pass++) {
-      const list = runRules.filter(r => !TIME_TRIGGERS.includes(r.trigger) && !fired.includes(r) && ruleMatches(r, task) && triggered(r, task, before) && condOk(r, before || task));
-      if (!list.length) break;
-      const res = runActions(task, list, { noStart: depth > 0 });
-      before = task; task = res.task;
-      created.push(...res.created); fired.push(...list); notes.push(...res.notes);
-    }
-    if (depth === 0) {
-      const pre = Object.fromEntries((opts.blocked || []).map(o => [o.id, o]));
-      const ids = new Set(Object.keys(pre));
-      if (prefsRef.current.oneAtATime && task.timerStartedAt && !(prev && prev.timerStartedAt))
-        Object.values(tasksRef.current).forEach(o => { if (o.id !== task.id && o.timerStartedAt) ids.add(o.id); });
-      ids.forEach(id => {
-        const was = tasksRef.current[id]; if (!was) return;
-        const sub = automate(stopT(pre[id] || was), was, { depth: 1 });
-        others.push(sub.task, ...sub.created); fired.push(...sub.fired); notes.push(...sub.notes);
-      });
-    }
-    return { task, created, fired, notes, others };
-  };
+  const { ruleMatches, sKey, condOk, triggered, runActions, automate } = makeEngine({
+    rules: () => runRules, stages: () => stages, prefs: () => prefsRef.current, team: () => teamRef.current, tasks: () => tasksRef.current,
+  });
   // "Its bucket moves to [status]": run those automations on every task in the bucket.
   const bucketTaskRules = (b, status) => {
     const list = runRules.filter(r => r.enabled && r.scope !== 'bucket' && r.trigger === 'bucket_moved' && (r.when || {}).bstatus === status);
@@ -7225,57 +7456,11 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     let busy = false;
     const scan = async () => {
       if (busy) return;
-      const list = runRules.filter(r => r.enabled && r.scope !== 'bucket' && TIME_TRIGGERS.includes(r.trigger));
-      if (!list.length) return;
-      const now = Date.now();
-      const updates = [], made = [], notes = [], pending = [], quiet = [];
-      Object.values(tasksRef.current).forEach(t => {
-        if (t.inbox) return;
-        const days = t.deadline ? dayDiff(t.deadline) : null, open = t.status !== 'done';
-        const fire = [], keys = {};
-        list.forEach(r => {
-          if (!ruleMatches(r, t) || !condOk(r, t)) return;
-          const w = r.when || {};
-          let key = r.id, hit = false;
-          if (r.trigger === 'overdue') hit = open && days != null && days < 0;
-          else if (r.trigger === 'due_soon') hit = open && days != null && days >= 0 && days <= 1;
-          else if (r.trigger === 'due_in') hit = open && days != null && days >= 0 && days <= Number(w.days || 1);
-          else if (r.trigger === 'stale') {
-            const since = t.statusAt || t.updatedAt || t.createdAt || now;
-            hit = !!w.status && sKey(t) === w.status && now - since >= Number(w.days || 3) * 864e5;
-            key = `${r.id}@${since}`;
-          } else if (r.trigger === 'timer_long') {
-            hit = !!t.timerStartedAt && timerHere(t) && now - t.timerStartedAt >= Number(w.hours || 4) * 36e5;
-            key = `${r.id}@${t.timerStartedAt}`;
-          }
-          if (r.personal) key += '~' + personKey; // your own notifications: one per person
-          if (hit && !(t.autoFired || {})[key]) { fire.push({ r, key }); keys[key] = true; }
-        });
-        if (fire.length) pending.push({ t, fire, keys });
-      });
-      // In a team, the first PC to claim a run does it, so a "make a copy" never happens twice.
       busy = true;
-      const ready = [];
-      try {
-        for (const p of pending) {
-          const ok = [], keys = { ...p.keys };
-          for (const f of p.fire) {
-            const c = f.r.personal || f.r.action === 'notify' ? true : await cloudClaim(p.t.id, f.key);
-            if (c === true) ok.push(f.r);
-            else if (c === null) delete keys[f.key]; // couldn't reach the cloud: try again next minute
-          }
-          if (Object.keys(keys).length) ready.push({ ...p, fire: ok, keys });
-        }
-      } finally { busy = false; }
-      ready.forEach(({ t: t0, fire, keys }) => {
-        const t = tasksRef.current[t0.id]; if (!t) return;
-        if (!fire.length) { quiet.push({ ...t, autoFired: { ...(t.autoFired || {}), ...keys } }); return; } // another PC ran it
-        const res = runActions(t, fire, { noStart: !!prefsRef.current.oneAtATime });
-        // What the change sets off ("timer is paused", "status changes to"…) runs too.
-        const sub = automate(res.task, t, { depth: 1 });
-        updates.push({ ...sub.task, autoFired: { ...(sub.task.autoFired || {}), ...keys } });
-        made.push(...res.created, ...sub.created); notes.push(...res.notes, ...sub.notes);
-      });
+      let res;
+      try { res = await scanTimeRules({ ruleMatches, condOk, sKey, runActions, automate }, runRules, () => tasksRef.current, prefsRef.current); }
+      finally { busy = false; }
+      const { quiet, updates, made, notes } = res;
       if (quiet.length) saveMany(quiet);
       if (updates.length) {
         saveMany([...updates, ...made]);
@@ -7603,7 +7788,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         const list = async () => invoke('list_folder', { path: w.path, recursive: !!w.subfolders });
         let files;
         try { files = await list(); } catch (e) { status[w.path] = { checkedAt: Date.now(), error: String(e) }; continue; }
-        if (manual) { files.forEach(f => { stableRef.current[f.path] = f.size; }); await new Promise(r => setTimeout(r, 1500)); try { files = await list(); } catch (e) {} }
+        if (manual) { files.forEach(f => { stableRef.current[f.path] = f.size; }); await new Promise(r => setTimeout(r, 1500)); try { files = await list(); } catch (e) { logWarn('Watch folder not listed: ' + w.path, e); } }
         const known = seen[w.path];
         // A folder added before this version: offer the files it missed instead of importing silently.
         if (!known) {
@@ -7621,7 +7806,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
           const prev = stableRef.current[f.path]; stableRef.current[f.path] = f.size;
           if (prev !== f.size) { skipped.push({ name: f.name, why: 'still downloading' }); continue; }
           try { await importToInbox(w, f); added++; known[f.path] = f.modified; }
-          catch (e) { skipped.push({ name: f.name, why: 'couldn’t be copied' }); }
+          catch (e) { logWarn('Could not import ' + f.name, e); skipped.push({ name: f.name, why: 'couldn’t be copied' }); }
         }
         const present = new Set(files.map(f => f.path));
         Object.keys(known).forEach(k => { if (!present.has(k)) delete known[k]; });
@@ -7630,20 +7815,36 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
       }
     } finally {
       try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); localStorage.setItem(STATUS_KEY, JSON.stringify(status)); } catch (e) {}
-      setWatchStatus(status);
+      // Only what changed re-draws the app (0.20.3): the time of the check alone doesn't.
+      const gist = st => JSON.stringify(Object.entries(st).map(([k, v]) => [k, v.error || '', v.added || 0, v.skipped || []]));
+      setWatchStatus(prev => (gist(prev) === gist(status) ? prev : status));
       scanBusy.current = false;
+      // A file that was still arriving is looked at again shortly, without waiting for the next check.
+      if (Object.values(status).some(v => (v.skipped || []).some(x => x.why === 'still downloading'))) { clearTimeout(rescan.current); rescan.current = setTimeout(() => scanRef.current(false), 4000); }
     }
     if (added) toast(added === 1 ? 'New document in the Inbox' : `${added} new documents in the Inbox`);
     else if (manual) toast('No new files', 'Your watch folders are up to date.');
     return added;
   };
   const scanRef = useRef(scanFolders); scanRef.current = scanFolders;
+  const rescan = useRef(null);
+  // Windows says when a file appears in a watch folder (0.20.3), so the folders are no longer listed
+  // every 8 seconds. A check once a minute stays for network drives, which don't send these messages.
   useEffect(() => {
     if (standaloneId) return;
+    let un = null, dead = false, soon = null;
     const t = setTimeout(() => scanRef.current(false), 1500);
-    const i = setInterval(() => scanRef.current(false), 8000);
-    return () => { clearTimeout(t); clearInterval(i); };
+    const i = setInterval(() => scanRef.current(false), 60000);
+    listen('watch-folder-changed', () => { clearTimeout(soon); soon = setTimeout(() => scanRef.current(false), 1500); })
+      .then(f => { if (dead) f(); else un = f; }).catch(e => logWarn('Watch folder messages unavailable', e));
+    return () => { dead = true; clearTimeout(t); clearTimeout(soon); clearTimeout(rescan.current); clearInterval(i); try { un && un(); } catch (e) {} };
   }, []);
+  const watchKey = JSON.stringify((settings.watchFolders || []).map(w => [w.path, !!w.subfolders]));
+  useEffect(() => {
+    if (standaloneId) return;
+    invoke('watch_folders', { folders: (settingsRef.current.watchFolders || []).map(w => ({ path: w.path, subfolders: !!w.subfolders })) })
+      .catch(e => logWarn('Watch folders not watched', e));
+  }, [watchKey]);
   // Adding a folder: note what's already there, and offer to bring those files in too.
   const addWatchFolder = async () => {
     const sel = await openDialog({ directory: true, multiple: false });
@@ -7660,7 +7861,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     saveSettings(x => ({ ...x, watchFolders: (x.watchFolders || []).map(w => w.path === path ? { ...w, subfolders: on } : w) }));
     if (on) {
       // Files already in subfolders count as seen; only new ones arrive in the Inbox.
-      let files = []; try { files = await invoke('list_folder', { path, recursive: true }); } catch (e) {}
+      let files = []; try { files = await invoke('list_folder', { path, recursive: true }); } catch (e) { logWarn('Watch folder not listed: ' + path, e); }
       const seen = readJSON(SEEN_KEY, {}); seen[path] = { ...(seen[path] || {}), ...Object.fromEntries(files.map(f => [f.path, f.modified])) };
       try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch (e) {}
     }
@@ -7668,7 +7869,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
   const acceptOffer = async () => {
     const o = watchOffer; setWatchOffer(null); if (!o) return;
     const w = { path: o.path }; let n = 0;
-    for (const f of o.files) { try { await importToInbox(w, f); n++; } catch (e) {} }
+    for (const f of o.files) { try { await importToInbox(w, f); n++; } catch (e) { logWarn('Could not import ' + f.name, e); } }
     toast(`${n} ${n === 1 ? 'file' : 'files'} added to the Inbox`, o.path);
   };
   const [linkFor, setLinkFor] = useState(null);
@@ -7774,7 +7975,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         setDragOver(false);
         if (!p.paths || !p.paths.length) return;
         let infos = [];
-        try { infos = await fileInfos(p.paths); } catch (e) {}
+        try { infos = await fileInfos(p.paths); } catch (e) { logWarn('Dropped files not read', e); }
         if (!infos.length) return;
         const s = dropState.current;
         if (s.addOpen) setAddDocs(a => ({ ...a, files: [...a.files, ...infos] }));
@@ -7796,10 +7997,18 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const src = await openDialog({ multiple: false, filters: [{ name: 'Backup', extensions: ['zip'] }] });
     if (src) setRestoreSrc(Array.isArray(src) ? src[0] : src);
   };
-  const doRestore = async () => {
-    const src = restoreSrc; setRestoreSrc(null);
-    try { await flushAll(); await invoke('restore', { src }); window.location.reload(); }
-    catch (e) { toast.error('Restore failed', String(e)); }
+  const doRestore = () => { const src = restoreSrc; setRestoreSrc(null); runRestore(src); };
+  // Nothing is saved or synced while the files are swapped, and afterwards this PC asks again how to
+  // line up with the team's cloud, so an old backup never overwrites newer team changes (0.20.3).
+  const runRestore = async src => {
+    savesFrozen = true;
+    emit('tasks-restoring', {}).catch(() => {});
+    try {
+      await flushAll(); await cloudPause();
+      await invoke('restore', { src });
+      await cloudForgetSyncState();
+      window.location.reload();
+    } catch (e) { savesFrozen = false; cloudResume(); toast.error('Restore failed', String(e)); }
   };
 
   const duplicate = id => {
@@ -7878,6 +8087,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     if (loaded && (!sheet.open || !sheetTask)) { flushAll().then(() => getCurrentWindow().close()).catch(() => {}); return; }
     if (sheetTask) getCurrentWindow().setTitle(sheetTask.title || 'Untitled').catch(() => {});
   }, [standaloneId, loaded, sheet.open, sheetTask && sheetTask.title, !!sheetTask]);
+  if (damaged) return <DamagedStore damaged={damaged} onRestore={async () => { const src = await openDialog({ multiple: false, filters: [{ name: 'Backup', extensions: ['zip'] }] }); if (src) runRestore(Array.isArray(src) ? src[0] : src); }} />;
   if (!loaded) return <div className="p-8 text-sm text-muted-foreground">Loading your tasks…</div>;
 
   if (standaloneId) return (
@@ -7992,12 +8202,12 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                     <span aria-hidden="true" className="size-2 shrink-0 rounded-full bg-emerald-500 ring-[3px] ring-emerald-200 dark:ring-emerald-800" />
                     <span className="hidden min-w-0 max-w-[12rem] truncate text-[13px] font-medium lg:inline">{one ? name : `${runs.length} timers`}</span>
                     <span aria-hidden="true" className="hidden h-4 w-px shrink-0 bg-emerald-300 dark:bg-emerald-800 lg:block" />
-                    <span className="tnum shrink-0 font-mono text-[13px]">{fmt(elapsed(one ? running : longest))}</span>
+                    <span className="tnum shrink-0 font-mono text-[13px]">{<Elapsed task={one ? running : longest} />}</span>
                     <I.down className="size-3.5 shrink-0 opacity-70" />
                   </button>
                 )}
                 items={[
-                  ...runs.map(t => ({ icon: <I.pause className="size-3.5 text-emerald-600 dark:text-emerald-400" />, label: <span className="flex min-w-0 flex-1 items-center gap-3"><span className="min-w-0 truncate">{t.title || 'Untitled'}</span><span className="tnum ml-auto shrink-0 font-mono text-xs text-muted-foreground">{fmt(elapsed(t))}</span></span>, onSelect: () => toggleTimer(t.id) })),
+                  ...runs.map(t => ({ icon: <I.pause className="size-3.5 text-emerald-600 dark:text-emerald-400" />, label: <span className="flex min-w-0 flex-1 items-center gap-3"><span className="min-w-0 truncate">{t.title || 'Untitled'}</span><span className="tnum ml-auto shrink-0 font-mono text-xs text-muted-foreground">{<Elapsed task={t} />}</span></span>, onSelect: () => toggleTimer(t.id) })),
                   'sep',
                   one ? { icon: <I.arrowRight className="size-3.5" />, label: 'Open task', onSelect: () => openTask(running.id) }
                       : { icon: <I.pause className="size-3.5" />, label: `Pause all ${runs.length}`, onSelect: pauseAll },
@@ -8234,7 +8444,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 </tr>
               </thead>
               <tbody>
-                {shown.map(t => {
+                {(hasMoreRows ? shown.slice(0, rowLimit) : shown).map(t => {
                   const d = due(t), on = !!t.timerStartedAt, done = t.status === 'done';
                   const blocker = t.status === 'blocked' && tasks[t.blockedBy];
                   const cell = 'h-10 px-2.5 align-middle';
@@ -8309,7 +8519,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                         const dim = colDrag && colDrag.key === field && 'opacity-50';
                         if (field === 'time') return (
                           <td key="time" className={cn(cell, 'px-1 transition-opacity duration-150', dim)}>
-                            <span className={cn('tnum inline-flex h-6 w-full items-center px-1.5 text-xs', on ? 'font-semibold text-emerald-600 dark:text-emerald-400' : elapsed(t) ? 'text-foreground/80' : 'text-muted-foreground/60')}>{fmt(elapsed(t))}</span>
+                            <span className={cn('tnum inline-flex h-6 w-full items-center px-1.5 text-xs', on ? 'font-semibold text-emerald-600 dark:text-emerald-400' : elapsed(t) ? 'text-foreground/80' : 'text-muted-foreground/60')}>{<Elapsed task={t} />}</span>
                           </td>
                         );
                         const active = cellEdit && cellEdit.id === t.id && cellEdit.field === field;
@@ -8341,6 +8551,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
                 })}
               </tbody>
             </table>
+            {hasMoreRows && <div ref={moreRows} aria-hidden="true" className="h-px" />}
           </div>
         )}
         <form onSubmit={addQuick} className="flex h-9 items-center gap-2 px-2.5 text-[13px]" autoComplete="off">
@@ -8477,7 +8688,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
       <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} prof={prof} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
-        description="Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first."
+        description={'Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first.' + (cloudStatus().email ? ' Your team’s data in the cloud isn’t replaced: afterwards you choose whether this PC uses the cloud’s data or combines both.' : '')}
         confirmLabel="Replace and restore" onConfirm={doRestore} onCancel={() => setRestoreSrc(null)} />
       {dragOver && (
         <div className="pointer-events-none fixed inset-3 z-[95] flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/70 anim-fade">
@@ -8769,11 +8980,44 @@ const isForMe = (t, team) => {
 const canDelete = (t, team) => !team.on || team.admin || (t && t.createdBy === team.uid);
 // Searching people by name, role or team (filled in by the app while you're in a team).
 let peopleMeta = {}, teamMode = false;
+// Names that more than one teammate has (0.20.3): your photo isn't shown for those, since it may be the other person.
+let nameClash = new Set();
 const cloudTeamCount = () => { const t = cloudTeamNow(); return t.members.length + t.invites.length; };
 
 /* =========================================================
    Cloud sync (Supabase)
    ========================================================= */
+/* A data file that couldn't be read (0.20.3). The workspace stays closed, so nothing is saved over the file
+   or deleted from the cloud, until it's recovered: from the team's cloud, from a backup, or by hand. */
+function DamagedStore({ damaged, onRestore }) {
+  useCloud(); // shows the cloud option as soon as sync connects
+  const [busy, setBusy] = useState(false);
+  const canCloud = cloudCanRecover();
+  const fromCloud = async () => {
+    setBusy(true);
+    try { await cloudRecoverStore(damaged.store); window.location.reload(); }
+    catch (e) { setBusy(false); toast.error('Couldn’t get your tasks from the cloud', String(e && (e.message || e))); }
+  };
+  return (
+    <div className="flex h-full flex-col">
+      {/* The same slim top row as the app, so the window can still be moved and closed. */}
+      <div data-tauri-drag-region className="flex h-10 shrink-0 items-center pl-4 md:pl-6">
+        <div data-tauri-drag-region className="min-w-0 flex-1" />
+        <WindowControls />
+      </div>
+      <div className="flex flex-1 items-center justify-center">
+      <Empty icon={<I.alert />} title="Your tasks couldn’t be opened"
+        description={`The file that holds them can’t be read (${damaged.error}). Nothing has been changed or deleted, here or in the cloud. ${canCloud ? 'Get your team’s copy from the cloud, or restore a backup.' : 'Restore a backup, or open the data folder to look at the file.'}`}>
+        <div className="flex flex-wrap justify-center gap-2">
+          {canCloud && <Button disabled={busy} onClick={fromCloud}>{busy ? 'Getting your tasks…' : 'Get them from the cloud'}</Button>}
+          <Button variant="outline" disabled={busy} onClick={onRestore}>Restore a backup…</Button>
+          <Button variant="ghost" disabled={busy} onClick={() => invoke('open_data_folder').catch(() => {})}>Open data folder</Button>
+        </div>
+      </Empty>
+      </div>
+    </div>
+  );
+}
 function useCloud() {
   const [st, setSt] = useState({ phase: 'loading' });
   useEffect(() => onCloudStatus(x => setSt({ ...x })), []);
@@ -9515,6 +9759,93 @@ export default function Root() {
 // What the cloud's profiles table holds about you (0.19.13).
 const profileOf = u => (u ? { name: u.name || '', role: u.role || '', phone: u.phone || '', photo: photoOf(u) || '', status: u.status || '', statusNote: u.statusNote || '', statusUntil: u.statusUntil || null, timeZone: u.timeZone || '', editedAt: u.editedAt || 0 } : null);
 
+/* Workspaces that aren't open (0.20.3). Their time-based automations run every minute and their archiving
+   and Trash cleanup every hour, as they do for the open workspace, so a deadline in Marketing still fires
+   while you work in Product. Only the main window does this. */
+const sameJ = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+// The fields a background run changed, laid over the task as it is now (someone may have edited it meanwhile).
+const replay = (base, after, cur) => {
+  if (!base) return after; // a new task
+  if (!cur) return null; // deleted meanwhile
+  const x = { ...cur };
+  new Set([...Object.keys(base), ...Object.keys(after)]).forEach(k => { if (!sameJ(base[k], after[k])) { if (after[k] === undefined) delete x[k]; else x[k] = after[k]; } });
+  return x;
+};
+async function runBackgroundWorkspace(ws, team, house) {
+  const dname = storeFor('data', ws), aname = storeFor('archive', ws);
+  const d = await cloudReadStore(dname);
+  if (!d) return; // not created yet, or its file can't be read
+  const prefs = readPrefs();
+  const rules = (Array.isArray(d.rules) ? d.rules : ws === 'product' ? DEFAULT_RULES : []).map(normalizeRule).map(ruleIn);
+  const isNote = r => r.action === 'notify' && r.scope !== 'bucket';
+  const mine = Array.isArray(prefs['notify-' + ws]) ? prefs['notify-' + ws] : rules.filter(isNote).map(r => ({ ...r, id: 'pn-' + r.id }));
+  const runRules = team.on ? [...rules.filter(r => !isNote(r)), ...mine.map(r => ({ ...normalizeRule(r), personal: true }))] : rules;
+  const stages = Array.isArray(d.stages) ? d.stages : [];
+  const tasks = tasksIn(d.tasks || {});
+  const eng = makeEngine({ rules: () => runRules, stages: () => stages, prefs: () => prefs, team: () => team, tasks: () => tasks });
+  const { quiet, updates, made, notes } = await scanTimeRules(eng, runRules, () => tasks, prefs);
+  const changed = [...quiet, ...updates, ...made];
+  if (changed.length) {
+    await cloudEditStore(dname, cur => {
+      const now = Date.now(), curIn = tasksIn(cur.tasks || {}), n = { ...(cur.tasks || {}) };
+      changed.forEach(t => { const x = replay(tasks[t.id], t, curIn[t.id]); if (x) n[t.id] = taskOut(stampTask(x, curIn[t.id], now)); });
+      return { ...cur, tasks: n };
+    });
+    notes.forEach(queueNote);
+  }
+  // Archiving and the Trash: once an hour per workspace.
+  const now = Date.now();
+  if (now - (house[ws] || 0) < 3600e3) return;
+  house[ws] = now;
+  const turn = await houseTurn(ws);
+  if (turn === null) house[ws] = 0; // couldn't ask: try again at the next pass
+  if (!turn) return;
+  const days = Number({ archiveDays: ARCHIVE_DAYS_DEFAULT, ...(d.settings || {}) }.archiveDays) || 0;
+  if (days > 0) {
+    const cutoff = now - days * 864e5;
+    const old = Object.values(tasks).filter(t => t.status === 'done' && !t.timerStartedAt && (t.doneAt || t.updatedAt || t.createdAt || now) < cutoff).map(t => t.id);
+    if (old.length) {
+      const stored = await cloudReadStore(dname);
+      const moving = old.map(id => stored && stored.tasks && stored.tasks[id]).filter(Boolean);
+      // Into the Archive first, then out of the list, so a failure in between never loses a task.
+      if (moving.length && await cloudEditStore(aname, a => ({ version: 1, ...(a || {}), archived: { ...((a || {}).archived || {}), ...Object.fromEntries(moving.map(t => [t.id, { ...t, archivedAt: now }])) }, trash: (a || {}).trash || {} })))
+        await cloudEditStore(dname, cur => { const n = { ...(cur.tasks || {}) }; moving.forEach(t => delete n[t.id]); return { ...cur, tasks: n }; });
+    }
+  }
+  const a = await cloudReadStore(aname);
+  const trash = (a && a.trash) || {};
+  const expired = Object.values(trash).filter(t => now - (t.deletedAt || now) > TRASH_DAYS * 864e5).map(t => t.id);
+  if (!expired.length) return;
+  // Documents only the purged tasks used stay in Documents as "No task", as in the open workspace.
+  const d2 = (await cloudReadStore(dname)) || {};
+  const rest = [...Object.values(d2.tasks || {}), ...Object.values((a && a.archived) || {}), ...Object.values(trash).filter(t => !expired.includes(t.id))];
+  const free = expired.flatMap(id => trash[id].files || []).filter(f => !rest.some(t => (t.files || []).some(x => x.id === f.id)));
+  if (free.length) await cloudEditStore(dname, cur => { const l = Array.isArray(cur.looseDocs) ? cur.looseDocs : []; const add = free.filter(f => !l.some(x => x.id === f.id)); return add.length ? { ...cur, looseDocs: [...l, ...add] } : null; });
+  await cloudEditStore(aname, cur => { const t = { ...(cur.trash || {}) }; expired.forEach(id => delete t[id]); return { ...cur, trash: t }; });
+}
+function useBackgroundWorkspaces(list, active, team) {
+  const ref = useRef(null); ref.current = { list, active, team };
+  useEffect(() => {
+    if (WINDOW_LABEL !== 'main' || STANDALONE_ID) return;
+    let busy = false;
+    const house = {};
+    const run = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        await flushAll(); // a workspace just switched away from may still have a save waiting
+        const { list: ws, active: open, team: tm } = ref.current;
+        for (const w of ws) {
+          if (w.id === open) continue;
+          try { await runBackgroundWorkspace(w.id, tm, house); } catch (e) { logWarn('Background run failed for ' + w.id, e); }
+        }
+      } finally { busy = false; }
+    };
+    const t = setTimeout(run, 20000), i = setInterval(run, 60000);
+    return () => { clearTimeout(t); clearInterval(i); };
+  }, []);
+}
+
 function MainRoot() {
   const prof = useProfile();
   const wsp = useWorkspaces();
@@ -9543,6 +9874,7 @@ function MainRoot() {
   const [openOnLoad, setOpenOnLoad] = useState(null);
   // First run in a team (0.20): confirm your profile, then a short tour for your team.
   const team = useTeam();
+  useBackgroundWorkspaces(wsp.list, wsp.active, team);
   const welcome = prof.data.user && prof.data.user.welcome;
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => { if (welcome === 'tour' && team.on && !STANDALONE_ID) setTourOpen(true); }, [welcome, team.on]);
@@ -9563,3 +9895,6 @@ function MainRoot() {
     </MeContext.Provider>
   );
 }
+
+// For the unit tests (src/automations.test.jsx) only.
+export const _appTest = { closeStep, houseTurn, makeEngine, scanTimeRules, stampTask, stopT, stopAt, taskIn, taskOut, replay };

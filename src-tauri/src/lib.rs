@@ -1,9 +1,9 @@
 //! Tasks desktop app: local storage, documents, backups and Google sign-in.
 //!
 //! Everything is stored in the app's data folder on this computer
-//! (on Windows: %APPDATA%\app.tasks.desktop). Your data is never sent anywhere.
-//! The app only goes online for the one-time Google sign-in and to check
-//! GitHub for new versions of itself.
+//! (on Windows: %APPDATA%\app.tasks.desktop). With cloud sync on, the app also sends
+//! changes to the team's Supabase project (see src/cloud.js); it also goes online for
+//! Google sign-in and to check GitHub for new versions of itself.
 
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
@@ -13,9 +13,13 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_opener::OpenerExt;
+
+mod store;
+use store::{backup_path, is_json, write_synced};
 
 type Res<T> = Result<T, String>;
 
@@ -90,22 +94,44 @@ fn random_string(len: usize) -> String {
    JSON stores (tasks, rules, profile)
    --------------------------------------------------------------- */
 
-#[tauri::command]
+/// Store writes come from several windows and (since 0.20.3) off the main thread, so they take turns.
+static STORE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Reads a store. Returns None only when the store doesn't exist yet. A file that's there but can't
+/// be read, or isn't valid JSON, falls back to the previous good copy; if there's none, it's an error,
+/// so the app never mistakes a damaged file for an empty one (0.20.3).
+#[tauri::command(async)]
 fn read_store(app: AppHandle, name: String) -> Res<Option<String>> {
     let path = store_file(&app, &name)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-    fs::read_to_string(path).map(Some).map_err(err)
+    store::read(&path).map_err(|e| format!("DAMAGED: {name}.json {e}"))
 }
 
-/// Writes to a temporary file first, then swaps it in, so a crash can't leave a half-written file.
-#[tauri::command]
+/// Writes to a temporary file, flushes it to the disk, keeps the current file as the backup copy,
+/// then swaps the new one in. A crash at any point leaves either the new file or the old one.
+#[tauri::command(async)]
 fn write_store(app: AppHandle, name: String, content: String) -> Res<()> {
     let path = store_file(&app, &name)?;
-    let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, content).map_err(err)?;
-    fs::rename(&tmp, &path).map_err(err)
+    let _turn = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    store::write(&path, content.as_bytes())
+}
+
+/// Keeps a damaged store aside (as <name>.damaged-<time>.json) so nothing in it is lost, then removes
+/// it, so the app can take the team's copy from the cloud or a backup instead (0.20.3).
+#[tauri::command(async)]
+fn set_aside_store(app: AppHandle, window: tauri::WebviewWindow, name: String) -> Res<String> {
+    no_capture(&window)?;
+    let path = store_file(&app, &name)?;
+    let _turn = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let aside = data_dir(&app)?.join(format!("{name}.damaged-{stamp}.json"));
+    if path.exists() {
+        fs::rename(&path, &aside).map_err(err)?;
+    }
+    let bak = backup_path(&path);
+    if bak.exists() {
+        let _ = fs::rename(&bak, data_dir(&app)?.join(format!("{name}.damaged-{stamp}.bak.json")));
+    }
+    Ok(aside.to_string_lossy().to_string())
 }
 
 /* ---------------------------------------------------------------
@@ -119,8 +145,9 @@ struct FileInfo {
     size: u64,
 }
 
-#[tauri::command]
-fn file_info(paths: Vec<String>) -> Vec<FileInfo> {
+#[tauri::command(async)]
+fn file_info(window: tauri::WebviewWindow, paths: Vec<String>) -> Vec<FileInfo> {
+    if no_capture(&window).is_err() { return Vec::new(); }
     paths
         .into_iter()
         .filter_map(|p| {
@@ -142,8 +169,9 @@ struct Imported {
 }
 
 /// Copies a document into the app's own folder under a random name.
-#[tauri::command]
-fn import_document(app: AppHandle, path: String) -> Res<Imported> {
+#[tauri::command(async)]
+fn import_document(app: AppHandle, window: tauri::WebviewWindow, path: String) -> Res<Imported> {
+    no_capture(&window)?;
     let src = Path::new(&path);
     let ext: String = src
         .extension()
@@ -155,29 +183,33 @@ fn import_document(app: AppHandle, path: String) -> Res<Imported> {
         .collect();
     let id = random_string(20).to_lowercase();
     let file = if ext.is_empty() { id.clone() } else { format!("{id}.{ext}") };
-    let size = fs::copy(src, docs_dir(&app)?.join(&file)).map_err(err)?;
+    let dest = docs_dir(&app)?.join(&file);
+    let size = fs::copy(src, &dest).map_err(err)?;
+    if let Ok(f) = fs::File::open(&dest) { let _ = f.sync_all(); }
     Ok(Imported { id, file, size })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn read_document(app: AppHandle, file: String) -> Res<tauri::ipc::Response> {
     let bytes = fs::read(docs_dir(&app)?.join(safe_name(&file)?)).map_err(err)?;
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn export_document(app: AppHandle, file: String, dest: String) -> Res<()> {
+    let dest = take_grant(&dest)?;
     fs::copy(docs_dir(&app)?.join(safe_name(&file)?), dest).map(|_| ()).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_document(app: AppHandle, file: String) -> Res<()> {
     let path = docs_dir(&app)?.join(safe_name(&file)?);
     app.opener().open_path(path.to_string_lossy(), None::<&str>).map_err(err)
 }
 
-#[tauri::command]
-fn delete_document(app: AppHandle, file: String) -> Res<()> {
+#[tauri::command(async)]
+fn delete_document(app: AppHandle, window: tauri::WebviewWindow, file: String) -> Res<()> {
+    no_capture(&window)?;
     let path = docs_dir(&app)?.join(safe_name(&file)?);
     if path.exists() {
         fs::remove_file(path).map_err(err)?;
@@ -187,7 +219,7 @@ fn delete_document(app: AppHandle, file: String) -> Res<()> {
 
 /// Saves a document that arrived from cloud sync. The file name comes in the `x-file` header and
 /// the bytes as the raw request body.
-#[tauri::command]
+#[tauri::command(async)]
 fn save_document(app: AppHandle, request: tauri::ipc::Request) -> Res<()> {
     let file = request
         .headers()
@@ -201,12 +233,12 @@ fn save_document(app: AppHandle, request: tauri::ipc::Request) -> Res<()> {
     };
     let dir = docs_dir(&app)?;
     let tmp = dir.join(format!("{name}.part"));
-    fs::write(&tmp, bytes).map_err(err)?;
+    write_synced(&tmp, bytes)?;
     fs::rename(&tmp, dir.join(name)).map_err(err)
 }
 
 /// Which of these documents are not on this computer yet.
-#[tauri::command]
+#[tauri::command(async)]
 fn missing_documents(app: AppHandle, files: Vec<String>) -> Res<Vec<String>> {
     let dir = docs_dir(&app)?;
     Ok(files.into_iter().filter(|f| safe_name(f).is_ok() && !dir.join(f).exists()).collect())
@@ -222,17 +254,33 @@ fn open_data_folder(app: AppHandle) -> Res<()> {
    Backup & restore (a single .zip with everything)
    --------------------------------------------------------------- */
 
-#[tauri::command]
+#[tauri::command(async)]
 fn backup(app: AppHandle, dest: String) -> Res<()> {
-    let dir = data_dir(&app)?;
-    let out = fs::File::create(&dest).map_err(err)?;
+    let dest = take_grant(&dest)?;
+    backup_to(&app, &dest)
+}
+
+/// A copy of this PC's data next to the data files, made before the first cloud sync. The page
+/// only supplies the date and time for the name.
+#[tauri::command(async)]
+fn safety_backup(app: AppHandle, stamp: String) -> Res<()> {
+    if stamp.is_empty() || stamp.len() > 20 || !stamp.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err("Bad backup name".into());
+    }
+    let dest = data_dir(&app)?.join(format!("before-cloud-sync-{stamp}.zip"));
+    backup_to(&app, &dest)
+}
+
+fn backup_to(app: &AppHandle, dest: &Path) -> Res<()> {
+    let dir = data_dir(app)?;
+    let out = fs::File::create(dest).map_err(err)?;
     let mut zip = zip::ZipWriter::new(out);
     let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     for name in store_files(&dir) {
         zip.start_file(name.as_str(), opts).map_err(err)?;
         zip.write_all(&fs::read(dir.join(&name)).map_err(err)?).map_err(err)?;
     }
-    for entry in fs::read_dir(docs_dir(&app)?).map_err(err)? {
+    for entry in fs::read_dir(docs_dir(app)?).map_err(err)? {
         let entry = entry.map_err(err)?;
         if entry.path().is_file() {
             let name = format!("documents/{}", entry.file_name().to_string_lossy());
@@ -244,8 +292,11 @@ fn backup(app: AppHandle, dest: String) -> Res<()> {
     Ok(())
 }
 
-#[tauri::command]
-fn restore(app: AppHandle, src: String) -> Res<()> {
+/// Restores a backup. Everything is unpacked and checked in a staging folder first; only then are the
+/// current files replaced, so a damaged or half-read backup never leaves this PC with nothing (0.20.3).
+#[tauri::command(async)]
+fn restore(app: AppHandle, window: tauri::WebviewWindow, src: String) -> Res<()> {
+    no_capture(&window)?;
     let file = fs::File::open(&src).map_err(err)?;
     let mut zip = zip::ZipArchive::new(file).map_err(|_| "This file isn't a Tasks backup".to_string())?;
     if zip.by_name("data.json").is_err() {
@@ -253,25 +304,20 @@ fn restore(app: AppHandle, src: String) -> Res<()> {
     }
     let dir = data_dir(&app)?;
     let docs = docs_dir(&app)?;
-    for old in store_files(&dir) {
-        if old != "profile.json" && zip.by_name(&old).is_err() { let _ = fs::remove_file(dir.join(&old)); }
-    }
-    // Clear current documents, then unpack the backup.
-    for entry in fs::read_dir(&docs).map_err(err)? {
-        let p = entry.map_err(err)?.path();
-        if p.is_file() {
-            fs::remove_file(p).map_err(err)?;
-        }
-    }
+    let stage = dir.join("restore-staging");
+    let _ = fs::remove_dir_all(&stage);
+    fs::create_dir_all(stage.join("documents")).map_err(err)?;
+    let mut stores = Vec::new();
     for i in 0..zip.len() {
         let mut f = zip.by_index(i).map_err(err)?;
         let name = f.name().to_string();
         let is_store = name.strip_suffix(".json").map(is_store_name).unwrap_or(false) && !name.contains('/');
         let target = if is_store {
-            dir.join(&name)
+            stores.push(name.clone());
+            stage.join(&name)
         } else if let Some(doc) = name.strip_prefix("documents/") {
             match safe_name(doc) {
-                Ok(n) => docs.join(n),
+                Ok(n) => stage.join("documents").join(n),
                 Err(_) => continue,
             }
         } else {
@@ -279,8 +325,38 @@ fn restore(app: AppHandle, src: String) -> Res<()> {
         };
         let mut buf = Vec::new();
         f.read_to_end(&mut buf).map_err(err)?;
-        fs::write(target, buf).map_err(err)?;
+        if is_store && !is_json(&String::from_utf8_lossy(&buf)) {
+            let _ = fs::remove_dir_all(&stage);
+            return Err(format!("This backup is damaged: {name} can't be read. Nothing was changed."));
+        }
+        write_synced(&target, &buf)?;
     }
+    // Everything unpacked: swap it in.
+    let _turn = STORE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for old in store_files(&dir) {
+        if old != "profile.json" && !stores.contains(&old) {
+            let _ = fs::remove_file(dir.join(&old));
+        }
+        // The backup copy of the old data must never come back in place of the restored data.
+        let _ = fs::remove_file(backup_path(&dir.join(&old)));
+    }
+    for name in &stores {
+        let _ = fs::remove_file(backup_path(&dir.join(name)));
+        fs::rename(stage.join(name), dir.join(name)).map_err(err)?;
+    }
+    for entry in fs::read_dir(&docs).map_err(err)? {
+        let p = entry.map_err(err)?.path();
+        if p.is_file() {
+            fs::remove_file(p).map_err(err)?;
+        }
+    }
+    for entry in fs::read_dir(stage.join("documents")).map_err(err)? {
+        let p = entry.map_err(err)?.path();
+        if let Some(n) = p.file_name() {
+            fs::rename(&p, docs.join(n)).map_err(err)?;
+        }
+    }
+    let _ = fs::remove_dir_all(&stage);
     Ok(())
 }
 
@@ -496,8 +572,9 @@ fn collect_files(dir: &Path, depth: u32, out: &mut Vec<FolderFile>) {
 }
 
 /// Lists the files in a folder, and (if asked) up to 4 levels of subfolders.
-#[tauri::command]
-fn list_folder(path: String, recursive: Option<bool>) -> Res<Vec<FolderFile>> {
+#[tauri::command(async)]
+fn list_folder(window: tauri::WebviewWindow, path: String, recursive: Option<bool>) -> Res<Vec<FolderFile>> {
+    no_capture(&window)?;
     let dir = Path::new(&path);
     if !dir.is_dir() { return Err("This folder can’t be found. It may have been moved or renamed.".into()); }
     let mut out = Vec::new();
@@ -529,9 +606,209 @@ fn idle_seconds() -> u64 {
 }
 
 /// Saves text (for example a timesheet as CSV) to a file you chose.
-#[tauri::command]
+#[tauri::command(async)]
 fn write_text_file(dest: String, content: String) -> Res<()> {
+    let dest = take_grant(&dest)?;
     fs::write(dest, content).map_err(err)
+}
+
+/* ---------------------------------------------------------------
+   Saving files (0.20.3). The page never decides where a file is written. Rust opens the save
+   dialog itself and remembers the one place the person chose; write_text_file, export_document
+   and backup refuse any other path. The quick capture window can't use the file commands at all.
+   --------------------------------------------------------------- */
+
+static SAVE_GRANTS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+fn no_capture(window: &tauri::WebviewWindow) -> Res<()> {
+    if window.label() == "capture" { Err("Not available in this window.".into()) } else { Ok(()) }
+}
+
+/// The path must be one the person just chose in the save dialog. Each choice is good for one write.
+fn take_grant(dest: &str) -> Res<PathBuf> {
+    let want = PathBuf::from(dest);
+    let mut grants = SAVE_GRANTS.lock().map_err(err)?;
+    match grants.iter().position(|p| *p == want) {
+        Some(i) => Ok(grants.remove(i)),
+        None => Err("Choose where to save the file first.".into()),
+    }
+}
+
+#[derive(Deserialize)]
+struct SaveFilter {
+    name: String,
+    extensions: Vec<String>,
+}
+
+/// Opens the "Save as" dialog and returns the chosen path, or nothing if it was cancelled.
+#[tauri::command(async)]
+fn pick_save(app: AppHandle, window: tauri::WebviewWindow, name: String, filters: Option<Vec<SaveFilter>>) -> Res<Option<String>> {
+    use tauri_plugin_dialog::DialogExt;
+    no_capture(&window)?;
+    let mut dialog = app.dialog().file().set_file_name(&name).set_parent(&window);
+    for f in filters.unwrap_or_default() {
+        let exts: Vec<&str> = f.extensions.iter().map(|e| e.as_str()).collect();
+        dialog = dialog.add_filter(&f.name, &exts);
+    }
+    let Some(chosen) = dialog.blocking_save_file() else { return Ok(None) };
+    let path = chosen.into_path().map_err(err)?;
+    let mut grants = SAVE_GRANTS.lock().map_err(err)?;
+    if grants.len() >= 8 { grants.remove(0); }
+    grants.push(path.clone());
+    Ok(Some(path.to_string_lossy().to_string()))
+}
+
+/* ---------------------------------------------------------------
+   Watch folders (0.20.3). Windows tells the app when a file appears in a watched folder, so the
+   app no longer lists every folder every 8 seconds. The page still checks once a minute, for
+   network drives and other places that don't send these messages.
+   --------------------------------------------------------------- */
+
+#[derive(Deserialize)]
+struct WatchedFolder {
+    path: String,
+    subfolders: Option<bool>,
+}
+
+static WATCHER: Mutex<Option<notify::RecommendedWatcher>> = Mutex::new(None);
+static WATCH_TOLD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Replaces the set of watched folders. Returns the folders that couldn't be watched.
+#[tauri::command(async)]
+fn watch_folders(app: AppHandle, window: tauri::WebviewWindow, folders: Vec<WatchedFolder>) -> Res<Vec<String>> {
+    use notify::{RecursiveMode, Watcher};
+    no_capture(&window)?;
+    let mut slot = WATCHER.lock().map_err(err)?;
+    *slot = None; // stops the previous watcher
+    if folders.is_empty() { return Ok(Vec::new()); }
+    let handle = app.clone();
+    let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res {
+            if ev.kind.is_access() { return; }
+            // Copying a big file sends hundreds of these: the page hears at most two a second.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            let last = WATCH_TOLD.load(std::sync::atomic::Ordering::Relaxed);
+            if now.saturating_sub(last) < 500 { return; }
+            WATCH_TOLD.store(now, std::sync::atomic::Ordering::Relaxed);
+            let _ = handle.emit_to("main", "watch-folder-changed", ());
+        }
+    }).map_err(err)?;
+    let mut failed = Vec::new();
+    for f in folders {
+        let mode = if f.subfolders.unwrap_or(false) { RecursiveMode::Recursive } else { RecursiveMode::NonRecursive };
+        if watcher.watch(Path::new(&f.path), mode).is_err() { failed.push(f.path); }
+    }
+    *slot = Some(watcher);
+    Ok(failed)
+}
+
+/* ---------------------------------------------------------------
+   The cloud sign-in (0.20.3). Kept in the data folder as secret-<name>.bin, encrypted by Windows
+   for this Windows account (DPAPI), so a copy of the file is useless on another account or PC.
+   It isn't part of backups.
+   --------------------------------------------------------------- */
+
+#[cfg(windows)]
+mod secret {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+
+    fn run(data: &[u8], seal: bool) -> Result<Vec<u8>, String> {
+        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        let ok = unsafe {
+            if seal {
+                CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            } else {
+                CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out)
+            }
+        };
+        if ok == 0 || out.pbData.is_null() { return Err("Windows couldn't protect the sign-in".into()); }
+        let bytes = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec() };
+        unsafe { LocalFree(out.pbData as _); }
+        Ok(bytes)
+    }
+    pub fn seal(data: &[u8]) -> Result<Vec<u8>, String> { run(data, true) }
+    pub fn open(data: &[u8]) -> Result<Vec<u8>, String> { run(data, false) }
+}
+
+// Other systems are only used while developing: kept as is.
+#[cfg(not(windows))]
+mod secret {
+    pub fn seal(data: &[u8]) -> Result<Vec<u8>, String> { Ok(data.to_vec()) }
+    pub fn open(data: &[u8]) -> Result<Vec<u8>, String> { Ok(data.to_vec()) }
+}
+
+fn secret_path(app: &AppHandle, key: &str) -> Res<PathBuf> {
+    if key.is_empty() || key.len() > 60 || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("Bad name".into());
+    }
+    Ok(data_dir(app)?.join(format!("secret-{key}.bin")))
+}
+
+#[tauri::command(async)]
+fn secret_get(app: AppHandle, window: tauri::WebviewWindow, key: String) -> Res<Option<String>> {
+    no_capture(&window)?;
+    let path = secret_path(&app, &key)?;
+    if !path.exists() { return Ok(None); }
+    let sealed = fs::read(&path).map_err(err)?;
+    // Unreadable (copied from another account, or damaged): the same as signed out.
+    let Ok(bytes) = secret::open(&sealed) else { return Ok(None) };
+    Ok(String::from_utf8(bytes).ok())
+}
+
+#[tauri::command(async)]
+fn secret_set(app: AppHandle, window: tauri::WebviewWindow, key: String, value: String) -> Res<()> {
+    no_capture(&window)?;
+    let path = secret_path(&app, &key)?;
+    let tmp = path.with_extension("bin.tmp");
+    write_synced(&tmp, &secret::seal(value.as_bytes())?).map_err(err)?;
+    fs::rename(&tmp, &path).map_err(err)
+}
+
+#[tauri::command(async)]
+fn secret_remove(app: AppHandle, window: tauri::WebviewWindow, key: String) -> Res<()> {
+    no_capture(&window)?;
+    let path = secret_path(&app, &key)?;
+    if path.exists() { fs::remove_file(path).map_err(err)?; }
+    Ok(())
+}
+
+/* ---------------------------------------------------------------
+   The log file (0.20.3). Failures the app used to swallow are written to logs/tasks.log in the
+   data folder, so a problem someone reports can be traced. Kept small: at 1 MB the file becomes
+   tasks.old.log and a new one starts.
+   --------------------------------------------------------------- */
+
+static LOG_LOCK: Mutex<()> = Mutex::new(());
+const LOG_MAX: u64 = 1024 * 1024;
+
+fn log_dir(app: &AppHandle) -> Res<PathBuf> {
+    let dir = data_dir(app)?.join("logs");
+    fs::create_dir_all(&dir).map_err(err)?;
+    Ok(dir)
+}
+
+#[tauri::command(async)]
+fn log_lines(app: AppHandle, lines: Vec<String>) -> Res<()> {
+    let _guard = LOG_LOCK.lock().map_err(err)?;
+    let dir = log_dir(&app)?;
+    let path = dir.join("tasks.log");
+    if fs::metadata(&path).map(|m| m.len() > LOG_MAX).unwrap_or(false) {
+        let _ = fs::rename(&path, dir.join("tasks.old.log"));
+    }
+    let mut f = fs::OpenOptions::new().create(true).append(true).open(&path).map_err(err)?;
+    for line in lines.iter().take(200) {
+        let one: String = line.chars().filter(|c| *c != '\r' && *c != '\n').take(2000).collect();
+        writeln!(f, "{one}").map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+fn open_log_folder(app: AppHandle) -> Res<()> {
+    let dir = log_dir(&app)?;
+    app.opener().open_path(dir.to_string_lossy(), None::<&str>).map_err(err)
 }
 
 fn show_main(app: &AppHandle) {
@@ -624,6 +901,9 @@ fn quit_app(app: AppHandle) { app.exit(0); }
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Only one copy of Tasks runs at a time (0.20.3): opening it again brings the open one forward,
+        // so two copies never write the same files or sync the same data.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -668,8 +948,17 @@ pub fn run() {
             list_folder,
             idle_seconds,
             write_text_file,
+            pick_save,
+            safety_backup,
+            watch_folders,
+            log_lines,
+            secret_get,
+            secret_set,
+            secret_remove,
+            open_log_folder,
             read_store,
             write_store,
+            set_aside_store,
             file_info,
             import_document,
             read_document,

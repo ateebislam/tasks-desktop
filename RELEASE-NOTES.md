@@ -1,3 +1,18 @@
+A tune-up: safer saves, faster long lists, and sync that double-checks.
+- Safer saves: every save is written to a spare file first and the previous copy is kept, so a crash or power cut mid-save can't empty your list. A damaged file is reported, with a choice to bring tasks back from the cloud or a backup, and nothing is overwritten while you decide. Only one copy of the app runs at a time.
+- Backups: restoring checks the whole backup before anything changes, and the cloud can no longer undo a restore. A safety backup is taken before the first sync on a PC.
+- Sync: if many tasks disappear at once, sync holds the deletion until you press Sync now. PC clocks that are wrong no longer decide which edit wins. A PC that was away for months catches up on tasks deleted meanwhile. Someone removed from the team is signed out right away, and a teammate's profile change updates only that person.
+- Deleting: Members can delete only the tasks they made; Admins and the Owner can delete any. Supabase now enforces this, not just the app.
+- Automations: deadline automations run again when a deadline moves, time-based ones run in every workspace, and archiving and Trash cleanup happen once for the team instead of once per PC.
+- Undo: undo and redo only touch what you changed, even when a teammate edits the same task in between.
+- Speed: a running timer redraws only its own clock, saving is lighter, and the task table shows 150 rows at first and adds more as you scroll. Watch folders notice new files right away instead of on a timer.
+- Sign-in and privacy: your sign-in is stored encrypted by Windows instead of as plain text (you stay signed in after updating). Quick capture runs with fewer permissions, and the app can only save files where you chose in a save dialog.
+- Log folder: Settings > Cloud & backups has a Log folder button, so problems can be sent to us.
+- What's new: slides move on by themselves after 6 seconds while the bar at the top fills (hold the mouse down to pause). A fixes release like this one gets one short slide with no screenshots.
+- Updates: the app checks for a new version every 6 hours, not only at launch. GitHub builds an installer only when the version number is new, and runs lint and tests on every push.
+- Supabase: run supabase/delete-rules-0.20.3.sql once and turn on Confirm email, before or right after updating. After every PC is on 0.20.3, run supabase/cleanup-0.20.3.sql once (it clears deleted records older than 90 days each night). No tables or columns change. Steps are in CLOUD-SETUP.md.
+- Not yet tested on real Windows: the single-copy lock, restore, quick capture, the save dialogs (backup, timesheet, weekly report, Save a copy), watch folders, and staying signed in after the update. Please check them after updating.
+
 A Documents library with a reader, a borderless look, Inter, and a softer dark mode.
 - Documents library: the page opens as a table grouped by status (Approved, In review, Draft, Outdated), each group folds. Columns: document, status (click to change), linked tasks (first task plus a count), size and updated. Pointing at a row shows Open, Save a copy and Delete (red on hover). The file type tabs only show when the folder has more than one file type.
 - Clean titles: names like "68-kaufes-sow-item-verification-EN.pdf" show as "SOW · Item Verification". The leading number, the word most names start with, language codes, version tags and the extension are dropped from the label only. The real file name shows on hover and in the details panel, and search still matches it.

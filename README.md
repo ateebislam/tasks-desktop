@@ -4,8 +4,10 @@ A personal task manager for Windows: tasks with status, assignee, deadline, prio
 checklists and a timer; blockers; projects with automatic follow-up tickets; and a
 documents library for the PDFs, Word files and HTML pages that arrive in WhatsApp.
 
-Everything is stored on your own computer. The app only goes online for the one-time
-"Sign in with Google" (name, email and photo) and to check GitHub for new versions of itself.
+Everything is stored on your own computer, so the app works offline. If you turn on cloud sync
+(see [CLOUD-SETUP.md](CLOUD-SETUP.md)), your tasks and documents are also kept in your own Supabase
+project, so they follow you to your other PCs and your team can work on them together. Without it,
+the app only goes online to check GitHub for new versions of itself.
 
 **New here? Read [SETUP-GUIDE.md](SETUP-GUIDE.md).** It walks through everything step by step.
 

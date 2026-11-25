@@ -4,13 +4,11 @@
   "description": "Permissions for the main window and tasks opened in their own window",
   "windows": [
     "main",
-    "task-*",
-    "capture"
+    "task-*"
   ],
   "permissions": [
     "core:default",
     "dialog:allow-open",
-    "dialog:allow-save",
     "updater:default",
     "process:allow-restart",
     "core:window:allow-set-theme",

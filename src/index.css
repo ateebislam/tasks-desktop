@@ -211,3 +211,10 @@ td:has(.pchip:hover,.pchip:focus-visible,.pchip[data-open]) button[aria-label^="
 .doc-grid .dg-acts{justify-content:flex-end;gap:2px;padding-right:6px;opacity:0;transition:opacity .15s}
 .doc-grid .dg-body:hover .dg-acts,.doc-grid .dg-body:focus-within .dg-acts,.doc-grid .dg-body[aria-selected=true] .dg-acts{opacity:1}
 @media (hover:none){.doc-grid .dg-acts{opacity:1}}
+
+/* What's new (0.20.3): the bar at the top fills over 6 seconds, then the next slide opens. On the last slide,
+   and when Windows is set to reduce motion, the bar is simply full and nothing moves on by itself. */
+.wn-seek{transform-origin:left center;animation:wn-seek 6s linear both}
+.wn-seek-done{animation:none}
+@keyframes wn-seek{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+@media (prefers-reduced-motion:reduce){.wn-seek{animation:none}}
