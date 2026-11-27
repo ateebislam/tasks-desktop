@@ -1,3 +1,4 @@
+/* global __APP_VERSION__ */
 /* Cloud sync (0.19): keeps this PC's tasks, archive, workspaces and documents in the user's own
    Supabase project, so every PC that signs in sees the same data, and changes on one open PC
    show up on the others within a second or two.
@@ -255,6 +256,22 @@ let frozen = false;
 let deleteOk = false;
 const heldNoted = new Set();
 let caughtUp = false, started = false, loopBusy = false, loopAgain = false, timer = null, retryMs = 0, docsBusy = false, docsAgain = false;
+
+/* ---------- Minimum app version (0.21.0) ----------
+   The team's minimum version lives in Supabase (app_settings, set in the SQL Editor). An app older than it
+   stops sending changes and shows the update lock; Supabase refuses its changes too. The last value seen is
+   kept, so an old PC that starts offline is still locked. */
+export const APP_VERSION = typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.0';
+const verParts = v => (/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(String(v || '')) ? String(v).split('.').map(Number) : null);
+// True when version v is older than min. No minimum, or one that isn't a version, never locks.
+export function olderThan(v, min) {
+  const a = verParts(v), b = verParts(min);
+  if (!b) return false;
+  if (!a) return true;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] < b[i];
+  return false;
+}
+let outdated = false, settingsChannel = null;
 
 const setStatus = patch => { status = { ...status, ...patch }; subs.forEach(f => f(status)); };
 export const cloudStatus = () => status;
@@ -817,7 +834,7 @@ function dropProfileChannel() { if (profileChannel) { try { client.removeChannel
 
 /* ---------- The sync loop ---------- */
 async function loop() {
-  if (frozen || !client || !uid || !wsId || !st.ready || !caughtUp) return;
+  if (frozen || outdated || !client || !uid || !wsId || !st.ready || !caughtUp) return;
   if (loopBusy) { loopAgain = true; return; }
   loopBusy = true;
   try {
@@ -832,17 +849,20 @@ async function loop() {
     moveOldDocs().catch(() => {}).then(() => syncDocs()).catch(() => {});
     if (st.profileDirty) syncProfile().catch(() => {});
   } catch (e) {
-    const offline = !navigator.onLine || /fetch|network|failed to|timeout/i.test(String(e && (e.message || e)));
+    const offline = isOffline(e);
     if (e && (e.code === '42501' || /row-level security/i.test(String(e.message || '')))) checkMember().catch(() => {});
+    if (e && e.code === 'TKVER') loadMinVersion().catch(() => {}); // refused as too old: the lock shows once the minimum is read
     retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000);
     if (!offline) warn('Sync failed', e);
     setStatus({ phase: offline ? 'offline' : 'error', error: String(e && (e.message || e)), pending: pendingCount() });
     kick(retryMs);
   } finally { loopBusy = false; }
 }
+// No connection, or Supabase can't be reached: just offline, which never locks the app.
+const isOffline = e => !navigator.onLine || /fetch|network|failed to|timeout/i.test(String(e && (e.message || e)));
 async function catchUp() {
-  try { await pull('normal'); caughtUp = true; kick(0); syncProfile().catch(() => {}); checkMember().catch(() => {}); forgetOld().catch(e => warn('Old sync notes not cleared', e)); }
-  catch (e) { warn('Catch-up failed', e); setStatus({ phase: navigator.onLine ? 'error' : 'offline', error: String(e && (e.message || e)) }); retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000); setTimeout(catchUp, retryMs); }
+  try { await pull('normal'); caughtUp = true; loadMinVersion().catch(() => {}); kick(0); syncProfile().catch(() => {}); checkMember().catch(() => {}); forgetOld().catch(e => warn('Old sync notes not cleared', e)); }
+  catch (e) { warn('Catch-up failed', e); setStatus({ phase: isOffline(e) ? 'offline' : 'error', error: String(e && (e.message || e)) }); retryMs = Math.min(60000, retryMs ? retryMs * 2 : 4000); setTimeout(catchUp, retryMs); }
 }
 function connect() {
   if (channel) { try { client.removeChannel(channel); } catch (e) {} channel = null; }
@@ -866,6 +886,46 @@ function connect() {
   // first pull, so an older offline edit never overwrites a newer one from another PC.
   caughtUp = false;
   localStores().then(ns => ns.forEach(n => dirty.add(n)));
+}
+
+function applyMinVersion(min) {
+  const v = verParts(min) ? min : null;
+  if (st && st.minVersion !== v) { st.minVersion = v; saveSoon(); }
+  const was = outdated;
+  outdated = olderThan(APP_VERSION, v);
+  setStatus({ outdated, minVersion: v });
+  // The minimum was lowered or cleared: sync picks up where it stopped.
+  if (was && !outdated && uid && st && st.ready) { retryMs = 0; catchUp(); }
+}
+async function loadMinVersion() {
+  if (!client || !uid || !wsId) return;
+  const { data, error } = await client.from('app_settings').select('min_version').eq('workspace_id', wsId).maybeSingle();
+  if (error) {
+    // A Supabase project without min-version-0.21.0.sql has no minimum.
+    if (error.code === '42P01' || error.code === 'PGRST205' || /app_settings/i.test(String(error.message || ''))) applyMinVersion(null);
+    return;
+  }
+  applyMinVersion(data ? data.min_version : null);
+  if (!settingsChannel) {
+    settingsChannel = client.channel('settings-' + DEVICE_ID)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'app_settings', filter: `workspace_id=eq.${wsId}` }, p => { if (p.new && 'min_version' in p.new) applyMinVersion(p.new.min_version); })
+      .subscribe();
+  }
+}
+function dropSettingsChannel() { if (settingsChannel) { try { client.removeChannel(settingsChannel); } catch (e) {} settingsChannel = null; } }
+// Checked again every 30 minutes, in case the live update was missed.
+setInterval(() => { loadMinVersion().catch(() => {}); }, 30 * 60e3);
+// Try again from the "can't sync" lock: reconnects from wherever it stopped.
+export async function cloudRetry() {
+  if (!st || !st.url) return;
+  retryMs = 0;
+  try {
+    if (!client) await makeClient();
+    if (uid && wsId && st.ready) { setStatus({ phase: 'connecting', error: null }); connect(); return; }
+    const { data } = await client.auth.getSession();
+    if (data && data.session && data.session.user) { uid = data.session.user.id; setStatus({ phase: 'connecting', error: null }); await begin(data.session.user); }
+    else setStatus({ phase: 'signin', error: null });
+  } catch (e) { fail(e); }
 }
 
 /* ---------- The team (0.20) ---------- */
@@ -1028,12 +1088,12 @@ const sessionStore = {
 };
 async function makeClient() {
   const { createClient } = await import('@supabase/supabase-js');
-  client = createClient(st.url, st.key, { auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth', storage: sessionStore }, realtime: { params: { eventsPerSecond: 20 } } });
+  client = createClient(st.url, st.key, { global: { headers: { 'x-taskit-version': APP_VERSION } }, auth: { persistSession: true, autoRefreshToken: true, storageKey: 'tasks-cloud-auth', storage: sessionStore }, realtime: { params: { eventsPerSecond: 20 } } });
   client.auth.onAuthStateChange(ev => {
     if (ev === 'SIGNED_OUT' && uid) { uid = null; wsId = null; caughtUp = false; setStatus({ phase: 'signin' }); }
   });
 }
-const fail = e => setStatus({ phase: 'error', error: String(e && (e.message || e)) });
+const fail = e => setStatus({ phase: isOffline(e) ? 'offline' : 'error', error: String(e && (e.message || e)) });
 async function dropSession() { const was = uid; uid = null; wsId = null; try { if (was) await client.auth.signOut(); } catch (e) {} }
 
 // Runs once in the main window at launch.
@@ -1044,6 +1104,7 @@ export async function cloudStart() {
   catch (e) { st = DEFAULT_STATE(); }
   // The project built into the app (cloud-config.js) is used unless this PC was pointed at another one.
   if (!st.url && CLOUD_URL && CLOUD_PUBLISHABLE_KEY) { st.url = CLOUD_URL.replace(/\/+$/, ''); st.key = CLOUD_PUBLISHABLE_KEY; }
+  if (st.url) applyMinVersion(st.minVersion);
   setStatus({ phase: st.url ? 'connecting' : 'off', builtIn: !!CLOUD_URL, email: st.email || null, lastSync: st.lastSync || null, docs: (st.docsUp || []).length, url: st.url || '' });
   // Writes from task windows.
   listen('tasks-data', e => { const p = e.payload; if (p && p.from !== 'main' && p.from !== 'cloud') cloudNote(storeFor('data', p.ws || 'product'), p.data); }).catch(() => {});
@@ -1105,6 +1166,7 @@ async function joinTeam() {
   }
   if (st.wsId && st.wsId !== data) { st = { ...DEFAULT_STATE(), url: st.url, key: st.key, uid: st.uid, email: st.email }; }
   wsId = data; st.wsId = data; saveSoon();
+  await loadMinVersion().catch(() => {});
   await loadTeam().catch(() => {});
   return true;
 }
@@ -1157,13 +1219,13 @@ export async function cloudFirstSync(mode) {
 }
 export async function cloudSignOut() {
   try { if (channel) client.removeChannel(channel); } catch (e) {}
-  channel = null; caughtUp = false; dropProfileChannel(); dropTeamChannel();
+  channel = null; caughtUp = false; dropProfileChannel(); dropTeamChannel(); dropSettingsChannel();
   wsId = null; access = null; team = { members: [], invites: [] }; teamSubs.forEach(f => f(team));
   const was = uid; uid = null;
   try { if (was) await client.auth.signOut(); } catch (e) {}
   uid = null;
   // Keep the data on this PC; the next sign-in on this PC compares it with the cloud again.
-  st = { ...DEFAULT_STATE(), url: st.url, key: st.key, email: st.email };
+  st = { ...DEFAULT_STATE(), url: st.url, key: st.key, email: st.email, minVersion: st.minVersion || null };
   await saveState();
   setStatus({ phase: 'signin', lastSync: null });
 }

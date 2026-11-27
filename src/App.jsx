@@ -16,7 +16,7 @@ import { isPermissionGranted, requestPermission, sendNotification } from '@tauri
 import { readTheme, setTheme, toggleTheme } from './theme.js';
 import { Toaster, toast as sonner } from './components/ui/sonner.jsx';
 import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNotice, cloudConfigure, cloudSignIn, cloudSignOut, cloudForget, cloudFirstSync, cloudSyncNow, cloudFlush, cloudEnsureDoc, cloudDeleteDoc, cloudProfileLive, cloudProfileNote,
-  cloudSignInGoogle, cloudMe, onCloudTeam, cloudPause, cloudResume, cloudForgetSyncState, cloudCanRecover, cloudRecoverStore, cloudReadStore, cloudEditStore, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudSetLogger, cloudTeam as cloudTeamNow, cloudStatus } from './cloud.js';
+  cloudSignInGoogle, cloudMe, onCloudTeam, cloudPause, cloudResume, cloudForgetSyncState, cloudCanRecover, cloudRecoverStore, cloudReadStore, cloudEditStore, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudSetLogger, cloudTeam as cloudTeamNow, cloudStatus, cloudRetry, APP_VERSION } from './cloud.js';
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from './cloud-config.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
 
@@ -1472,6 +1472,26 @@ function flushNotes() {
   });
 }
 
+// Saves everything, downloads and installs an update, then restarts. Used by the update card and the update lock (0.21.0).
+async function installUpdate(update, setProgress) {
+  try {
+    await beforeQuit();
+    await flushAll();
+    await cloudFlush();
+    let total = 0, got = 0;
+    setProgress(-1);
+    await update.downloadAndInstall(ev => {
+      if (ev.event === 'Started') total = ev.data.contentLength || 0;
+      else if (ev.event === 'Progress') { got += ev.data.chunkLength; if (total) setProgress(Math.min(99, Math.round(got / total * 100))); }
+      else if (ev.event === 'Finished') setProgress('installing');
+    });
+    await relaunch();
+  } catch (e) {
+    setProgress(null);
+    toast.error('The update didn’t install', String(e));
+  }
+}
+
 /* Self-updating: new versions are published as GitHub releases.
    The app checks a few seconds after it starts, and whenever you ask it to. */
 function useUpdater() {
@@ -1494,25 +1514,7 @@ function useUpdater() {
     const i = WINDOW_LABEL === 'main' ? setInterval(() => look(false), 6 * 3600e3) : null;
     return () => { clearTimeout(t); clearInterval(i); };
   }, [look]);
-  const install = async () => {
-    if (!update) return;
-    try {
-      await beforeQuit();
-      await flushAll();
-      await cloudFlush();
-      let total = 0, got = 0;
-      setProgress(-1);
-      await update.downloadAndInstall(ev => {
-        if (ev.event === 'Started') total = ev.data.contentLength || 0;
-        else if (ev.event === 'Progress') { got += ev.data.chunkLength; if (total) setProgress(Math.min(99, Math.round(got / total * 100))); }
-        else if (ev.event === 'Finished') setProgress('installing');
-      });
-      await relaunch();
-    } catch (e) {
-      setProgress(null);
-      toast.error('The update didn’t install', String(e));
-    }
-  };
+  const install = () => (update ? installUpdate(update, setProgress) : undefined);
   return { version, update, progress, look, install, dismiss: () => setUpdate(null) };
 }
 
@@ -1787,6 +1789,9 @@ function QuickCaptureWindow() {
   const box = useRef(null);
   const th = useTheme();
   const close = () => getCurrentWindow().close().catch(() => {});
+  // While the main window is locked (0.21.0), quick capture doesn't open.
+  const locked = useLockFromMain();
+  useEffect(() => { if (locked) close(); }, [locked]);
   // A plain solid panel. The page behind it is the same color, so the rounded corners Windows cuts never show a sliver.
   useLayoutEffect(() => {
     document.documentElement.style.background = 'hsl(var(--popover))'; document.body.style.background = 'transparent';
@@ -6196,6 +6201,8 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
    0.20.3: a release of fixes gets one short slide marked brief (no picture, just an icon and a line or two).
    Slides move on by themselves after 6 seconds while the bar at the top fills; holding the mouse down pauses. */
 const WHATS_NEW = [
+  { v: '0.21.0', title: 'Everyone on the same version', img: 'update-lock.webp',
+    points: ['When your team moves to a new version, an older Taskit locks until it’s updated. One button downloads the update and restarts the app.', 'The same screen shows if you’re signed out, removed from the team, or sync keeps failing, with only the button that fixes it. Being offline never locks Taskit.'] },
   { v: '0.20.3', title: 'Tune-up day', brief: true, icon: 'sparkles',
     points: ['No shiny new buttons this time. We popped the hood instead: your tasks are safer, long lists feel snappier, and sync is a lot less dramatic.', 'Nothing to set up. Carry on!'] },
   { v: '0.20.2', title: 'Documents, as a library', img: 'docs-library.webp',
@@ -9846,6 +9853,206 @@ function useBackgroundWorkspaces(list, active, team) {
   }, []);
 }
 
+/* =========================================================
+   Lock screen (0.21.0)
+   The whole window is locked, and only the action that fixes it is offered, when:
+   this app is older than the team's minimum version (set in Supabase), the cloud sign-in ended,
+   this person is no longer on the team, or sync keeps failing while online. Just being offline never locks.
+   ========================================================= */
+const LOCK_KEY = 'tasks-lock';
+// How long sync must keep failing (while online) before the app locks, so a brief hiccup never does.
+const LOCK_ERROR_MS = 20000;
+function lockFor(c, errorLong, signedIn) {
+  if (!signedIn || !c.url || c.phase === 'off' || c.phase === 'loading') return null;
+  if (c.outdated) return 'update';
+  if (c.phase === 'signin') return 'signin';
+  if (c.phase === 'removed' || c.phase === 'notinvited') return 'removed';
+  if (c.phase === 'error' && errorLong) return 'broken';
+  return null;
+}
+// Works out the lock in the main window, and tells the other windows (task windows, quick capture) about it.
+function useLock(signedIn) {
+  const c = useCloud();
+  const [errorLong, setErrorLong] = useState(false);
+  useEffect(() => {
+    setErrorLong(false);
+    if (c.phase !== 'error') return;
+    const t = setTimeout(() => setErrorLong(true), LOCK_ERROR_MS);
+    return () => clearTimeout(t);
+  }, [c.phase]);
+  const kind = lockFor(c, errorLong, signedIn);
+  useEffect(() => {
+    try { if (kind) localStorage.setItem(LOCK_KEY, kind); else localStorage.removeItem(LOCK_KEY); } catch (e) {}
+  }, [kind]);
+  return { kind, c };
+}
+// The lock as other windows see it.
+function useLockFromMain() {
+  const read = () => { try { return localStorage.getItem(LOCK_KEY) || null; } catch (e) { return null; } };
+  const [kind, setKind] = useState(read);
+  useEffect(() => {
+    const on = e => { if (e.key === LOCK_KEY || e.key === null) setKind(read()); };
+    window.addEventListener('storage', on);
+    return () => window.removeEventListener('storage', on);
+  }, []);
+  return kind;
+}
+// While locked, nothing behind the lock can be clicked, focused or reached with the keyboard.
+function useLockdown(on, ref) {
+  useEffect(() => {
+    if (!on || !ref.current) return;
+    const me = ref.current;
+    const others = [...document.body.children].filter(el => el !== me);
+    others.forEach(el => el.setAttribute('inert', ''));
+    document.documentElement.classList.add('app-locked');
+    // App shortcuts listen on the window: keys pressed in the lock never reach them.
+    const stop = e => { if (!me.contains(e.target) || e.type !== 'keydown' || e.key !== 'Tab') e.stopPropagation(); };
+    window.addEventListener('keydown', stop, true);
+    window.addEventListener('keyup', stop, true);
+    if (document.activeElement && !me.contains(document.activeElement) && document.activeElement.blur) document.activeElement.blur();
+    return () => {
+      others.forEach(el => el.removeAttribute('inert'));
+      document.documentElement.classList.remove('app-locked');
+      window.removeEventListener('keydown', stop, true);
+      window.removeEventListener('keyup', stop, true);
+    };
+  }, [on]);
+}
+const LOCK_TONE = { neutral: 'bg-muted text-foreground', primary: 'bg-primary text-primary-foreground', amber: 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400', red: 'bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400' };
+function LockFrame({ icon, tone = 'neutral', title, children, lockRef }) {
+  return createPortal(
+    <div ref={lockRef} role="alertdialog" aria-modal="true" aria-labelledby="lock-title" className="fixed inset-0 z-[1000] flex flex-col bg-[hsl(var(--page))] text-foreground anim-fade">
+      {/* The same slim top row as the app, so the window can still be moved, minimized and closed. */}
+      <div data-tauri-drag-region className="flex h-10 shrink-0 items-center pl-4 md:pl-6">
+        <div data-tauri-drag-region className="min-w-0 flex-1" />
+        <WindowControls />
+      </div>
+      <div className="flex min-h-0 flex-1 overflow-y-auto">
+        <div className="m-auto w-full max-w-sm px-6 pb-16 pt-6">
+          <Card className="p-8">
+            <div className="flex flex-col items-center text-center">
+              <div className={cn('mb-4 flex size-12 items-center justify-center rounded-xl', LOCK_TONE[tone])}>{icon}</div>
+              <h1 id="lock-title" className="text-xl font-semibold tracking-tight">{title}</h1>
+            </div>
+            {children}
+          </Card>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+const LockText = ({ children }) => <p className="mt-2 text-center text-sm leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{children}</p>;
+const LockHint = ({ children }) => <p className="text-center text-xs text-muted-foreground">{children}</p>;
+const LockLink = ({ onClick, children }) => <button type="button" onClick={onClick} className="mx-auto rounded-sm px-1 py-0.5 text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{children}</button>;
+
+function UpdateLock({ minVersion, lockRef }) {
+  const [update, setUpdate] = useState(null);
+  const [looking, setLooking] = useState(true);
+  const [progress, setProgress] = useState(null);
+  const look = useCallback(async () => {
+    setLooking(true);
+    try { const u = await checkForUpdate(); setUpdate(u || null); return u || null; }
+    catch (e) { setUpdate(null); return null; }
+    finally { setLooking(false); }
+  }, []);
+  useEffect(() => { look(); }, [look]);
+  const go = async () => {
+    const u = update || await look();
+    if (!u) { toast.error('The update isn’t available yet', 'Check your internet connection and try again in a few minutes.'); return; }
+    installUpdate(u, setProgress);
+  };
+  const busy = progress !== null;
+  return (
+    <LockFrame lockRef={lockRef} tone="primary" icon={<I.arrowUp className="size-6" />} title="Update Taskit to keep going">
+      <LockText>Your team now uses a newer version. Your tasks are safe on this PC and sync as soon as you update.</LockText>
+      <div className="mt-5 flex flex-wrap justify-center gap-2 font-mono text-xs">
+        <span className="rounded-md bg-muted px-2 py-1 text-muted-foreground">This PC {APP_VERSION}</span>
+        <span className="rounded-md bg-muted px-2 py-1 text-foreground">Needed {minVersion}</span>
+      </div>
+      <div className="mt-6 grid gap-2.5">
+        {busy ? <>
+          <div className="h-1.5 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label="Update progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={typeof progress === 'number' && progress >= 0 ? progress : undefined}>
+            <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${progress === 'installing' ? 100 : progress === -1 ? 30 : progress}%` }} />
+          </div>
+          <LockHint><span className="tnum">{progress === 'installing' ? 'Installing… Taskit restarts by itself' : progress === -1 ? 'Downloading…' : `Downloading ${progress}% · Taskit restarts by itself`}</span></LockHint>
+        </> : <>
+          <Button className="h-10" onClick={go} disabled={looking}>{looking ? 'Looking for the update…' : update ? 'Update now' : 'Check again'}</Button>
+          <LockHint>{looking || update ? 'Takes about a minute. Taskit restarts by itself.' : 'The update wasn’t found. Check your internet connection, then try again.'}</LockHint>
+        </>}
+      </div>
+    </LockFrame>
+  );
+}
+function SignInLock({ prof, kind, email, lockRef }) {
+  const [busy, setBusy] = useState(false);
+  const signIn = async () => {
+    setBusy(true);
+    try {
+      const r = await googleSignIn(prof);
+      if (r.user) {
+        const old = prof.data.user || {};
+        // The same person signing back in keeps their place; anyone else starts with the welcome steps.
+        const same = old.email && r.user.email && old.email.toLowerCase() === r.user.email.toLowerCase();
+        prof.update({ user: same ? { ...old, ...r.user, welcome: old.welcome } : r.user });
+      }
+    } catch (e) { toast.error('Sign-in didn’t finish', String(e)); }
+    setBusy(false);
+  };
+  const removed = kind === 'removed';
+  const who = email || 'This Google account';
+  return (
+    <LockFrame lockRef={lockRef} tone={removed ? 'amber' : 'neutral'} icon={<I.user className="size-6" />}
+      title={removed ? (email ? 'You’re no longer on this team' : 'This account isn’t on your team') : 'Sign in to keep going'}>
+      <LockText>{removed
+        ? <><b className="font-medium text-foreground">{who}</b> isn’t on your team anymore. Ask your admin to invite you again, or sign in with another account.</>
+        : 'You were signed out of your team. Sign in with your work Google account and everything picks up where it was.'}</LockText>
+      <div className="mt-6 grid gap-3">
+        <Button className="h-10 gap-2.5" onClick={signIn} disabled={busy}>{!busy && !removed && <GoogleMark />}{busy ? 'Waiting for Google in your browser…' : removed ? 'Sign in with another account' : 'Continue with Google'}</Button>
+        {removed && !busy
+          ? <LockLink onClick={() => copyText(`Hey! Could you invite ${email || 'me'} to our Taskit team again? Settings › Members › Invite people. Thanks!`).then(() => toast('Copied', 'Paste it to your admin in a chat or email.'))}>Copy a note for your admin</LockLink>
+          : <LockHint>{busy ? 'Finish signing in there, then hop back here.' : 'We’ll pop open your browser. Sign in there, then hop back here.'}</LockHint>}
+      </div>
+    </LockFrame>
+  );
+}
+function SyncLock({ error, lockRef }) {
+  const [busy, setBusy] = useState(false);
+  const retry = async () => { setBusy(true); try { await cloudRetry(); } finally { setTimeout(() => setBusy(false), 1500); } };
+  return (
+    <LockFrame lockRef={lockRef} tone="red" icon={<I.cloudOff className="size-6" />} title="Taskit can’t sync right now">
+      <LockText>Your changes are saved on this PC but can’t reach your team. Try again, or send the details to your admin.</LockText>
+      <div className="mt-6 grid gap-3">
+        <Button className="h-10" onClick={retry} disabled={busy}>{busy ? 'Trying again…' : 'Try again'}</Button>
+        <LockLink onClick={() => copyText(`Taskit ${APP_VERSION} can’t sync: ${error || 'unknown error'}`).then(() => toast('Copied', 'Paste it to your admin in a chat or email.'))}>Copy error details</LockLink>
+      </div>
+    </LockFrame>
+  );
+}
+function LockScreen({ kind, c, prof }) {
+  const ref = useRef(null);
+  useLockdown(!!kind, ref);
+  if (kind === 'update') return <UpdateLock lockRef={ref} minVersion={c.minVersion} />;
+  if (kind === 'signin' || kind === 'removed') return <SignInLock lockRef={ref} prof={prof} kind={kind} email={c.email} />;
+  if (kind === 'broken') return <SyncLock lockRef={ref} error={c.error} />;
+  return null;
+}
+// Task windows show this while the main window is locked; the fix happens there.
+function OtherWindowLock({ kind }) {
+  const ref = useRef(null);
+  useLockdown(!!kind, ref);
+  if (!kind) return null;
+  const why = { update: 'Taskit needs an update.', signin: 'You need to sign in again.', removed: 'This account isn’t on your team anymore.', broken: 'Taskit can’t sync right now.' }[kind] || '';
+  return (
+    <LockFrame lockRef={ref} icon={<I.lock className="size-6" />} title="Taskit is locked">
+      <LockText>{why} Open the main Taskit window to sort it out.</LockText>
+      <div className="mt-6 grid gap-3">
+        <Button className="h-10" variant="outline" onClick={() => { try { getCurrentWindow().close().catch(() => {}); } catch (e) {} }}>Close this window</Button>
+      </div>
+    </LockFrame>
+  );
+}
+
 function MainRoot() {
   const prof = useProfile();
   const wsp = useWorkspaces();
@@ -9879,6 +10086,10 @@ function MainRoot() {
   const [tourOpen, setTourOpen] = useState(false);
   useEffect(() => { if (welcome === 'tour' && team.on && !STANDALONE_ID) setTourOpen(true); }, [welcome, team.on]);
   const closeTour = () => { setTourOpen(false); if (welcome === 'tour') prof.updateUser({ welcome: 'done' }, true); };
+  // The lock screen (0.21.0): the main window decides, task windows follow it.
+  const isMain = WINDOW_LABEL === 'main' && !STANDALONE_ID;
+  const lock = useLock(isMain && !!prof.data.user);
+  const otherLock = useLockFromMain();
   return (
     <MeContext.Provider value={prof.data.user || null}>
       {!prof.loaded ? <div className="p-8 text-sm text-muted-foreground">Loading…</div>
@@ -9890,6 +10101,7 @@ function MainRoot() {
             teamsList={wsp.teams} rolesList={wsp.roles} onSaveTeams={wsp.saveTeams} onSaveRoles={wsp.saveRoles} onReplayTour={() => setTourOpen(true)}
             onSwitchWorkspace={(id, taskId) => { setOpenOnLoad(taskId || null); wsp.switchTo(id); }} />}
       {tourOpen && team.on && <TeamTour tour={tourFor(team, wsp.roles)} onClose={closeTour} />}
+      {isMain ? <LockScreen kind={lock.kind} c={lock.c} prof={prof} /> : prof.data.user && <OtherWindowLock kind={otherLock} />}
       <Toaster />
       <Toaster id="update" position="bottom-left" style={{ '--width': '384px' }} />
     </MeContext.Provider>

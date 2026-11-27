@@ -1,3 +1,12 @@
+Everyone stays on the same version: an outdated Taskit locks until it's updated.
+- Update lock: the team's minimum version is kept in Supabase. A Taskit older than it locks the whole window and offers one button, Update now, which downloads the update, shows progress and restarts. Raising the minimum locks open apps within a second or two. A PC that starts offline still locks, using the last minimum it saw.
+- Supabase refuses old apps too: every request now carries the app's version, and Supabase refuses task, profile and automation changes from apps older than the minimum. Apps before 0.21.0 send no version, so once a minimum is set they show "Not syncing" until they update.
+- Other locks, with only the action that fixes each: signed out (Continue with Google), removed from the team (Sign in with another account, or copy a note for your admin), and sync failing for 20 seconds while online (Try again, or copy the error details). Being offline never locks.
+- While locked: nothing behind the lock can be clicked or reached with the keyboard, task windows show "Taskit is locked" with a Close button, and quick capture doesn't open. The window can still be moved, minimized and closed.
+- The minimum is set only in Supabase's SQL Editor, never in the app.
+- Fixes: "connected to Wi-Fi but no internet" now counts as offline everywhere instead of as a sync error.
+- Supabase: run supabase/min-version-0.21.0.sql once. It adds the app_settings table and the version check, and sets no minimum, so nothing is refused until you set one. Steps are in CLOUD-SETUP.md.
+
 A tune-up: safer saves, faster long lists, and sync that double-checks.
 - Safer saves: every save is written to a spare file first and the previous copy is kept, so a crash or power cut mid-save can't empty your list. A damaged file is reported, with a choice to bring tasks back from the cloud or a backup, and nothing is overwritten while you decide. Only one copy of the app runs at a time.
 - Backups: restoring checks the whole backup before anything changes, and the cloud can no longer undo a restore. A safety backup is taken before the first sync on a PC.

@@ -218,3 +218,5 @@ td:has(.pchip:hover,.pchip:focus-visible,.pchip[data-open]) button[aria-label^="
 .wn-seek-done{animation:none}
 @keyframes wn-seek{from{transform:scaleX(0)}to{transform:scaleX(1)}}
 @media (prefers-reduced-motion:reduce){.wn-seek{animation:none}}
+/* Lock screen (0.21.0): the bottom-left update card is hidden behind the lock, which offers the update itself. */
+.app-locked [data-sonner-toaster][data-x-position="left"]{display:none}

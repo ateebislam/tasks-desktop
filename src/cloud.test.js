@@ -264,3 +264,28 @@ describe('S5: the sign-in is kept in the protected store', () => {
     delete globalThis.localStorage;
   });
 });
+
+describe('minimum app version (0.21.0)', () => {
+  const { olderThan, APP_VERSION } = cloud;
+  it('compares number by number, not as text', () => {
+    expect(olderThan('0.21.9', '0.21.10')).toBe(true);
+    expect(olderThan('0.21.10', '0.21.9')).toBe(false);
+    expect(olderThan('0.9.0', '0.21.0')).toBe(true);
+    expect(olderThan('1.0.0', '0.21.0')).toBe(false);
+  });
+  it('the same version is not older', () => {
+    expect(olderThan('0.21.0', '0.21.0')).toBe(false);
+  });
+  it('no minimum, or a broken one, never locks', () => {
+    expect(olderThan('0.20.3', null)).toBe(false);
+    expect(olderThan('0.20.3', '')).toBe(false);
+    expect(olderThan('0.20.3', '0.21')).toBe(false);
+  });
+  it('an app with an unreadable version counts as too old', () => {
+    expect(olderThan('', '0.21.0')).toBe(true);
+    expect(olderThan(undefined, '0.21.0')).toBe(true);
+  });
+  it('knows its own version from package.json', () => {
+    expect(APP_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+});

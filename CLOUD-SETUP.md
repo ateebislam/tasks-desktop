@@ -77,6 +77,17 @@ Do this once, after the step above. It keeps the database and each PC's sync fil
 A PC that was switched off for more than about 80 days compares everything again when it comes back, so it
 still learns about tasks deleted while it was away. PCs older than 0.20.3 don't do this, so update them first.
 
+## Minimum app version (0.21.0)
+Do this once, any time. It's safe while PCs are still on older versions: it sets no minimum, so nothing changes yet.
+1. **SQL Editor** → **New query**: paste `supabase/min-version-0.21.0.sql` and **Run**. You should see "Success. No rows returned".
+2. To lock every PC older than a version (only once all PCs can update to it), run:
+   `update public.app_settings set min_version = '0.21.0';`
+   Taskit 0.21.0 and later lock and ask to update; older versions just show "Not syncing" until they update.
+3. To turn the lock off again: `update public.app_settings set min_version = null;`
+4. To check the current value: `select min_version from public.app_settings;`
+
+The minimum can only be changed here, never from inside Taskit.
+
 ## Good to know
 - Your data stays on each PC too, so Tasks works offline and sends your changes when you're back online.
 - Each task syncs on its own, so working on two PCs at once is fine. If two people change the same task,
