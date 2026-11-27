@@ -1,7 +1,7 @@
 //! Tasks desktop app: local storage, documents, backups and Google sign-in.
 //!
 //! Everything is stored in the app's data folder on this computer
-//! (on Windows: %APPDATA%\app.tasks.desktop). With cloud sync on, the app also sends
+//! (on Windows: %APPDATA%\app.tasks.desktop; on a Mac: ~/Library/Application Support/app.tasks.desktop). With cloud sync on, the app also sends
 //! changes to the team's Supabase project (see src/cloud.js); it also goes online for
 //! Google sign-in and to check GitHub for new versions of itself.
 
@@ -478,6 +478,8 @@ async fn google_sign_in(app: AppHandle, client_id: String, client_secret: String
     let code = tauri::async_runtime::spawn_blocking(move || wait_for_code(listener, state))
         .await
         .map_err(err)??;
+    // Bring Tasks back to the front once Google has answered, so nobody has to find it behind the browser (0.21.1).
+    show_main(&app);
 
     let http = reqwest::Client::builder().timeout(Duration::from_secs(30)).build().map_err(err)?;
     let token: TokenResponse = http
@@ -597,10 +599,27 @@ fn idle_secs() -> u64 {
     (now.wrapping_sub(info.dwTime) / 1000) as u64
 }
 
-#[cfg(not(windows))]
+// On a Mac (0.21.1): macOS reports the time since the last input as HIDIdleTime, in nanoseconds.
+#[cfg(target_os = "macos")]
+fn idle_secs() -> u64 {
+    let out = match std::process::Command::new("/usr/sbin/ioreg").args(["-c", "IOHIDSystem", "-d", "4", "-r"]).output() {
+        Ok(o) => o,
+        Err(_) => return 0,
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.lines()
+        .find(|l| l.contains("\"HIDIdleTime\""))
+        .and_then(|l| l.rsplit('=').next())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|ns| ns / 1_000_000_000)
+        .unwrap_or(0)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 fn idle_secs() -> u64 { 0 }
 
-#[tauri::command]
+// Runs off the main thread: on a Mac it starts a small system tool, which must never pause the window.
+#[tauri::command(async)]
 fn idle_seconds() -> u64 {
     idle_secs()
 }
@@ -732,7 +751,8 @@ mod secret {
     pub fn open(data: &[u8]) -> Result<Vec<u8>, String> { run(data, false) }
 }
 
-// Other systems are only used while developing: kept as is.
+// On a Mac (0.21.1) the file is kept as is, readable only by your own Mac account (see secret_set).
+// The Keychain isn't used: without an Apple developer certificate, macOS would ask for your password after every update.
 #[cfg(not(windows))]
 mod secret {
     pub fn seal(data: &[u8]) -> Result<Vec<u8>, String> { Ok(data.to_vec()) }
@@ -763,6 +783,11 @@ fn secret_set(app: AppHandle, window: tauri::WebviewWindow, key: String, value: 
     let path = secret_path(&app, &key)?;
     let tmp = path.with_extension("bin.tmp");
     write_synced(&tmp, &secret::seal(value.as_bytes())?).map_err(err)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&tmp, fs::Permissions::from_mode(0o600)).map_err(err)?;
+    }
     fs::rename(&tmp, &path).map_err(err)
 }
 
@@ -941,6 +966,20 @@ pub fn run() {
                 });
             if let Some(icon) = app.default_window_icon() { tray = tray.icon(icon.clone()); }
             tray.build(app)?;
+            // On a small Mac screen (0.21.1) the window is made to fit, so its top row and bottom edge
+            // never sit under the menu bar or the Dock.
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                if let Ok(Some(m)) = w.current_monitor() {
+                    let sf = m.scale_factor();
+                    let (sw, sh) = (m.size().width as f64 / sf, m.size().height as f64 / sf);
+                    if sw < 1180.0 + 40.0 || sh < 820.0 + 100.0 {
+                        let size = tauri::LogicalSize::new((sw - 40.0).clamp(720.0, 1180.0), (sh - 100.0).clamp(520.0, 820.0));
+                        let _ = w.set_size(size);
+                        let _ = w.center();
+                    }
+                }
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -973,6 +1012,23 @@ pub fn run() {
             google_sign_in,
             quit_app
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Tasks");
+        .build(tauri::generate_context!())
+        .expect("error while running Tasks")
+        .run(|_app, _event| {
+            // On a Mac (0.21.1): clicking the Dock icon brings back a window that was closed to the menu bar,
+            // and Cmd+Q stops the running timers first, like Quit in the tray menu.
+            #[cfg(target_os = "macos")]
+            match _event {
+                tauri::RunEvent::Reopen { .. } => show_main(_app),
+                tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                    if _app.get_webview_window("main").is_some() {
+                        api.prevent_exit();
+                        let _ = _app.emit_to("main", "app-quit", ());
+                        let h = _app.clone();
+                        std::thread::spawn(move || { std::thread::sleep(std::time::Duration::from_secs(4)); h.exit(0); });
+                    }
+                }
+                _ => {}
+            }
+        });
 }

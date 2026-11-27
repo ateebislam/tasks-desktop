@@ -87,6 +87,8 @@ body{margin:0;background:hsl(var(--page));color:hsl(var(--foreground));font-fami
 .no-scrollbar::-webkit-scrollbar{display:none}
 @media (prefers-reduced-motion:reduce){.anim-sheet,.anim-fade,.anim-zoom,.anim-pop,.anim-ping,.anim-cloud-sync{animation:none}}
 html,body,#root{height:100%}
+/* On a Mac (0.21.1) the whole window no longer bounces when a trackpad scroll reaches the end. */
+html[data-os="mac"],html[data-os="mac"] body{overscroll-behavior:none}
 
 /* Theme switch (0.19.13): src/theme.js grows the new theme as a circle over a picture of the old one.
    The browser's default cross-fade is turned off, and colour transitions pause so the new picture is final. */

@@ -52,6 +52,8 @@ const rid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 export const DEVICE_ID = (() => { let id = ls.get('tasks-device-id'); if (!id) { id = rid(); ls.set('tasks-device-id', id); } return id; })();
 
 const TABLE = 'records', BUCKET = 'documents';
+// Casual names for your own machine in messages (0.21.1).
+const MY = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent || '') ? 'your Mac' : 'your PC';
 const META = ['rules', 'projects', 'stages', 'buckets', 'labels', 'settings', 'looseDocs'];
 const STORE_RE = /^(?:(?:data|archive)(?:-[a-z0-9_]{1,32})?|workspaces)$/;
 const ITEMS = ':items'; // companion cloud store for list items and settings fields (0.19.4)
@@ -383,7 +385,7 @@ async function pushAll() {
       changes = changes.filter(c => !h.has(c.key));
       if (!heldNoted.has(name)) {
         heldNoted.add(name);
-        notice({ kind: 'error', title: `${held.length} tasks disappeared from this PC`, detail: 'They weren’t deleted for your team. If you meant to delete them, open Cloud sync and press Sync now.' });
+        notice({ kind: 'error', title: `${held.length} tasks disappeared from ${MY}`, detail: 'They weren’t deleted for your team. If you meant to delete them, open Cloud sync and press Sync now.' });
       }
       setStatus({ held: held.length });
     } else if (heldNoted.delete(name)) setStatus({ held: 0 });
@@ -440,7 +442,7 @@ async function pushAll() {
       if (error) { dirty.add(name); throw error; }
       // A task that keeps clashing (someone editing it nonstop, or a server hiccup) backs off instead of spinning.
       conflicts.forEach(k => { clashes.set(k, (clashes.get(k) || 0) + 1); });
-      if (conflicts.some(k => clashes.get(k) > 5)) { conflicts.forEach(k => clashes.delete(k)); dirty.add(name); throw new Error('A task kept changing on another PC while sending. Trying again shortly.'); }
+      if (conflicts.some(k => clashes.get(k) > 5)) { conflicts.forEach(k => clashes.delete(k)); dirty.add(name); throw new Error('A task kept changing on another device while sending. Trying again shortly.'); }
       const found = new Set((data || []).map(r => r.key));
       // Gone from the cloud (an admin cleared it): send ours as a new row next time.
       conflicts.forEach(k => { if (!found.has(k)) delete s.seenAt[k]; });
@@ -1110,6 +1112,13 @@ export async function cloudStart() {
   listen('tasks-data', e => { const p = e.payload; if (p && p.from !== 'main' && p.from !== 'cloud') cloudNote(storeFor('data', p.ws || 'product'), p.data); }).catch(() => {});
   listen('tasks-arch', e => { const p = e.payload; if (p && p.from !== 'main' && p.from !== 'cloud') cloudNote(storeFor('archive', p.ws || 'product'), { version: 1, ...p.data }); }).catch(() => {});
   window.addEventListener('online', () => { if (uid && st.ready) { retryMs = 0; catchUp(); } });
+  // Coming back to the window after a while (a laptop waking from sleep, or Tasks reopened from the tray
+  // or menu bar) checks the cloud straight away instead of waiting for the live connection to recover (0.21.1).
+  let lastLook = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible' || !uid || !st.ready || frozen || Date.now() - lastLook < 60000) return;
+    lastLook = Date.now(); catchUp();
+  });
   if (!st.url) return;
   try {
     await makeClient();
@@ -1131,7 +1140,7 @@ export async function cloudConfigure(url, key) {
 }
 // Google sign-in (0.20): the app's own Google window hands its ID token to Supabase. The token isn't kept.
 export async function cloudSignInGoogle(idToken) {
-  if (!client) throw new Error('Cloud sync isn’t set up on this PC yet.');
+  if (!client) throw new Error('Cloud sync isn’t set up on ' + MY + ' yet.');
   if (!idToken) throw new Error('Google didn’t send a sign-in token. Try again.');
   const { data, error } = await client.auth.signInWithIdToken({ provider: 'google', token: idToken });
   if (error) {
@@ -1265,7 +1274,7 @@ export async function cloudFlush(ms = 2500) {
    exactly as the cloud has it. Nothing is sent up. */
 export const cloudCanRecover = () => !!(client && uid && wsId && st && st.ready);
 export async function cloudRecoverStore(name) {
-  if (!cloudCanRecover()) throw new Error('Cloud sync isn’t connected on this PC.');
+  if (!cloudCanRecover()) throw new Error('Cloud sync isn’t connected on ' + MY + '.');
   if (!STORE_RE.test(name)) throw new Error('Unknown store');
   const rows = [];
   for (const store of [name, name + ITEMS]) {

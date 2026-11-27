@@ -19,6 +19,11 @@ import { DEVICE_ID, cloudNote, cloudLive, cloudStart, onCloudStatus, onCloudNoti
   cloudSignInGoogle, cloudMe, onCloudTeam, cloudPause, cloudResume, cloudForgetSyncState, cloudCanRecover, cloudRecoverStore, cloudReadStore, cloudEditStore, cloudInvite, cloudUpdateInvite, cloudCancelInvite, cloudUpdateMember, cloudRemoveMember, cloudClaim, cloudSetLogger, cloudTeam as cloudTeamNow, cloudStatus, cloudRetry, APP_VERSION } from './cloud.js';
 import { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET } from './cloud-config.js';
 const cn = (...a) => a.filter(Boolean).join(' ');
+// On a Mac (0.21.1): shortcuts use Cmd where Windows uses Ctrl, so the hints say ⌘ there.
+const IS_MAC = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform || navigator.userAgent || '');
+const kb = s => (IS_MAC ? String(s).replace(/Ctrl/g, '⌘') : s);
+// The app talks about your own machine casually (0.21.1): "saved on your Mac" or "saved on your PC".
+const MY = IS_MAC ? 'your Mac' : 'your PC', MY_C = IS_MAC ? 'Your Mac' : 'Your PC';
 
 /* =========================================================
    Icons (lucide)
@@ -1460,8 +1465,8 @@ function flushNotes() {
   groups.forEach(g => {
     const n = g.tasks.length, names = nameList(g.tasks.map(t => t.title));
     if (g.kind === 'conflict') {
-      if (n === 1) toast('Changed on two PCs at once', `${names} was also edited on your other PC. ${g.tasks[0].kept === 'other' ? 'Its newer edit was kept.' : 'Your newer edit here was kept.'}`);
-      else toast(`${n} tasks were changed on two PCs at once`, `The newer edit was kept for each: ${names}.`);
+      if (n === 1) toast('Changed on two devices at once', `${names} was also edited on your other device. ${g.tasks[0].kept === 'other' ? 'Its newer edit was kept.' : 'Your newer edit here was kept.'}`);
+      else toast(`${n} tasks were changed on two devices at once`, `The newer edit was kept for each: ${names}.`);
       return;
     }
     const verbs = NOTE_VERBS[g.kind] || ['needs a look', 'need a look'];
@@ -1519,7 +1524,7 @@ function useUpdater() {
 }
 
 /* Light, dark, or follow Windows. Remembered on this computer. */
-const THEMES = [{ id: 'light', label: 'Light' }, { id: 'dark', label: 'Dark' }, { id: 'system', label: 'Match Windows' }];
+const THEMES = [{ id: 'light', label: 'Light' }, { id: 'dark', label: 'Dark' }, { id: 'system', label: IS_MAC ? 'Match Mac' : 'Match Windows' }];
 function useTheme() {
   const [mode, setMode] = useState(readTheme);
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches);
@@ -1593,6 +1598,7 @@ function useHeadSlot() {
 /* Preferences for this computer. */
 const PREF_DEFAULTS = { keepInTray: true, captureKey: 'Ctrl+Shift+Space', idleMinutes: 20, oneAtATime: false };
 const readPrefs = () => { try { return { ...PREF_DEFAULTS, ...(JSON.parse(localStorage.getItem('tasks-prefs')) || {}) }; } catch (e) { return { ...PREF_DEFAULTS }; } };
+// On a Mac (0.21.1) "Ctrl" in a shortcut means Cmd (CommandOrControl), and the Control key itself is saved as "Control".
 const accel = k => k.split('+').map(p => p === 'Ctrl' ? 'CommandOrControl' : p === 'Win' ? 'Super' : p).join('+');
 
 // Quick capture: a small window that floats over whatever you're doing.
@@ -1848,10 +1854,13 @@ function shortcutFromEvent(e) {
   else if (c === 'Space') key = 'Space';
   else if (KEY_NAMES[c]) key = c;
   if (!key) return null;
-  const mods = [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Win'].filter(Boolean);
-  return { combo: [...mods, key].join('+'), ok: /^F\d+$/.test(key) || e.ctrlKey || e.altKey };
+  const mods = IS_MAC
+    ? [e.metaKey && 'Ctrl', e.ctrlKey && 'Control', e.altKey && 'Alt', e.shiftKey && 'Shift'].filter(Boolean)
+    : [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Win'].filter(Boolean);
+  return { combo: [...mods, key].join('+'), ok: /^F\d+$/.test(key) || e.ctrlKey || e.altKey || (IS_MAC && e.metaKey) };
 }
-const showShortcut = k => (k || '').split('+').map(p => KEY_NAMES[p] || p).join(' + ');
+const MAC_KEYS = { Ctrl: '⌘', Control: '⌃', Alt: '⌥', Shift: '⇧' };
+const showShortcut = k => (k || '').split('+').map(p => (IS_MAC && MAC_KEYS[p]) || KEY_NAMES[p] || p).join(' + ');
 
 function ShortcutRecorder({ value, onChange, error }) {
   const [rec, setRec] = useState(false);
@@ -1867,7 +1876,7 @@ function ShortcutRecorder({ value, onChange, error }) {
             if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
             const r = shortcutFromEvent(e);
             if (!r) { setMsg('That key can’t be used. Try a letter, a number, Space or F1–F12.'); return; }
-            if (!r.ok) { setMsg('Include Ctrl or Alt, so the shortcut doesn’t get in the way of typing in other apps. Function keys work on their own.'); return; }
+            if (!r.ok) { setMsg(IS_MAC ? 'Include ⌘, ⌃ or ⌥, so the shortcut doesn’t get in the way of typing in other apps. Function keys work on their own.' : 'Include Ctrl or Alt, so the shortcut doesn’t get in the way of typing in other apps. Function keys work on their own.'); return; }
             setRec(false); setMsg(''); onChange(r.combo);
           }}
           className={cn(inputCls, 'h-9 flex-1 items-center justify-between text-left', rec && 'ring-1 ring-ring')}>
@@ -1945,7 +1954,7 @@ function ShortcutCell({ value, onChange, error }) {
             if (['Control', 'Alt', 'Shift', 'Meta'].includes(e.key)) return;
             const r = shortcutFromEvent(e);
             if (!r) { setMsg('Try a letter, a number, Space or F1–F12.'); return; }
-            if (!r.ok) { setMsg('Include Ctrl or Alt. Function keys work alone.'); return; }
+            if (!r.ok) { setMsg(IS_MAC ? 'Include ⌘, ⌃ or ⌥. Function keys work alone.' : 'Include Ctrl or Alt. Function keys work alone.'); return; }
             setRec(false); setMsg(''); onChange(r.combo);
           }}
           className={cn('flex h-7 items-center gap-1 rounded-md border border-transparent px-1.5 transition-colors hover:border-input focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ui-quiet', rec && 'border ring-1 ring-ring ui-quiet')}>
@@ -2022,7 +2031,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     </SRow>
   </>;
   else if (page === 'notifications') body = <>
-    {head('Notify me when a task', <InfoTip label="About notifications">Desktop notifications for {wsName}. Several at once arrive as one, like “12 tasks are overdue”.{c.access ? ' These are just yours, on this PC, and only cover your tasks and your teams’ tasks.' : ''}</InfoTip>)}
+    {head('Notify me when a task', <InfoTip label="About notifications">Desktop notifications for {wsName}. Several at once arrive as one, like “12 tasks are overdue”.{c.access ? ' These are just yours, on ' + MY + ', and only cover your tasks and your teams’ tasks.' : ''}</InfoTip>)}
     {shownTriggers.map(id => {
       const on = notifyOn(id), r = notifyRules.find(x => x.trigger === id);
       return (
@@ -2039,7 +2048,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     <SRow label="Quick capture, anywhere" info="Works in any app while Tasks is running. Click the keys to change them.">
       <ShortcutCell value={prefs.captureKey} onChange={v => onPrefs({ captureKey: v })} error={shortcutError} />
     </SRow>
-    {SHORTCUTS.filter(([what]) => !/anywhere in Windows|Show this list/.test(what)).map(([what, key]) => (
+    {SHORTCUTS.filter(([what]) => !/anywhere (in Windows|on your Mac)|Show this list/.test(what)).map(([what, key]) => (
       <SRow key={what} label={what}><span className="flex shrink-0 items-center gap-1">{key.split(' / ').map((k, i) => <React.Fragment key={k}>{i > 0 && <span className="text-xs text-muted-foreground">or</span>}<Kbd className="h-6 px-2 text-[11px]">{k.replace(/ \+ /g, ' ')}</Kbd></React.Fragment>)}</span></SRow>
     ))}
   </>;
@@ -2054,7 +2063,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     <SRow label={plural(labels.platform)}>{link(`${counts.platforms} ${plural(labels.platform).toLowerCase()}`, onEditPlatforms, `Edit ${plural(labels.platform).toLowerCase()}`)}</SRow>
   </>;
   else if (page === 'folders') body = <>
-    {head(<>Watch folders <span className="text-[13px] font-normal text-muted-foreground">for {wsName}</span></>, <InfoTip label="About watch folders">New PDF, Word, HTML and other supported files saved in these folders appear in the Documents Inbox. Your files stay where they are. Each PC keeps its own list.</InfoTip>)}
+    {head(<>Watch folders <span className="text-[13px] font-normal text-muted-foreground">for {wsName}</span></>, <InfoTip label="About watch folders">New PDF, Word, HTML and other supported files saved in these folders appear in the Documents Inbox. Your files stay where they are. Each device keeps its own list.</InfoTip>)}
     <div className="grid gap-0.5">
       {watch.map(w => {
         const st = status[w.path] || {};
@@ -2076,7 +2085,7 @@ function SettingsDialog({ open, page: startPage = 'general', onClose, prefs, onP
     </div>
   </>;
   else if (page === 'cloud') body = <>
-    {head('Cloud sync', <InfoTip label="About cloud sync">Keeps every PC you sign in on in step, within a second or two. Your data stays on this PC too, so Tasks works offline.</InfoTip>)}
+    {head('Cloud sync', <InfoTip label="About cloud sync">Keeps all your devices in step, within a second or two. Your data stays on {MY} too, so Tasks works offline.</InfoTip>)}
     <SRow label={<span className="flex items-center gap-2">{tone.dot && <span className={cn('size-2 shrink-0 rounded-full', tone.dot)} />}{tone.text}{c.phase === 'synced' && c.lastSync ? ` · ${ago(c.lastSync)}` : ''}{c.email && signedIn ? <span className="truncate text-xs text-muted-foreground">{c.email}</span> : null}</span>}>
       {signedIn ? <>
         <button type="button" className={quietBtn} onClick={cloudSyncNow}><I.refresh className="size-3.5" />Sync now</button>
@@ -2147,7 +2156,7 @@ function PausedTimersDialog({ note, tasks, oneAtATime, onResume, onClose }) {
   return (
     <Dialog open onClose={onClose} className="max-w-md"
       title={many ? `Timers on ${list.length} tasks were paused` : 'A timer was paused'}
-      description={`${note.crash ? 'Tasks didn’t close normally (the PC may have shut down)' : 'Tasks was closed'}, so ${many ? 'these timers were' : 'this timer was'} stopped ${when}. Time up to then is saved. Do you want to resume?`}
+      description={`${note.crash ? 'Tasks didn’t close normally (' + MY + ' may have shut down)' : 'Tasks was closed'}, so ${many ? 'these timers were' : 'this timer was'} stopped ${when}. Time up to then is saved. Do you want to resume?`}
       footer={<>
         <Button variant="outline" onClick={onClose}>{resumed.length ? 'Done' : 'Keep paused'}</Button>
         {left.length > 0 && !(oneAtATime && left.length > 1) && <Button onClick={() => resume(left.map(t => t.id))}><I.play className="size-3.5" />{left.length > 1 ? `Resume all ${left.length}` : 'Resume'}</Button>}
@@ -2582,7 +2591,7 @@ function AddDocsDialog({ open, files, setFiles, tasks, projects, busy, onClose, 
   const n = files.length;
   return (
     <Dialog open={open} onClose={onClose} title="Add documents"
-      description="Add files to Documents, and link them to a task if you like. You can drag files straight from WhatsApp or File Explorer onto this window."
+      description={`Add files to Documents, and link them to a task if you like. You can drag files straight from WhatsApp or ${IS_MAC ? 'Finder' : 'File Explorer'} onto this window.`}
       footer={<>
         <Button variant="outline" onClick={onClose}>Cancel</Button>
         <Button disabled={!n || busy} onClick={() => onSubmit(files, { target, project, versions: Object.fromEntries(files.map((f, i) => { const m = findVersionTarget(f.name, library); return [i, m && asVersion[i] !== false ? m.id : null]; })) })}>{busy ? 'Uploading…' : n ? `Add ${n} ${n === 1 ? 'file' : 'files'}` : 'Add files'}</Button>
@@ -2932,7 +2941,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
         <div><span className="truncate font-mono text-xs text-muted-foreground" title={fmtDay(d.addedAt)}>{relTime(d.addedAt)}</span></div>
         <div className="dg-acts">
           {d.inbox ? inboxActs(d, target) : <>
-            <button type="button" title="Open in its Windows app" aria-label={`Open ${d.name} in its Windows app`} onClick={e => { e.stopPropagation(); openExternal(d); }} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.external className="size-3.5" /></button>
+            <button type="button" title={IS_MAC ? 'Open in its Mac app' : 'Open in its Windows app'} aria-label={`Open ${d.name} in its ${IS_MAC ? 'Mac' : 'Windows'} app`} onClick={e => { e.stopPropagation(); openExternal(d); }} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.external className="size-3.5" /></button>
             <button type="button" title="Save a copy" aria-label={`Save a copy of ${d.name}`} onClick={e => { e.stopPropagation(); onDownload(d); }} className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.download className="size-3.5" /></button>
             <button type="button" title="Delete document" aria-label={`Delete ${d.name}`} onClick={e => { e.stopPropagation(); onDelete(d, false); }} className={cn('flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-destructive/10', danger)}><I.trash className="size-3.5" /></button>
           </>}
@@ -3109,8 +3118,8 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
             )}
             {!details && sel.links.length > 0 && <span className="hidden shrink-0 items-center gap-1 font-mono text-[11px] text-muted-foreground xl:inline-flex" title={sel.links.map(l => l.task.title || 'Untitled').join(', ')}><I.paperclip className="size-3" />{sel.links.length}</span>}
             <div className="ml-auto flex shrink-0 items-center gap-0.5">
-              {ib(<I.search className="size-4" />, 'Find in document (Ctrl+F)', openFind)}
-              {ib(<I.external className="size-4" />, 'Open in its Windows app', () => openExternal(shownFile))}
+              {ib(<I.search className="size-4" />, kb('Find in document (Ctrl+F)'), openFind)}
+              {ib(<I.external className="size-4" />, IS_MAC ? 'Open in its Mac app' : 'Open in its Windows app', () => openExternal(shownFile))}
               {ib(<I.download className="size-4" />, 'Save a copy', () => onDownload(shownFile))}
               {ib(<I.paperclip className="size-4" />, 'Link to a task', () => onAttach(sel))}
               <DropdownMenu trigger={p => <button {...p} type="button" aria-label={`More for ${sel.name}`} className="flex size-8 items-center justify-center rounded-md text-muted-foreground hover:text-foreground ui-quiet"><I.more className="size-4" /></button>}
@@ -3193,7 +3202,7 @@ function DocumentsView({ onRefresh, hasWatch, docs, tasks, onAdd, onDownload, on
           {docs.length === 0 ? (
             <Card className={cn('mt-3 flex flex-1 items-center justify-center', dragOver && 'ring-2 ring-ring')}>
               <Empty icon={<I.file />} title="No documents yet"
-                description="Drag files from WhatsApp or File Explorer onto this window, or add a watch folder in Settings so new files arrive here by themselves.">
+                description={`Drag files from WhatsApp or ${IS_MAC ? 'Finder' : 'File Explorer'} onto this window, or add a watch folder in Settings so new files arrive here by themselves.`}>
                 <Button variant="outline" size="sm" onClick={() => onAdd([])}><I.upload />Add documents</Button>
               </Empty>
             </Card>
@@ -4087,7 +4096,7 @@ function TimeSummary({ tasks, onHide }) {
   );
 }
 
-const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Quick add (in the app)', '`'], ['Quick capture (anywhere in Windows)', 'Ctrl + Shift + Space'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']];
+const SHORTCUTS = [['Command palette', 'Ctrl + K'], ['Quick add (in the app)', '`'], [IS_MAC ? 'Quick capture (anywhere on your Mac)' : 'Quick capture (anywhere in Windows)', 'Ctrl + Shift + Space'], ['Undo / redo', 'Ctrl + Z / Ctrl + Shift + Z'], ['New task, bucket or document (on that page)', 'N'], ['Search tasks', '/'], ['Switch light and dark mode', 'Shift + D'], ['Clear search or close a panel', 'Esc'], ['Show this list', '?']].map(([what, key]) => [what, kb(key)]);
 function ShortcutsDialog({ open, onClose }) {
   return (
     <Dialog open={open} onClose={onClose} title="Keyboard shortcuts">
@@ -4796,7 +4805,7 @@ function ScopeMenu({ scope, onScope, teams, myTeams }) {
               <span className="min-w-0 flex-1 truncate">{t.name}</span>{check(tid === t.id)}
             </button>
           ))}
-          <div className="px-2 pb-1.5 pt-1 text-xs text-muted-foreground">Ctrl + 1 and Ctrl + 2 switch for you</div>
+          <div className="px-2 pb-1.5 pt-1 text-xs text-muted-foreground">{kb('Ctrl + 1 and Ctrl + 2 switch for you')}</div>
         </div>
       </Floating>
     </>
@@ -5605,7 +5614,7 @@ function CommandPalette({ open, onClose, items }) {
     <>
       <div className="fixed inset-0 z-[85] bg-black/40 anim-fade" onClick={onClose} />
       <div role="dialog" aria-modal="true" aria-label="Command palette"
-        className="fixed left-1/2 top-[14vh] z-[86] w-[min(640px,calc(100%-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border bg-popover text-popover-foreground anim-pop ui-float">
+        className="fixed inset-x-0 mx-auto top-[14vh] z-[86] w-[min(640px,calc(100%-2rem))] overflow-hidden rounded-xl border bg-popover text-popover-foreground anim-pop ui-float">
         <div className="flex items-center gap-2 border-b px-4">
           <I.search className="text-muted-foreground" />
           <input autoFocus value={q} onChange={e => { setQ(e.target.value); setHi(0); }} onKeyDown={onKey} placeholder="Type a command, or search tasks, buckets and documents…" aria-label="Command"
@@ -6190,7 +6199,7 @@ function WeeklyReportView({ ws, wsName, tasks, buckets, stages, labels, onOpenTa
         )}
       </Card>
       <AlertDialog open={askReset} title="Reset this week’s report?" description="Your summary, notes, changed lines, added lines and removed lines for this week are cleared, and the report is rebuilt from your tasks." confirmLabel="Reset" onConfirm={doReset} onCancel={() => setAskReset(false)} />
-      <p className="mt-2 text-xs text-muted-foreground">Built from your tasks and timers. Click any line to change it, hover a line to add a note or remove it. Your edits are kept for each week on this PC; Reset rebuilds the report.</p>
+      <p className="mt-2 text-xs text-muted-foreground">Built from your tasks and timers. Click any line to change it, hover a line to add a note or remove it. Your edits are kept for each week on {MY}; Reset rebuilds the report.</p>
     </div>
   );
 }
@@ -7622,7 +7631,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     const key = accel(prefs.captureKey);
     setShortcutError('');
     registerShortcut(key, ev => { if (!ev || ev.state === 'Pressed') openCaptureWindow(); })
-      .catch(() => { setShortcutError(`${showShortcut(prefs.captureKey)} is already used by Windows or another app. Choose another.`); toast.error('Couldn’t set the quick capture shortcut', `${showShortcut(prefs.captureKey)} is already in use.`); });
+      .catch(() => { setShortcutError(`${showShortcut(prefs.captureKey)} is already used by ${IS_MAC ? 'macOS' : 'Windows'} or another app. Choose another.`); toast.error('Couldn’t set the quick capture shortcut', `${showShortcut(prefs.captureKey)} is already in use.`); });
     return () => { unregisterShortcut(key).catch(() => {}); };
   }, [prefs.captureKey]);
   const captureRef = useRef(null);
@@ -8070,8 +8079,8 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
     { id: 'a-status', group: 'Actions', label: 'Edit statuses', icon: <I.sliders />, run: () => setStatusesOpen(true) },
     { id: 'a-plat', group: 'Actions', label: `Manage ${plural(labels.platform).toLowerCase()}`, icon: <I.folder />, run: () => setPlatformsOpen(true) },
     { id: 'a-theme', group: 'Actions', label: 'Switch light and dark mode', hint: 'Shift+D', icon: <I.moon />, run: () => toggleTheme() },
-    { id: 'a-undo', group: 'Actions', label: 'Undo', hint: 'Ctrl+Z', icon: <I.reset />, run: doUndo },
-    { id: 'a-redo', group: 'Actions', label: 'Redo', hint: 'Ctrl+Shift+Z', icon: <I.reset />, run: doRedo },
+    { id: 'a-undo', group: 'Actions', label: 'Undo', hint: kb('Ctrl+Z'), icon: <I.reset />, run: doUndo },
+    { id: 'a-redo', group: 'Actions', label: 'Redo', hint: kb('Ctrl+Shift+Z'), icon: <I.reset />, run: doRedo },
     { id: 'a-backup', group: 'Actions', label: 'Back up data…', icon: <I.download />, run: backup },
     { id: 'a-keys', group: 'Actions', label: 'Keyboard shortcuts', hint: '?', icon: <I.keyboard />, run: () => setSettingsOpen('shortcuts') },
     { id: 'a-settings', group: 'Actions', label: 'Settings', icon: <I.sliders />, run: () => setSettingsOpen(true) },
@@ -8695,7 +8704,7 @@ function App({ prof, standaloneId, ws = 'product', workspaces = [], onSwitchWork
         confirmLabel={fileConfirm && !fileConfirm.taskId ? 'Delete document' : 'Remove document'} onConfirm={doRemoveFile} onCancel={() => setFileConfirm(null)} />
       <CloudDialog open={cloudOpen} onClose={() => setCloudOpen(false)} prof={prof} />
       <AlertDialog open={!!restoreSrc} title="Restore from this backup?"
-        description={'Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first.' + (cloudStatus().email ? ' Your team’s data in the cloud isn’t replaced: afterwards you choose whether this PC uses the cloud’s data or combines both.' : '')}
+        description={'Everything currently in the app (tasks, documents, automations and profile) will be replaced with the contents of the backup. Consider backing up first.' + (cloudStatus().email ? ' Your team’s data in the cloud isn’t replaced: afterwards you choose whether ' + MY + ' uses the cloud’s data or combines both.' : '')}
         confirmLabel="Replace and restore" onConfirm={doRestore} onCancel={() => setRestoreSrc(null)} />
       {dragOver && (
         <div className="pointer-events-none fixed inset-3 z-[95] flex items-center justify-center rounded-xl border-2 border-dashed border-primary bg-background/70 anim-fade">
@@ -8868,7 +8877,7 @@ function Welcome({ prof, team, rolesList, teamsList, onDone }) {
         <dl className="mt-5 grid grid-cols-[6rem_1fr] gap-x-3 gap-y-2 text-sm">
           {row('Role', roleName(team.me && team.me.role, rolesList) || 'Not set yet')}
           {row('Teams', teamNames((team.me && team.me.teams) || [], teamsList).join(', ') || 'Not set yet')}
-          {row('Time zone', `${myZone() || 'Unknown'} (from this PC)`)}
+          {row('Time zone', `${myZone() || 'Unknown'} (from ${MY})`)}
         </dl>
         <p className="mt-4 text-xs text-muted-foreground">{owner && team.me && owner.id === team.me.id ? 'You set these up in Settings › Members.' : `${ownerName} set up your role and teams when inviting you. Something off? Just ping ${ownerName}.`}</p>
         <div className="mt-6 flex justify-end"><Button onClick={done}>All good, let’s go</Button></div>
@@ -8880,9 +8889,9 @@ function Welcome({ prof, team, rolesList, teamsList, onDone }) {
 // A short tour for your team (0.20), three steps, skippable, replayable from the menu.
 const TOURS = {
   everyone: { name: 'Quick', steps: [
-    ['These are your tasks', 'Tasks for me shows your teams’ tasks, plus anything assigned to you or made by you. Want the full picture? Pick Everyone from the title, or press Ctrl + 2.'],
+    ['These are your tasks', 'Tasks for me shows your teams’ tasks, plus anything assigned to you or made by you. Want the full picture? Pick Everyone from the title, or press ' + kb('Ctrl + 2.')],
     ['Tag tasks with teams', 'Open a task and add teams under Teams. Everyone on those teams sees it under For me right away.'],
-    ['It all syncs on its own', 'Changes pop up on everyone’s PC within a second or two. If two people edit the same task at once, both changes are kept.'],
+    ['It all syncs on its own', 'Changes pop up on everyone’s screen within a second or two. If two people edit the same task at once, both changes are kept.'],
   ] },
   design: { name: 'Designer', steps: [
     ['Design requests come to you', 'Whenever marketing, web, mobile or backend need something designed, they tag the task with Design and it shows up in Tasks for me, right next to yours. Want the full picture? Switch to Everyone.'],
@@ -8905,7 +8914,7 @@ const TOURS = {
     ['Pings are just for you', 'Pick what notifies you in Settings › Notifications. It only covers your tasks and your teams’ tasks.'],
   ] },
   lead: { name: 'Team lead', steps: [
-    ['See it all with Everyone', 'Ctrl + 2 shows every task across all teams, and Ctrl + 1 brings you back to yours.'],
+    ['See it all with Everyone', kb('Ctrl + 2 shows every task across all teams, and Ctrl + 1 brings you back to yours.')],
     ['Zoom in on one team', 'Open the title menu and pick a team to see just its tasks.'],
     ['Pings are just for you', 'Pick what notifies you in Settings › Notifications. It only covers your tasks and your teams’ tasks.'],
   ] },
@@ -9061,7 +9070,7 @@ function CloudNote({ onOpen }) {
   const tone = CLOUD_TONE[c.phase] || CLOUD_TONE.loading;
   let text = tone.text, Ico = I.cloud, color = 'text-muted-foreground';
   if (c.phase === 'synced') { Ico = I.cloudCheck; text = `Saved to cloud${c.lastSync ? ` · ${ago(c.lastSync)}` : ''}${waiting ? ` · ${waiting}` : ''}`; }
-  else if (c.phase === 'offline') { Ico = I.cloudOff; text = `Offline · ${waiting || 'saved on this PC'}`; color = 'text-amber-600 dark:text-amber-400'; }
+  else if (c.phase === 'offline') { Ico = I.cloudOff; text = `Offline · ${waiting || 'saved on ' + MY}`; color = 'text-amber-600 dark:text-amber-400'; }
   else if (c.phase === 'error') { Ico = I.cloudOff; text = 'Not syncing · Fix'; color = 'text-destructive'; }
   else if (c.phase === 'choose') { text = 'Cloud sync needs your choice'; color = 'text-amber-600 dark:text-amber-400'; }
   else if (c.phase === 'signin') text = 'Signed out of cloud sync';
@@ -9089,7 +9098,7 @@ function CloudDialog({ open, onClose, prof }) {
   const [withEmail, setWithEmail] = useState(false);
   const google = () => run(async () => {
     const g = googleClient(prof);
-    if (!g.clientId) throw new Error('Google sign-in isn’t set up on this PC yet. Sign in with email instead.');
+    if (!g.clientId) throw new Error('Google sign-in isn’t set up on ' + MY + ' yet. Sign in with email instead.');
     const { id_token } = await invoke('google_sign_in', { clientId: g.clientId, clientSecret: g.clientSecret });
     await cloudSignInGoogle(id_token);
   });
@@ -9106,7 +9115,7 @@ function CloudDialog({ open, onClose, prof }) {
   if (phase === 'off') {
     body = (
       <form id="cloud-setup" className="grid gap-4" onSubmit={e => { e.preventDefault(); run(async () => { await cloudConfigure(url, key); setEditProject(false); }); }}>
-        <p className="text-sm text-muted-foreground">Keep your tasks and documents in your own free Supabase project, so every PC you sign in on has the same data and changes show up on the others within seconds. Your data stays on this PC too, so Tasks keeps working offline.</p>
+        <p className="text-sm text-muted-foreground">Keep your tasks and documents in your own free Supabase project, so all your devices have the same data and changes show up on the others within seconds. Your data stays on {MY} too, so Tasks keeps working offline.</p>
         <Field label="Project URL" htmlFor="cl-url" hint="Supabase → Project Settings → Data API."><Input id="cl-url" value={url} onChange={e => setUrl(e.target.value)} placeholder="https://abcdefgh.supabase.co" autoFocus spellCheck={false} /></Field>
         <Field label="Publishable key" htmlFor="cl-key" hint="Supabase → Project Settings → API Keys. Use the publishable (anon) key, never the secret one."><Input id="cl-key" value={key} onChange={e => setKey(e.target.value)} placeholder="sb_publishable_… or eyJ…" spellCheck={false} /></Field>
         <p className="text-xs text-muted-foreground">First time? CLOUD-SETUP.md has the five steps to create the project (about 10 minutes).</p>
@@ -9116,12 +9125,12 @@ function CloudDialog({ open, onClose, prof }) {
   } else if (phase === 'notinvited' || phase === 'removed') {
     body = <div className="grid gap-3 text-sm">
       <p className="font-medium">{phase === 'removed' ? 'You’re no longer on this team' : 'Hmm, we don’t know this account yet'}</p>
-      <p className="text-muted-foreground">{phase === 'removed' ? 'An admin took you off the team, so this PC stopped syncing. Your tasks are still here on this PC.' : `${c.email || 'That Google account'} isn’t on your team’s invite list. Try your work account, or ask your admin to add this one.`}</p>
+      <p className="text-muted-foreground">{phase === 'removed' ? 'An admin took you off the team, so ' + MY + ' stopped syncing. Your tasks are still here on ' + MY + '.' : `${c.email || 'That Google account'} isn’t on your team’s invite list. Try your work account, or ask your admin to add this one.`}</p>
     </div>;
     footer = <><Button variant="outline" onClick={onClose}>Close</Button><Button onClick={google} disabled={busy}>{busy ? 'Waiting for Google…' : 'Try another Google account'}</Button></>;
   } else if (phase === 'signin' && !withEmail) {
     body = <div className="grid gap-3">
-      <p className="text-sm text-muted-foreground">Sign in with the Google account your team invited, and your tasks and documents sync across every PC and teammate.</p>
+      <p className="text-sm text-muted-foreground">Sign in with the Google account your team invited, and your tasks and documents sync across all your devices and teammates.</p>
       <Button className="h-10 gap-2.5" onClick={google} disabled={busy}>{!busy && <GoogleMark />}{busy ? 'Waiting for Google in your browser…' : 'Continue with Google'}</Button>
       <div className="flex justify-between gap-3">
         <button type="button" onClick={() => setWithEmail(true)} className="text-xs text-muted-foreground underline underline-offset-4 hover:text-foreground">Sign in with email and password</button>
@@ -9142,19 +9151,19 @@ function CloudDialog({ open, onClose, prof }) {
     const opt = (mode, title, text, rec) => (
       <button type="button" disabled={busy} onClick={() => run(() => cloudFirstSync(mode))}
         className="grid gap-1 rounded-lg border p-4 text-left transition-colors hover:border-foreground/30 hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ui-inset">
-        <span className="flex items-center gap-2 text-sm font-medium">{title}{rec && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">Recommended for a second PC</span>}</span>
+        <span className="flex items-center gap-2 text-sm font-medium">{title}{rec && <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">Recommended for a second device</span>}</span>
         <span className="text-sm text-muted-foreground">{text}</span>
       </button>
     );
     body = (
       <div className="grid gap-3">
-        <p className="text-sm text-muted-foreground">Your cloud already has <b className="font-medium text-foreground">{c.remoteCount} tasks</b>, and this PC has <b className="font-medium text-foreground">{c.localCount}</b> of its own. What should this PC do? A backup of this PC’s data is saved in the data folder first.</p>
-        {opt('replace', 'Use the cloud’s data', 'This PC shows exactly what’s in the cloud. Tasks that only exist on this PC are removed (they stay in the backup).', true)}
+        <p className="text-sm text-muted-foreground">Your cloud already has <b className="font-medium text-foreground">{c.remoteCount} tasks</b>, and {MY} has <b className="font-medium text-foreground">{c.localCount}</b> of its own. What should {MY} do? A backup of {MY}’s data is saved in the data folder first.</p>
+        {opt('replace', 'Use the cloud’s data', MY_C + ' shows exactly what’s in the cloud. Tasks that only exist on ' + MY + ' are removed (they stay in the backup).', true)}
         {opt('combine', 'Combine both', 'Keep everything from both. Where the same task differs, the newer edit wins.')}
       </div>
     );
   } else if (phase === 'checking' || phase === 'first' || phase === 'loading' || (phase === 'connecting' && !c.lastSync)) {
-    body = <div className="flex items-center gap-3 py-2 text-sm text-muted-foreground"><span className={cn('size-2 rounded-full', tone.dot)} />{phase === 'first' ? (c.mode === 'upload' ? 'Uploading this PC’s tasks and documents…' : c.mode === 'replace' ? 'Copying your cloud data to this PC…' : 'Combining this PC with your cloud…') : 'Connecting to your cloud…'}</div>;
+    body = <div className="flex items-center gap-3 py-2 text-sm text-muted-foreground"><span className={cn('size-2 rounded-full', tone.dot)} />{phase === 'first' ? (c.mode === 'upload' ? 'Uploading ' + MY + '’s tasks and documents…' : c.mode === 'replace' ? 'Copying your cloud data to ' + MY + '…' : 'Combining ' + MY + ' with your cloud…') : 'Connecting to your cloud…'}</div>;
   } else {
     const row = (k, v) => <div className="flex items-start justify-between gap-4 py-2.5 text-sm"><span className="text-muted-foreground">{k}</span><span className="min-w-0 text-right">{v}</span></div>;
     body = (
@@ -9165,9 +9174,9 @@ function CloudDialog({ open, onClose, prof }) {
           {c.pending > 0 && row('Waiting to send', `${c.pending} ${c.pending === 1 ? 'change' : 'changes'}`)}
           {row('Documents in the cloud', String(c.docs || 0))}
         </div>
-        {c.phase === 'offline' && <p className="text-sm text-muted-foreground">You’re offline. Your changes are saved on this PC and sent as soon as you’re back online.</p>}
+        {c.phase === 'offline' && <p className="text-sm text-muted-foreground">You’re offline. Your changes are saved on {MY} and sent as soon as you’re back online.</p>}
         {c.phase === 'error' && <p className="text-sm text-destructive break-words">{c.error}</p>}
-        <p className="text-xs text-muted-foreground">{c.access ? 'Everyone on the team sees changes within a second or two. If two people change the same task at once, both changes are kept; if they change the same field, the newer one wins. Your timer is yours alone, and belongs to the PC that started it.' : 'Sign in with the same account on your other PCs. Changes show up there within a second or two. If the same task is changed on two PCs at once, the newer edit is kept and you’ll see a notice. A timer belongs to the PC that started it, so closing one PC never stops a timer running on another.'}</p>
+        <p className="text-xs text-muted-foreground">{c.access ? 'Everyone on the team sees changes within a second or two. If two people change the same task at once, both changes are kept; if they change the same field, the newer one wins. Your timer is yours alone, and belongs to the device that started it.' : 'Sign in with the same account on your other devices. Changes show up there within a second or two. If the same task is changed on two devices at once, the newer edit is kept and you’ll see a notice. A timer belongs to the device that started it, so closing one device never stops a timer running on another.'}</p>
       </div>
     );
     footer = <>
@@ -9368,9 +9377,9 @@ function ProfilePage({ prof, workspaces, ws, onSwitchWorkspace, onManageWorkspac
     <SRow label="Status"><StatusPicker u={u} onChange={set} /></SRow>
     <SRow label="Display name" info="Your name in the Assignee list. Tasks already assigned to your old name keep it."><ProfileInput value={u.name} onSave={v => set({ name: v })} label="Display name" required /></SRow>
     <SRow label="Role"><ProfileInput value={u.role} onSave={v => set({ role: v })} label="Role" placeholder="e.g. Designer" /></SRow>
-    <SRow label="Phone" info="Saved with your profile and synced to your other PCs."><ProfileInput value={u.phone} onSave={v => set({ phone: v })} label="Phone number" type="tel" placeholder="+92 …" /></SRow>
-    <SRow label="Time zone" info="Taken from this PC’s clock, so others can see your local time."><span className="w-[230px] shrink-0 truncate px-2.5 text-[13px] text-muted-foreground">{zoneCity(myZone() || u.timeZone)} · {zoneTime(myZone() || u.timeZone)}</span></SRow>
-    {cloud.profileMissing && <p className="mt-1 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">Your profile is saved on this PC. To sync it, run setup.sql once more in Supabase (CLOUD-SETUP.md has the step).</p>}
+    <SRow label="Phone" info="Saved with your profile and synced to your other devices."><ProfileInput value={u.phone} onSave={v => set({ phone: v })} label="Phone number" type="tel" placeholder="+92 …" /></SRow>
+    <SRow label="Time zone" info={`Taken from ${MY}’s clock, so others can see your local time.`}><span className="w-[230px] shrink-0 truncate px-2.5 text-[13px] text-muted-foreground">{zoneCity(myZone() || u.timeZone)} · {zoneTime(myZone() || u.timeZone)}</span></SRow>
+    {cloud.profileMissing && <p className="mt-1 rounded-md bg-amber-500/10 px-2.5 py-2 text-xs text-amber-700 dark:text-amber-300">Your profile is saved on {MY}. To sync it, run setup.sql once more in Supabase (CLOUD-SETUP.md has the step).</p>}
     <div className="my-2 h-px bg-border" />
     <div className="flex items-center justify-between pb-1">
       <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground/80">Your workspaces</span>
@@ -9385,7 +9394,7 @@ function ProfilePage({ prof, workspaces, ws, onSwitchWorkspace, onManageWorkspac
       </button>
     ))}
     <div className="my-2 h-px bg-border" />
-    <SRow label={u.via === 'google' ? 'Signed in with Google' : 'Using Tasks without Google'} info="Sign out takes you back to the sign-in screen on this PC. Your tasks stay here. Cloud sync has its own sign-in, under Cloud & backups.">
+    <SRow label={u.via === 'google' ? 'Signed in with Google' : 'Using Tasks without Google'} info={`Sign out takes you back to the sign-in screen on ${MY}. Your tasks stay here. Cloud sync has its own sign-in, under Cloud & backups.`}>
       <button type="button" className={cn(quietBtn, 'hover:!bg-destructive/10', danger)} onClick={onSignOut}><I.logout className="size-3.5" />Sign out</button>
     </SRow>
   </>;
@@ -9965,9 +9974,9 @@ function UpdateLock({ minVersion, lockRef }) {
   const busy = progress !== null;
   return (
     <LockFrame lockRef={lockRef} tone="primary" icon={<I.arrowUp className="size-6" />} title="Update Taskit to keep going">
-      <LockText>Your team now uses a newer version. Your tasks are safe on this PC and sync as soon as you update.</LockText>
+      <LockText>Your team now uses a newer version. Your tasks are safe on {MY} and sync as soon as you update.</LockText>
       <div className="mt-5 flex flex-wrap justify-center gap-2 font-mono text-xs">
-        <span className="rounded-md bg-muted px-2 py-1 text-muted-foreground">This PC {APP_VERSION}</span>
+        <span className="rounded-md bg-muted px-2 py-1 text-muted-foreground">Yours {APP_VERSION}</span>
         <span className="rounded-md bg-muted px-2 py-1 text-foreground">Needed {minVersion}</span>
       </div>
       <div className="mt-6 grid gap-2.5">
@@ -10021,7 +10030,7 @@ function SyncLock({ error, lockRef }) {
   const retry = async () => { setBusy(true); try { await cloudRetry(); } finally { setTimeout(() => setBusy(false), 1500); } };
   return (
     <LockFrame lockRef={lockRef} tone="red" icon={<I.cloudOff className="size-6" />} title="Taskit can’t sync right now">
-      <LockText>Your changes are saved on this PC but can’t reach your team. Try again, or send the details to your admin.</LockText>
+      <LockText>Your changes are saved on {MY} but can’t reach your team. Try again, or send the details to your admin.</LockText>
       <div className="mt-6 grid gap-3">
         <Button className="h-10" onClick={retry} disabled={busy}>{busy ? 'Trying again…' : 'Try again'}</Button>
         <LockLink onClick={() => copyText(`Taskit ${APP_VERSION} can’t sync: ${error || 'unknown error'}`).then(() => toast('Copied', 'Paste it to your admin in a chat or email.'))}>Copy error details</LockLink>
