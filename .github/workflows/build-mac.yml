@@ -1,0 +1,130 @@
+# Builds the Mac app (0.21.1) and adds it to the same GitHub release as the Windows installer.
+# Installed Mac copies then find new versions and update themselves, just like on Windows.
+#
+# Runs by itself after "Build Windows installer" finishes on main, and adds the Mac files to that release.
+# Or by hand from the "Actions" tab → "Build Mac app" → "Run workflow":
+#   - on main: adds the Mac files to the current version's release, if they aren't there yet;
+#   - on another branch: makes a Mac test build (a pre-release) that no installed app updates to.
+#
+# The app is not signed with an Apple certificate, so the first time it's opened macOS asks to confirm
+# (System Settings → Privacy & Security → Open Anyway). Updates after that install without asking.
+# One universal app runs on both Apple silicon and Intel Macs.
+name: Build Mac app
+
+on:
+  workflow_run:
+    workflows: ["Build Windows installer"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # Is there a version to add the Mac app to, and is it missing there?
+  version:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+          v=$(node -p "require('./package.json').version")
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "Run by hand on a branch: Mac test build of $v."; echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if ! gh release view "v$v" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Tasks $v has no release yet, so there is nothing to add the Mac app to."; echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "v$v" --repo "${{ github.repository }}" --json assets -q '.assets[].name' | grep -q '\.app\.tar\.gz$'; then
+            echo "Tasks $v already has the Mac app."; echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Adding the Mac app to Tasks $v."; echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: version
+    if: needs.version.outputs.go == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }}
+
+      - name: Check the update key is set up
+        env:
+          PUBKEY: ${{ vars.UPDATER_PUBKEY }}
+          PRIVKEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if [ -z "$PUBKEY" ] || [ -z "$PRIVKEY" ] || [ -z "$PASSWORD" ]; then
+            echo "::error::The update key isn't set up yet. Add the UPDATER_PUBKEY variable and the TAURI_SIGNING_PRIVATE_KEY and TAURI_SIGNING_PRIVATE_KEY_PASSWORD secrets (SETUP-GUIDE.md, Step 2)."
+            exit 1
+          fi
+
+      # The same update key as Windows. "-" signs the app without an Apple certificate (ad-hoc),
+      # which Apple silicon Macs need before they will run it at all.
+      - name: Add the public update key to the app
+        env:
+          PUBKEY: ${{ vars.UPDATER_PUBKEY }}
+        run: |
+          node -e '
+            const cfg = { bundle: { createUpdaterArtifacts: true, macOS: { signingIdentity: "-" } },
+                          plugins: { updater: { pubkey: process.env.PUBKEY.trim() } } };
+            require("fs").writeFileSync("src-tauri/release.conf.json", JSON.stringify(cfg, null, 2));'
+
+      - name: Read the release notes
+        run: |
+          {
+            echo "NOTES<<END_OF_NOTES"
+            if [ -f RELEASE-NOTES.md ]; then cat RELEASE-NOTES.md; else echo "Improvements and fixes."; fi
+            echo
+            echo "END_OF_NOTES"
+          } >> "$GITHUB_ENV"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      - name: Install packages
+        run: npm ci
+
+      - name: Build and publish the Mac app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.GOOGLE_CLIENT_ID }}
+          VITE_GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        with:
+          # On main the Mac files join the Windows release (and its latest.json), so updates reach both.
+          # On another branch: a separate pre-release that installed apps never offer as an update.
+          tagName: ${{ github.ref == 'refs/heads/main' && 'v__VERSION__' || format('v__VERSION__-mac-test-{0}', github.run_number) }}
+          releaseName: ${{ github.ref == 'refs/heads/main' && 'Tasks __VERSION__' || format('Tasks __VERSION__ (Mac test build {0})', github.run_number) }}
+          releaseBody: ${{ env.NOTES }}
+          releaseDraft: false
+          prerelease: ${{ github.ref != 'refs/heads/main' }}
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --bundles app,dmg --config src-tauri/release.conf.json
